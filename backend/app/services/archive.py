@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.domain.enums import AssetType, HealthStatus
 from app.domain.models import Asset, FileRecord, ScanRun
 from app.domain.schemas import ArchiveHealthSummary, ScanRunSummary
+from app.services.unclaimed import sync_unclaimed_files
 
 
 class StorageScanError(Exception):
@@ -115,6 +116,7 @@ def scan_storage(session: Session, storage_root: Path) -> ScanRunSummary:
             record.health_status = HealthStatus.MISSING
             run.files_missing += 1
 
+    sync_unclaimed_files(session, root)
     run.status = "completed"
     run.message = "扫描完成；未匹配文件保留为待认领，不会自动创建资产。"
     run.completed_at = datetime.now(UTC)

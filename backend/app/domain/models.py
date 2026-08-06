@@ -167,3 +167,19 @@ class Activity(Base):
 
     asset: Mapped[Asset | None] = relationship()
     actor: Mapped[User | None] = relationship()
+
+
+class UnclaimedFile(Base):
+    __tablename__ = "unclaimed_files"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    relative_path: Mapped[str] = mapped_column(String(1000), unique=True, index=True)
+    file_name: Mapped[str] = mapped_column(String(500), nullable=False)
+    file_kind: Mapped[str] = mapped_column(String(80), nullable=False)
+    mime_type: Mapped[str | None] = mapped_column(String(160))
+    file_size: Mapped[int] = mapped_column(BigInteger, default=0)
+    modified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)

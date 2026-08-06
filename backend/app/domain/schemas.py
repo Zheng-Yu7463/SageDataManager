@@ -121,3 +121,15 @@ class DashboardSummary(BaseModel):
     recent_assets: list[AssetSummary]
     recent_activities: list[ActivitySummary]
     popular_tags: list[tuple[str, int]]
+class UnclaimedFileSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    relative_path: str
+    file_name: str
+    file_kind: str
+    mime_type: str | None
+    file_size: int
+    modified_at: datetime | None
+    first_seen_at: datetime
+    last_seen_at: datetime
