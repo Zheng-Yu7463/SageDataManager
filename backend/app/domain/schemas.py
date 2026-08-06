@@ -146,3 +146,17 @@ class FileClaimResult(BaseModel):
 
     asset_id: UUID
     file: FileSummary
+
+
+class AssetCreateRequest(BaseModel):
+    type: AssetType
+    slug: str = Field(min_length=3, max_length=160, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+    title: str = Field(min_length=1, max_length=500)
+    summary: str = Field(default="", max_length=5000)
+    status: str = Field(default="draft", min_length=1, max_length=40)
+    visibility: Visibility = Visibility.LAB
+    version: str | None = Field(default=None, max_length=80)
+    tags: list[str] = Field(default_factory=list, max_length=20)
+    details: dict[str, Any] = Field(default_factory=dict)
+    owner_name: str = Field(default="归档管理员", min_length=1, max_length=80)
+    owner_email: str = Field(default="archive-admin@sage.lab", min_length=3, max_length=255)

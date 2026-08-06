@@ -1,13 +1,13 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.db.session import get_session
 from app.domain.enums import AssetType
-from app.domain.schemas import AssetListResponse, AssetSummary
-from app.services.assets import get_asset, list_assets
+from app.domain.schemas import AssetCreateRequest, AssetListResponse, AssetSummary
+from app.services.assets import AssetSlugConflictError, create_asset, get_asset, list_assets
 
 router = APIRouter(prefix="/assets", tags=["assets"])
 SessionDependency = Annotated[Session, Depends(get_session)]
@@ -28,7 +28,22 @@ def assets(
         page=page,
         page_size=page_size,
     )
+
     return AssetListResponse(items=items, total=total, page=page, page_size=page_size)
+
+
+@router.post("", status_code=status.HTTP_201_CREATED)
+def create(payload: AssetCreateRequest, session: SessionDependency) -> AssetSummary:
+    try:
+        result = create_asset(session, payload)
+        session.commit()
+        return result
+    except AssetSlugConflictError:
+        session.rollback()
+        raise HTTPException(status_code=409, detail="资产标识已存在，请使用另一个 slug。") from None
+    except Exception:
+        session.rollback()
+        raise
 
 
 @router.get("/{asset_id}")

@@ -4,15 +4,20 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.domain.enums import AssetType
-from app.domain.models import Activity, Asset, AssetRelation
+from app.domain.models import Activity, Asset, AssetRelation, AssetVersion, Tag, User
 from app.domain.schemas import (
     ActivitySummary,
+    AssetCreateRequest,
     AssetDetail,
     AssetSummary,
     AssetVersionSummary,
     FileSummary,
     RelatedAssetSummary,
 )
+
+
+class AssetSlugConflictError(Exception):
+    pass
 
 
 def asset_summary(asset: Asset) -> AssetSummary:
@@ -32,6 +37,48 @@ def asset_summary(asset: Asset) -> AssetSummary:
         total_size=sum(file.file_size for file in asset.files),
         updated_at=asset.updated_at,
     )
+
+
+def create_asset(session: Session, payload: AssetCreateRequest) -> AssetSummary:
+    if session.scalar(select(Asset.id).where(Asset.slug == payload.slug)):
+        raise AssetSlugConflictError
+
+    owner_email = payload.owner_email.strip().lower()
+    owner = session.scalar(select(User).where(User.email == owner_email))
+    if not owner:
+        owner = User(name=payload.owner_name.strip(), email=owner_email)
+        session.add(owner)
+
+    tag_names = sorted({tag.strip() for tag in payload.tags if tag.strip()})
+    existing_tags = {
+        tag.name: tag for tag in session.scalars(select(Tag).where(Tag.name.in_(tag_names))).all()
+    }
+    tags = [existing_tags.get(name) or Tag(name=name) for name in tag_names]
+    asset = Asset(
+        type=payload.type,
+        slug=payload.slug,
+        title=payload.title.strip(),
+        summary=payload.summary.strip(),
+        status=payload.status.strip(),
+        visibility=payload.visibility,
+        owner=owner,
+        details=payload.details,
+        tags=tags,
+    )
+    if payload.version and payload.version.strip():
+        asset.versions.append(AssetVersion(version=payload.version.strip(), is_current=True))
+    session.add(asset)
+    session.flush()
+    session.add(
+        Activity(
+            asset=asset,
+            actor=owner,
+            action="created",
+            description=f"登记了{asset.title}",
+        )
+    )
+    session.flush()
+    return asset_summary(asset)
 
 
 def list_assets(
