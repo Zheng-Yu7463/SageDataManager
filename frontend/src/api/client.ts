@@ -1,4 +1,4 @@
-import type { ArchiveHealthSummary, AssetDetail, AssetListResponse, AssetType, DashboardSummary, ScanRunSummary } from '@/types'
+import type { ArchiveHealthSummary, AssetDetail, AssetListResponse, AssetType, DashboardSummary, ScanRunSummary, UnclaimedFileSummary } from '@/types'
 
 class ApiError extends Error {
   constructor(
@@ -49,4 +49,8 @@ export function getArchiveHealth(signal?: AbortSignal) {
 
 export function runArchiveScan() {
   return request<ScanRunSummary>('/api/archive/scans', undefined, 'POST')
+}
+
+export function getUnclaimedFiles(signal?: AbortSignal) {
+  return request<UnclaimedFileSummary[]>('/api/archive/unclaimed', signal)
 }

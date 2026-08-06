@@ -106,3 +106,15 @@ export interface ArchiveHealthSummary {
   unclaimed_files: number
 }
 
+export interface UnclaimedFileSummary {
+  id: string
+  relative_path: string
+  file_name: string
+  file_kind: string
+  mime_type: string | null
+  file_size: number
+  modified_at: string | null
+  first_seen_at: string
+  last_seen_at: string
+}
+

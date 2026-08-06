@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 
 import AssetsView from '@/views/AssetsView.vue'
 import ArchiveHealthView from '@/views/ArchiveHealthView.vue'
+import PendingFilesView from '@/views/PendingFilesView.vue'
 import AssetDetailView from '@/views/AssetDetailView.vue'
 import DashboardView from '@/views/DashboardView.vue'
 import SearchView from '@/views/SearchView.vue'
@@ -13,6 +14,7 @@ export const router = createRouter({
     { path: '/search', name: 'search', component: SearchView },
     { path: '/papers', name: 'papers', component: AssetsView, meta: { assetType: 'paper' } },
     { path: '/archive-health', name: 'archive-health', component: ArchiveHealthView },
+    { path: '/unclaimed-files', name: 'unclaimed-files', component: PendingFilesView },
     { path: '/assets/:assetId', name: 'asset-detail', component: AssetDetailView },
     { path: '/datasets', name: 'datasets', component: AssetsView, meta: { assetType: 'dataset' } },
     { path: '/literature', name: 'literature', component: AssetsView, meta: { assetType: 'literature' } },
