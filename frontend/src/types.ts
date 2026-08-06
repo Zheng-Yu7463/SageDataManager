@@ -30,6 +30,37 @@ export interface AssetListResponse {
   page_size: number
 }
 
+export interface AssetVersionSummary {
+  id: string
+  version: string
+  release_notes: string
+  is_current: boolean
+  created_at: string
+}
+
+export interface FileSummary {
+  id: string
+  file_name: string
+  file_kind: string
+  mime_type: string | null
+  file_size: number
+  health_status: 'healthy' | 'missing' | 'unverified'
+}
+
+export interface RelatedAssetSummary {
+  id: string
+  type: AssetType
+  slug: string
+  title: string
+  relation_type: string
+}
+
+export interface AssetDetail extends AssetSummary {
+  versions: AssetVersionSummary[]
+  files: FileSummary[]
+  related_assets: RelatedAssetSummary[]
+  recent_activities: ActivitySummary[]
+}
 export interface ActivitySummary {
   id: string
   asset_id: string | null
@@ -49,5 +80,29 @@ export interface DashboardSummary {
   recent_assets: AssetSummary[]
   recent_activities: ActivitySummary[]
   popular_tags: [string, number][]
+}
+
+export interface ScanRunSummary {
+  id: string
+  status: string
+  source: string
+  files_discovered: number
+  files_indexed: number
+  files_missing: number
+  files_unclaimed: number
+  files_skipped: number
+  message: string | null
+  started_at: string
+  completed_at: string | null
+}
+
+export interface ArchiveHealthSummary {
+  storage_available: boolean
+  latest_scan: ScanRunSummary | null
+  recent_scans: ScanRunSummary[]
+  indexed_files: number
+  healthy_files: number
+  missing_files: number
+  unclaimed_files: number
 }
 

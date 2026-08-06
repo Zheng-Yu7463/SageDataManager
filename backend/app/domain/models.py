@@ -114,6 +114,24 @@ class FileRecord(Base):
     asset: Mapped[Asset] = relationship(back_populates="files")
 
 
+class ScanRun(Base):
+    __tablename__ = "scan_runs"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    status: Mapped[str] = mapped_column(String(30), default="running", index=True)
+    source: Mapped[str] = mapped_column(String(80), default="storage-root")
+    files_discovered: Mapped[int] = mapped_column(BigInteger, default=0)
+    files_indexed: Mapped[int] = mapped_column(BigInteger, default=0)
+    files_missing: Mapped[int] = mapped_column(BigInteger, default=0)
+    files_unclaimed: Mapped[int] = mapped_column(BigInteger, default=0)
+    files_skipped: Mapped[int] = mapped_column(BigInteger, default=0)
+    message: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow, index=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
 class Tag(Base):
     __tablename__ = "tags"
 

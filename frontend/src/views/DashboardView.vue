@@ -144,7 +144,7 @@ onMounted(load)
             <span>路径失效</span>
             <strong>{{ data.missing_files }}</strong>
           </div>
-          <RouterLink class="text-link" to="/datasets">查看文件索引 <ArrowUpRight :size="15" /></RouterLink>
+          <RouterLink class="text-link" to="/archive-health">查看文件索引 <ArrowUpRight :size="15" /></RouterLink>
         </article>
 
         <article class="panel recent-panel">
@@ -159,7 +159,7 @@ onMounted(load)
             <RouterLink
               v-for="asset in data.recent_assets"
               :key="asset.id"
-              :to="`/${assetMeta[asset.type].english.toLowerCase()}?q=${encodeURIComponent(asset.title)}`"
+              :to="{ name: 'asset-detail', params: { assetId: asset.id } }"
               class="asset-row"
             >
               <span class="asset-type-icon" :style="{ color: assetMeta[asset.type].color, background: assetMeta[asset.type].softColor }">

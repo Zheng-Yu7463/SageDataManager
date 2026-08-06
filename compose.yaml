@@ -8,7 +8,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-sage}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sage}
     volumes:
-      - sage-postgres-data:/var/lib/postgresql/data
+      - sage-postgres-data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sage} -d ${POSTGRES_DB:-sage}"]
       interval: 5s

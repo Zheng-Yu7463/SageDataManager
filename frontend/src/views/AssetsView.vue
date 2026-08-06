@@ -160,7 +160,7 @@ onBeforeUnmount(() => controller?.abort())
         <div class="catalogue-actions">
           <button disabled title="文件预览将在下一阶段开放"><Eye :size="18" /><span>预览</span></button>
           <button disabled title="受控下载将在下一阶段开放"><ArrowDownToLine :size="18" /><span>下载</span></button>
-          <button class="action-primary" disabled title="详情页将在下一阶段开放">查看详情 <ArrowRight :size="16" /></button>
+          <RouterLink class="action-primary" :to="{ name: 'asset-detail', params: { assetId: asset.id } }">查看详情 <ArrowRight :size="16" /></RouterLink>
         </div>
       </article>
     </section>

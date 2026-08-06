@@ -4,7 +4,7 @@ from sqlalchemy import delete
 
 from app.db.session import SessionLocal
 from app.domain.enums import AssetType, HealthStatus, Visibility
-from app.domain.models import Activity, Asset, AssetVersion, FileRecord, Tag, User
+from app.domain.models import Activity, Asset, AssetRelation, AssetVersion, FileRecord, Tag, User
 
 ASSETS = [
     {
@@ -69,6 +69,7 @@ def main() -> None:
     with SessionLocal.begin() as session:
         session.execute(delete(Activity))
         session.execute(delete(FileRecord))
+        session.execute(delete(AssetRelation))
         session.execute(delete(AssetVersion))
         session.execute(delete(Asset))
         session.execute(delete(Tag))
@@ -80,6 +81,7 @@ def main() -> None:
         tag_index: dict[str, Tag] = {}
         now = datetime.now(UTC)
 
+        asset_index: dict[AssetType, Asset] = {}
         for index, record in enumerate(ASSETS):
             tags = []
             for name in record["tags"]:
@@ -111,6 +113,7 @@ def main() -> None:
             )
             session.add(asset)
             session.flush()
+            asset_index[record["type"]] = asset
             session.add(
                 Activity(
                     asset=asset,
@@ -120,6 +123,22 @@ def main() -> None:
                     created_at=updated_at,
                 )
             )
+
+        session.add_all(
+            [
+                AssetRelation(
+                    source_asset_id=asset_index[AssetType.PAPER].id,
+                    target_asset_id=asset_index[AssetType.DATASET].id,
+                    relation_type="uses dataset",
+                ),
+                AssetRelation(
+                    source_asset_id=asset_index[AssetType.MODEL].id,
+                    target_asset_id=asset_index[AssetType.PROJECT].id,
+                    relation_type="developed in project",
+                ),
+            ]
+        )
+
 
     print("Seeded SAGE demo catalogue.")
 

@@ -26,6 +26,16 @@ class FileSummary(BaseModel):
     health_status: HealthStatus
 
 
+class AssetVersionSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    version: str
+    release_notes: str
+    is_current: bool
+    created_at: datetime
+
+
 class AssetSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -51,6 +61,14 @@ class AssetListResponse(BaseModel):
     page_size: int
 
 
+class RelatedAssetSummary(BaseModel):
+    id: UUID
+    type: AssetType
+    slug: str
+    title: str
+    relation_type: str
+
+
 class ActivitySummary(BaseModel):
     id: UUID
     asset_id: UUID | None
@@ -60,6 +78,39 @@ class ActivitySummary(BaseModel):
     action: str
     description: str
     created_at: datetime
+
+
+class AssetDetail(AssetSummary):
+    versions: list[AssetVersionSummary] = Field(default_factory=list)
+    files: list[FileSummary] = Field(default_factory=list)
+    related_assets: list[RelatedAssetSummary] = Field(default_factory=list)
+    recent_activities: list[ActivitySummary] = Field(default_factory=list)
+
+
+class ScanRunSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    status: str
+    source: str
+    files_discovered: int
+    files_indexed: int
+    files_missing: int
+    files_unclaimed: int
+    files_skipped: int
+    message: str | None
+    started_at: datetime
+    completed_at: datetime | None
+
+
+class ArchiveHealthSummary(BaseModel):
+    storage_available: bool
+    latest_scan: ScanRunSummary | None
+    recent_scans: list[ScanRunSummary]
+    indexed_files: int
+    healthy_files: int
+    missing_files: int
+    unclaimed_files: int = 0
 
 
 class DashboardSummary(BaseModel):

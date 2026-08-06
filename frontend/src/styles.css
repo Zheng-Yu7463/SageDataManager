@@ -809,7 +809,7 @@ a {
 .catalogue-detail-line { position: absolute; right: 184px; bottom: 14px; max-width: 330px; overflow: hidden; color: #9aa39d; font-size: 9px; text-overflow: ellipsis; text-transform: capitalize; white-space: nowrap; }
 .visibility-line { position: absolute; bottom: 14px; left: 78px; display: flex; align-items: center; gap: 5px; color: #89968e; font-size: 9px; }
 .catalogue-actions { display: flex; height: 100%; padding-left: 15px; align-items: center; justify-content: center; flex-wrap: wrap; gap: 4px; border-left: 1px solid #e5e9e3; }
-.catalogue-actions button { display: inline-flex; min-height: 35px; padding: 0 9px; align-items: center; justify-content: center; gap: 5px; color: #67746c; background: transparent; border: 0; border-radius: 5px; cursor: pointer; }
+.catalogue-actions button, .catalogue-actions .action-primary { display: inline-flex; min-height: 35px; padding: 0 9px; align-items: center; justify-content: center; gap: 5px; color: #67746c; background: transparent; border: 0; border-radius: 5px; cursor: pointer; }
 .catalogue-actions button:hover { color: var(--asset-accent); background: var(--asset-soft); }
 .catalogue-actions .action-primary { width: 100%; color: var(--asset-accent); font-size: 11px; font-weight: 700; border: 1px solid color-mix(in srgb, var(--asset-accent) 30%, var(--line)); }
 

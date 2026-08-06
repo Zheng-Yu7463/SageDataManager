@@ -89,7 +89,7 @@ onBeforeUnmount(() => controller?.abort())
       <RouterLink
         v-for="asset in data?.items"
         :key="asset.id"
-        :to="`/${assetMeta[asset.type].english.toLowerCase()}?q=${encodeURIComponent(asset.title)}`"
+        :to="{ name: 'asset-detail', params: { assetId: asset.id } }"
         class="search-result"
       >
         <span class="catalogue-card-icon" :style="{ color: assetMeta[asset.type].color, background: assetMeta[asset.type].softColor }">

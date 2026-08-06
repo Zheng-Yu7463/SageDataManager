@@ -65,7 +65,7 @@ function submitGlobalSearch() {
       <p class="nav-kicker nav-kicker--secondary">管理</p>
       <nav class="primary-nav primary-nav--quiet" aria-label="管理导航">
         <a href="#"><Tags :size="19" /><span>标签词表</span></a>
-        <a href="#"><ArchiveRestore :size="19" /><span>归档健康</span></a>
+        <RouterLink to="/archive-health" :class="{ active: route.name === 'archive-health' }" @click="mobileNavigationOpen = false"><ArchiveRestore :size="19" /><span>归档健康</span></RouterLink>
         <a href="#"><Settings :size="19" /><span>系统设置</span></a>
       </nav>
 

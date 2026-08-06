@@ -10,12 +10,13 @@ SAGE 实验室内部科研资产归档与浏览系统。系统将论文、数据
 - 科研档案馆风格首页；
 - 五类资产共用的搜索、列表与卡片视图；
 - FastAPI 健康检查、首页聚合和资产只读 API；
+- 资产详情页：版本、文件安全元数据、关联资产和归档活动浏览；
 - PostgreSQL 统一资产、版本、文件、标签、关系和活动模型；
 - Alembic 初始迁移；
 - Docker Compose 一致化运行环境；
 - 显式样例数据脚本。
 
-下一阶段是存储根配置、增量文件扫描、资产详情和真实权限认证。当前页面中的登记、预览和下载按钮只呈现后续入口，尚未开放写操作。
+下一阶段是存储根配置、增量文件扫描和真实权限认证。当前页面中的登记、预览和下载按钮只呈现后续入口，尚未开放写操作。
 
 ## 目录
 
@@ -32,6 +33,7 @@ compose.yaml
 要求：Docker Compose v2。
 
 ```bash
+python backend/scripts/seed_mock_archive.py
 cp .env.example .env
 docker compose up --build -d
 docker compose exec backend python scripts/seed_demo.py
@@ -43,7 +45,7 @@ docker compose exec backend python scripts/seed_demo.py
 - API 文档：http://localhost:8000/api/docs
 - 健康检查：http://localhost:8000/api/health
 
-`.env` 中的 `SAGE_STORAGE_ROOT` 应设置为宿主机上的实际归档目录。Compose 会将它只读挂载到后端的 `/data/sage-archive`。
+`.env` 中的 `SAGE_STORAGE_ROOT` 应设置为宿主机上的实际归档目录。首次体验可保留默认值，脚本会生成 `sample-archive/` 模拟文件。Compose 会将其只读挂载到后端的 `/data/sage-archive`。
 
 ## 本地开发
 
@@ -56,6 +58,18 @@ alembic upgrade head
 python scripts/seed_demo.py
 uvicorn app.main:app --reload
 ```
+
+
+### 模拟归档扫描
+
+先执行 `python scripts/seed_demo.py` 建立元数据，再从仓库根目录生成模拟文件并设置存储根：
+
+```bash
+python backend/scripts/seed_mock_archive.py
+export SAGE_STORAGE_ROOT="$(pwd)/sample-archive"
+```
+
+访问“归档健康”页面并运行扫描。扫描器只更新文件名、大小、类型、修改时间和健康状态；不能匹配 `类型/slug/文件` 结构的文件会计入待认领，不会自动创建资产。
 
 前端需要 Node.js 24 和 pnpm 11：
 

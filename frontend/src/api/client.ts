@@ -1,4 +1,4 @@
-import type { AssetListResponse, AssetType, DashboardSummary } from '@/types'
+import type { ArchiveHealthSummary, AssetDetail, AssetListResponse, AssetType, DashboardSummary, ScanRunSummary } from '@/types'
 
 class ApiError extends Error {
   constructor(
@@ -9,9 +9,10 @@ class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, signal?: AbortSignal): Promise<T> {
+async function request<T>(path: string, signal?: AbortSignal, method = 'GET'): Promise<T> {
   const response = await fetch(path, {
     headers: { Accept: 'application/json' },
+    method,
     signal,
   })
   if (!response.ok) {
@@ -36,4 +37,16 @@ export function getAssets(
   if (assetType) params.set('asset_type', assetType)
   if (options.query) params.set('query', options.query)
   return request<AssetListResponse>(`/api/assets?${params}`, signal)
+}
+
+export function getAsset(assetId: string, signal?: AbortSignal) {
+  return request<AssetDetail>(`/api/assets/${assetId}`, signal)
+}
+
+export function getArchiveHealth(signal?: AbortSignal) {
+  return request<ArchiveHealthSummary>('/api/archive/health', signal)
+}
+
+export function runArchiveScan() {
+  return request<ScanRunSummary>('/api/archive/scans', undefined, 'POST')
 }
