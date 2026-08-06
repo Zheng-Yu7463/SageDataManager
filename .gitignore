@@ -13,3 +13,4 @@ dist/
 .pnpm-store/
 frontend/.env.local
 backend/.env
+*.egg-info/
