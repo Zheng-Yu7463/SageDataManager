@@ -118,3 +118,8 @@ export interface UnclaimedFileSummary {
   last_seen_at: string
 }
 
+export interface FileClaimResult {
+  asset_id: string
+  file: FileSummary
+}
+

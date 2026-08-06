@@ -1,4 +1,13 @@
-import type { ArchiveHealthSummary, AssetDetail, AssetListResponse, AssetType, DashboardSummary, ScanRunSummary, UnclaimedFileSummary } from '@/types'
+import type {
+  ArchiveHealthSummary,
+  AssetDetail,
+  AssetListResponse,
+  AssetType,
+  DashboardSummary,
+  FileClaimResult,
+  ScanRunSummary,
+  UnclaimedFileSummary,
+} from '@/types'
 
 class ApiError extends Error {
   constructor(
@@ -9,11 +18,12 @@ class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, signal?: AbortSignal, method = 'GET'): Promise<T> {
+async function request<T>(path: string, signal?: AbortSignal, method = 'GET', body?: unknown): Promise<T> {
   const response = await fetch(path, {
-    headers: { Accept: 'application/json' },
+    headers: body ? { Accept: 'application/json', 'Content-Type': 'application/json' } : { Accept: 'application/json' },
     method,
     signal,
+    body: body ? JSON.stringify(body) : undefined,
   })
   if (!response.ok) {
     throw new ApiError(`请求失败（${response.status}）`, response.status)
@@ -53,4 +63,8 @@ export function runArchiveScan() {
 
 export function getUnclaimedFiles(signal?: AbortSignal) {
   return request<UnclaimedFileSummary[]>('/api/archive/unclaimed', signal)
+}
+
+export function claimUnclaimedFile(unclaimedFileId: string, assetId: string) {
+  return request<FileClaimResult>(`/api/archive/unclaimed/${unclaimedFileId}/claim`, undefined, 'POST', { asset_id: assetId })
 }

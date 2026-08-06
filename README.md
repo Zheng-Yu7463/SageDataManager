@@ -14,9 +14,11 @@ SAGE 实验室内部科研资产归档与浏览系统。系统将论文、数据
 - PostgreSQL 统一资产、版本、文件、标签、关系和活动模型；
 - Alembic 初始迁移；
 - Docker Compose 一致化运行环境；
+- 手动归档扫描与持久化待认领文件清单；
+- 待认领文件认领：关联到已登记资产，不移动原始文件；
 - 显式样例数据脚本。
 
-下一阶段是存储根配置、增量文件扫描和真实权限认证。当前页面中的登记、预览和下载按钮只呈现后续入口，尚未开放写操作。
+下一阶段是增量扫描、真实权限认证和受控文件访问。除管理员的文件认领外，登记、预览和下载按钮仍只呈现后续入口。
 
 ## 目录
 
@@ -49,11 +51,14 @@ docker compose exec backend python scripts/seed_demo.py
 
 ## 本地开发
 
-后端需要 Python 3.12 和 PostgreSQL：
+后端使用 Python 3.12、PostgreSQL 和 Conda：
 
 ```bash
+conda create -n sage-data-manager python=3.12 -y
+conda activate sage-data-manager
 cd backend
-uv sync --locked
+pip install -e .
+pip install pytest ruff
 alembic upgrade head
 python scripts/seed_demo.py
 uvicorn app.main:app --reload
@@ -69,7 +74,7 @@ python backend/scripts/seed_mock_archive.py
 export SAGE_STORAGE_ROOT="$(pwd)/sample-archive"
 ```
 
-访问“归档健康”页面并运行扫描。扫描器只更新文件名、大小、类型、修改时间和健康状态；不能匹配 `类型/slug/文件` 结构的文件会计入待认领，不会自动创建资产。
+访问“归档健康”页面并运行扫描。扫描器只更新文件名、大小、类型、修改时间和健康状态；不能匹配 `类型/slug/文件` 结构的文件会计入待认领，不会自动创建资产。管理员可在“待认领文件”页面将其关联到已登记资产；原始文件保持在原目录，后续扫描会沿用该关联。
 
 前端需要 Node.js 24 和 pnpm 11：
 

@@ -3,12 +3,30 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from mimetypes import guess_type
 from pathlib import Path
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.domain.models import Asset, UnclaimedFile
-from app.domain.schemas import UnclaimedFileSummary
+from app.domain.enums import HealthStatus
+from app.domain.models import Asset, FileRecord, UnclaimedFile
+from app.domain.schemas import FileClaimResult, FileSummary, UnclaimedFileSummary
+
+
+class UnclaimedFileNotFoundError(Exception):
+    pass
+
+
+class AssetNotFoundError(Exception):
+    pass
+
+
+class FileAlreadyClaimedError(Exception):
+    pass
+
+
+class ClaimSourceFileError(Exception):
+    pass
 
 
 def file_kind(path: Path) -> str:
@@ -59,8 +77,58 @@ def sync_unclaimed_files(session: Session, storage_root: Path) -> None:
         record.last_seen_at = datetime.now(UTC)
 
 
+def claim_unclaimed_file(
+    session: Session, storage_root: Path, unclaimed_file_id: UUID, asset_id: UUID
+) -> FileClaimResult:
+    record = session.get(UnclaimedFile, unclaimed_file_id)
+    if not record:
+        raise UnclaimedFileNotFoundError
+    if record.claimed_asset_id:
+        raise FileAlreadyClaimedError
+
+    asset = session.get(Asset, asset_id)
+    if not asset or asset.archived_at:
+        raise AssetNotFoundError
+
+    try:
+        root = storage_root.resolve(strict=True)
+        relative = Path(record.relative_path)
+        if relative.is_absolute():
+            raise ValueError
+        resolved = (root / relative).resolve(strict=True)
+        resolved.relative_to(root)
+    except (FileNotFoundError, OSError, ValueError):
+        raise ClaimSourceFileError from None
+    if not resolved.is_file():
+        raise ClaimSourceFileError
+
+    file_record = session.scalar(
+        select(FileRecord).where(
+            FileRecord.asset_id == asset.id,
+            FileRecord.relative_path == record.relative_path,
+        )
+    )
+    if not file_record:
+        file_record = FileRecord(asset_id=asset.id, relative_path=record.relative_path)
+        session.add(file_record)
+
+    stat = resolved.stat()
+    file_record.file_name = resolved.name
+    file_record.file_kind = file_kind(resolved)
+    file_record.mime_type = guess_type(resolved.name)[0]
+    file_record.file_size = stat.st_size
+    file_record.health_status = HealthStatus.HEALTHY
+    file_record.modified_at = datetime.fromtimestamp(stat.st_mtime, UTC)
+    record.claimed_asset_id = asset.id
+    record.claimed_at = datetime.now(UTC)
+    session.flush()
+    return FileClaimResult(asset_id=asset.id, file=FileSummary.model_validate(file_record))
+
+
 def list_unclaimed_files(session: Session) -> list[UnclaimedFileSummary]:
     records = session.scalars(
-        select(UnclaimedFile).order_by(UnclaimedFile.last_seen_at.desc())
+        select(UnclaimedFile)
+        .where(UnclaimedFile.claimed_asset_id.is_(None))
+        .order_by(UnclaimedFile.last_seen_at.desc())
     ).all()
     return [UnclaimedFileSummary.model_validate(record) for record in records]

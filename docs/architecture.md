@@ -39,18 +39,22 @@ GET /api/health
 GET /api/dashboard
 GET /api/assets
 GET /api/assets/{id}
-```
 GET /api/archive/health
 POST /api/archive/scans
+GET /api/archive/unclaimed
+POST /api/archive/unclaimed/{id}/claim
+```
 
 `GET /api/assets` 支持 `asset_type`、`query`、`page` 和 `page_size`。前端五类页面使用同一个接口和组件。
 
 
 扫描接口只接受服务端配置的存储根，不接受浏览器传入路径。它使用 `资产类型/资产 slug/文件` 约定匹配既有资产，只同步文件大小、类型、修改时间与健康状态；无法匹配的文件只计为待认领。
 
+认领接口只接受待认领文件 ID 与现有资产 ID。服务端会重新解析并验证文件仍位于配置的存储根内，再建立文件索引和资产关联；不会移动、复制或删除原始科研文件。后续扫描会识别该关联，避免把该路径重新计为待认领。
+
 ## 扫描运行记录
 
-每次扫描都会写入 `ScanRun`，保存发现、索引、失效、待认领与跳过文件的计数。第一版由管理员手动触发；计划任务与待认领目录的人工处理界面留待下一阶段。
+每次扫描都会写入 `ScanRun`，保存发现、索引、失效、待认领与跳过文件的计数。第一版由管理员手动触发；待认领文件可由管理员在管理端认领，计划任务留待下一阶段。
 ## 安全边界
 
 下一阶段文件接口必须满足：
@@ -65,7 +69,7 @@ POST /api/archive/scans
 
 ## 下一阶段
 
-1. 增量或计划扫描与待认领目录处理界面；
+1. 增量或计划扫描；
 2. OIDC 或实验室账户认证；
 3. 文件预览和受控下载；
 4. CSV/YAML 一次性导入。

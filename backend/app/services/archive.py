@@ -8,7 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.domain.enums import AssetType, HealthStatus
-from app.domain.models import Asset, FileRecord, ScanRun
+from app.domain.models import Asset, FileRecord, ScanRun, UnclaimedFile
 from app.domain.schemas import ArchiveHealthSummary, ScanRunSummary
 from app.services.unclaimed import sync_unclaimed_files
 
@@ -58,9 +58,14 @@ def scan_storage(session: Session, storage_root: Path) -> ScanRunSummary:
         session.flush()
         raise StorageScanError
 
-    assets = {
-        (asset.type.value, asset.slug): asset
-        for asset in session.scalars(select(Asset).where(Asset.archived_at.is_(None))).all()
+    active_assets = session.scalars(select(Asset).where(Asset.archived_at.is_(None))).all()
+    assets = {(asset.type.value, asset.slug): asset for asset in active_assets}
+    assets_by_id = {asset.id: asset for asset in active_assets}
+    claimed_assets = {
+        record.relative_path: record.claimed_asset_id
+        for record in session.scalars(
+            select(UnclaimedFile).where(UnclaimedFile.claimed_asset_id.is_not(None))
+        ).all()
     }
     existing = {
         (record.asset_id, record.relative_path): record
@@ -81,21 +86,21 @@ def scan_storage(session: Session, storage_root: Path) -> ScanRunSummary:
             continue
 
         run.files_discovered += 1
+        relative_path = relative.as_posix()
         parts = relative.parts
-        if len(parts) < 3:
-            run.files_unclaimed += 1
-            continue
-        try:
-            asset_type = AssetType(parts[0])
-        except ValueError:
-            run.files_unclaimed += 1
-            continue
-        asset = assets.get((asset_type.value, parts[1]))
+        asset = None
+        if len(parts) >= 3:
+            try:
+                asset_type = AssetType(parts[0])
+                asset = assets.get((asset_type.value, parts[1]))
+            except ValueError:
+                pass
+        if not asset:
+            asset = assets_by_id.get(claimed_assets.get(relative_path))
         if not asset:
             run.files_unclaimed += 1
             continue
 
-        relative_path = relative.as_posix()
         stat = resolved.stat()
         record = existing.get((asset.id, relative_path))
         if not record:
@@ -133,6 +138,9 @@ def archive_health(session: Session, storage_root: Path) -> ArchiveHealthSummary
             func.count(FileRecord.id).filter(FileRecord.health_status == HealthStatus.MISSING),
         )
     ).one()
+    unclaimed = session.scalar(
+        select(func.count(UnclaimedFile.id)).where(UnclaimedFile.claimed_asset_id.is_(None))
+    )
     return ArchiveHealthSummary(
         storage_available=storage_root.is_dir(),
         latest_scan=scan_run_summary(scans[0]) if scans else None,
@@ -140,5 +148,5 @@ def archive_health(session: Session, storage_root: Path) -> ArchiveHealthSummary
         indexed_files=indexed,
         healthy_files=healthy,
         missing_files=missing,
-        unclaimed_files=scans[0].files_unclaimed if scans else 0,
+        unclaimed_files=unclaimed or 0,
     )
