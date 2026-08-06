@@ -158,5 +158,5 @@ class AssetCreateRequest(BaseModel):
     version: str | None = Field(default=None, max_length=80)
     tags: list[str] = Field(default_factory=list, max_length=20)
     details: dict[str, Any] = Field(default_factory=dict)
-    owner_name: str = Field(default="归档管理员", min_length=1, max_length=80)
-    owner_email: str = Field(default="archive-admin@sage.lab", min_length=3, max_length=255)
+    owner_name: str | None = Field(default=None, min_length=1, max_length=80)
+    owner_email: str | None = Field(default=None, min_length=3, max_length=255)

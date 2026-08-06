@@ -30,6 +30,18 @@ export interface AssetListResponse {
   page_size: number
 }
 
+export interface AssetCreateInput {
+  type: AssetType
+  slug: string
+  title: string
+  summary: string
+  status: string
+  visibility: Visibility
+  version: string | null
+  tags: string[]
+  details: Record<string, unknown>
+}
+
 export interface AssetVersionSummary {
   id: string
   version: string

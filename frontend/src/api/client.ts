@@ -1,6 +1,8 @@
 import type {
   ArchiveHealthSummary,
   AssetDetail,
+  AssetCreateInput,
+  AssetSummary,
   AssetListResponse,
   AssetType,
   DashboardSummary,
@@ -52,6 +54,11 @@ export function getAssets(
 export function getAsset(assetId: string, signal?: AbortSignal) {
   return request<AssetDetail>(`/api/assets/${assetId}`, signal)
 }
+
+export function createAsset(input: AssetCreateInput) {
+  return request<AssetSummary>('/api/assets', undefined, 'POST', input)
+}
+
 
 export function getArchiveHealth(signal?: AbortSignal) {
   return request<ArchiveHealthSummary>('/api/archive/health', signal)

@@ -8,6 +8,9 @@ import {
   Grid2X2,
   List,
   LockKeyhole,
+  Plus,
+  Save,
+  X,
   Search,
   ShieldCheck,
   SlidersHorizontal,
@@ -16,9 +19,9 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import AssetIcon from '@/components/AssetIcon.vue'
-import { getAssets } from '@/api/client'
+import { createAsset, getAssets } from '@/api/client'
 import { assetMeta } from '@/catalogue'
-import type { AssetListResponse, AssetType } from '@/types'
+import type { AssetListResponse, AssetType, Visibility } from '@/types'
 
 const route = useRoute()
 const router = useRouter()
@@ -31,6 +34,19 @@ const view = ref<'list' | 'grid'>('list')
 let controller: AbortController | undefined
 
 const assetType = computed(() => route.meta.assetType as AssetType)
+const registrationOpen = ref(false)
+const creating = ref(false)
+const createError = ref('')
+const registration = ref({
+  title: '',
+  slug: '',
+  summary: '',
+  status: 'draft',
+  visibility: 'lab' as Visibility,
+  version: '',
+  tags: '',
+})
+
 const meta = computed(() => assetMeta[assetType.value])
 const totalPages = computed(() => Math.max(1, Math.ceil((data.value?.total ?? 0) / 20)))
 
@@ -82,6 +98,49 @@ function detailText(details: Record<string, unknown>) {
   return entries.map(([key, value]) => `${key.replace('_', ' ')} · ${value}`).join('  /  ')
 }
 
+function openRegistration() {
+  registration.value = {
+    title: '',
+    slug: '',
+    summary: '',
+    status: 'draft',
+    visibility: 'lab',
+    version: '',
+    tags: '',
+  }
+  createError.value = ''
+  registrationOpen.value = true
+}
+
+function closeRegistration() {
+  if (!creating.value) registrationOpen.value = false
+}
+
+async function registerAsset() {
+  if (!registration.value.title.trim() || !registration.value.slug.trim()) return
+  creating.value = true
+  createError.value = ''
+  try {
+    const asset = await createAsset({
+      type: assetType.value,
+      title: registration.value.title.trim(),
+      slug: registration.value.slug.trim(),
+      summary: registration.value.summary.trim(),
+      status: registration.value.status.trim() || 'draft',
+      visibility: registration.value.visibility,
+      version: registration.value.version.trim() || null,
+      tags: registration.value.tags.split(/[，,]/).map((tag) => tag.trim()).filter(Boolean),
+      details: {},
+    })
+    registrationOpen.value = false
+    await router.push({ name: 'asset-detail', params: { assetId: asset.id } })
+  } catch (reason) {
+    createError.value = reason instanceof Error ? reason.message : '登记失败，请稍后重试'
+  } finally {
+    creating.value = false
+  }
+}
+
 watch(
   () => route.meta.assetType,
   () => {
@@ -103,7 +162,7 @@ onBeforeUnmount(() => controller?.abort())
         <h1>{{ meta.label }}目录</h1>
         <p>{{ meta.description }}。所有内容均来自实验室受控存储根。</p>
       </div>
-      <button class="button button--primary" disabled title="写入流程将在下一阶段开放">登记{{ meta.label }}</button>
+      <button class="button button--primary" @click="openRegistration"><Plus :size="16" />登记{{ meta.label }}</button>
     </header>
 
     <section class="catalogue-toolbar">
@@ -170,5 +229,33 @@ onBeforeUnmount(() => controller?.abort())
       <span>第 {{ page }} / {{ totalPages }} 页</span>
       <button :disabled="page === totalPages" @click="changePage(page + 1)">下一页 <ArrowRight :size="16" /></button>
     </footer>
+    <div v-if="registrationOpen" class="registration-backdrop" @click.self="closeRegistration">
+      <form class="registration-dialog" aria-labelledby="registration-title" @submit.prevent="registerAsset">
+        <button class="registration-close" type="button" aria-label="关闭" :disabled="creating" @click="closeRegistration"><X :size="18" /></button>
+        <p class="eyebrow">NEW {{ meta.english.toUpperCase() }}</p>
+        <h2 id="registration-title">登记{{ meta.label }}</h2>
+        <p class="registration-note">登记后可继续在详情页维护版本、关联关系与归档文件。</p>
+
+        <label>标题<input v-model="registration.title" required maxlength="500" placeholder="例如：田野样本观测数据集" /></label>
+        <label>资产标识（slug）<input v-model="registration.slug" required pattern="[a-z0-9]+(-[a-z0-9]+)*" minlength="3" maxlength="160" placeholder="例如：soil-samples-2026" /></label>
+        <label>摘要<textarea v-model="registration.summary" maxlength="5000" rows="3" placeholder="简要说明研究内容、范围或用途"></textarea></label>
+        <div class="registration-grid">
+          <label>状态<select v-model="registration.status"><option value="draft">draft</option><option value="active">active</option><option value="available">available</option><option value="collected">collected</option></select></label>
+          <label>可见范围<select v-model="registration.visibility"><option value="lab">全实验室</option><option value="project">项目成员</option><option value="restricted">受限</option></select></label>
+        </div>
+        <div class="registration-grid">
+          <label>初始版本（可选）<input v-model="registration.version" maxlength="80" placeholder="例如：v0.1" /></label>
+          <label>标签（逗号分隔）<input v-model="registration.tags" placeholder="例如：生态, 田野" /></label>
+        </div>
+        <p v-if="createError" class="registration-error">{{ createError }}</p>
+        <footer><button class="button button--outline" type="button" :disabled="creating" @click="closeRegistration">取消</button><button class="button button--primary" :disabled="creating || !registration.title.trim() || !registration.slug.trim()" type="submit"><Save :size="16" />{{ creating ? '正在登记' : '确认登记' }}</button></footer>
+      </form>
+    </div>
+
   </div>
 </template>
+
+<style scoped>
+.registration-backdrop { position: fixed; z-index: 40; inset: 0; display: grid; padding: 20px; place-items: center; background: rgba(23, 34, 26, .48); }
+.registration-dialog { position: relative; display: grid; width: min(100%, 610px); max-height: calc(100vh - 40px); padding: 28px; overflow-y: auto; background: #fdfefb; border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 20px 50px rgba(24, 37, 29, .22); gap: 11px; }.registration-dialog h2 { margin: -5px 0 0; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 24px; font-weight: 500; }.registration-note { margin: -3px 0 7px; color: var(--muted); font-size: 12px; line-height: 1.55; }.registration-dialog label { display: grid; color: #526056; font-size: 12px; font-weight: 700; gap: 6px; }.registration-dialog input, .registration-dialog textarea, .registration-dialog select { width: 100%; padding: 9px 10px; color: var(--ink); font: inherit; font-size: 13px; background: #fff; border: 1px solid var(--line); border-radius: 5px; outline-color: var(--sage); }.registration-dialog textarea { resize: vertical; }.registration-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }.registration-close { position: absolute; top: 13px; right: 13px; display: grid; width: 31px; height: 31px; color: #68776d; place-items: center; background: transparent; border: 0; border-radius: 50%; cursor: pointer; }.registration-close:hover { background: #eef2ed; }.registration-error { margin: 1px 0; color: #a6633b; font-size: 12px; }.registration-dialog footer { display: flex; margin-top: 9px; justify-content: flex-end; gap: 9px; } @media (max-width: 560px) { .registration-dialog { padding: 24px 20px; }.registration-grid { grid-template-columns: 1fr; } }
+</style>

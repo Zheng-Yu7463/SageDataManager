@@ -43,10 +43,19 @@ def create_asset(session: Session, payload: AssetCreateRequest) -> AssetSummary:
     if session.scalar(select(Asset.id).where(Asset.slug == payload.slug)):
         raise AssetSlugConflictError
 
-    owner_email = payload.owner_email.strip().lower()
-    owner = session.scalar(select(User).where(User.email == owner_email))
+    owner = None
+    if payload.owner_email:
+        owner_email = payload.owner_email.strip().lower()
+        owner = session.scalar(select(User).where(User.email == owner_email))
+        if not owner:
+            owner = User(name=(payload.owner_name or "归档管理员").strip(), email=owner_email)
+            session.add(owner)
     if not owner:
-        owner = User(name=payload.owner_name.strip(), email=owner_email)
+        owner = session.scalar(select(User).where(User.is_active.is_(True)).order_by(User.name))
+    if not owner:
+        owner = User(
+            name=(payload.owner_name or "归档管理员").strip(), email="archive-admin@sage.lab"
+        )
         session.add(owner)
 
     tag_names = sorted({tag.strip() for tag in payload.tags if tag.strip()})
