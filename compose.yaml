@@ -1,0 +1,44 @@
+name: sage-data-manager
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sage}
+      POSTGRES_USER: ${POSTGRES_USER:-sage}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sage}
+    volumes:
+      - sage-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sage} -d ${POSTGRES_DB:-sage}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    ports:
+      - "5432:5432"
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      SAGE_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-sage}:${POSTGRES_PASSWORD:-sage}@postgres:5432/${POSTGRES_DB:-sage}
+      SAGE_ALLOWED_ORIGINS: '["http://localhost:5173"]'
+      SAGE_STORAGE_ROOT: /data/sage-archive
+    volumes:
+      - ${SAGE_STORAGE_ROOT:-./sample-archive}:/data/sage-archive:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8000:8000"
+
+  frontend:
+    build:
+      context: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+
+volumes:
+  sage-postgres-data:

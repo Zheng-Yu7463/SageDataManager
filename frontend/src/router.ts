@@ -1,0 +1,18 @@
+import { createRouter, createWebHistory } from 'vue-router'
+
+import AssetsView from '@/views/AssetsView.vue'
+import DashboardView from '@/views/DashboardView.vue'
+import SearchView from '@/views/SearchView.vue'
+
+export const router = createRouter({
+  history: createWebHistory(),
+  routes: [
+    { path: '/', name: 'dashboard', component: DashboardView },
+    { path: '/search', name: 'search', component: SearchView },
+    { path: '/papers', name: 'papers', component: AssetsView, meta: { assetType: 'paper' } },
+    { path: '/datasets', name: 'datasets', component: AssetsView, meta: { assetType: 'dataset' } },
+    { path: '/literature', name: 'literature', component: AssetsView, meta: { assetType: 'literature' } },
+    { path: '/projects', name: 'projects', component: AssetsView, meta: { assetType: 'project' } },
+    { path: '/models', name: 'models', component: AssetsView, meta: { assetType: 'model' } },
+  ],
+})
