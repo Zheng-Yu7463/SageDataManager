@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { ArrowLeft, CheckCircle2, CircleAlert, FileText, GitBranch, History, Layers3 } from '@lucide/vue'
+import { ArrowDownToLine, ArrowLeft, CheckCircle2, CircleAlert, Eye, FileText, GitBranch, History, Layers3, X } from '@lucide/vue'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import { getAsset } from '@/api/client'
+import { getAsset, getFileAccessTicket } from '@/api/client'
 import AssetIcon from '@/components/AssetIcon.vue'
 import { assetMeta } from '@/catalogue'
-import type { AssetDetail } from '@/types'
+import type { AssetDetail, FileAccessMode, FileSummary } from '@/types'
 
 const route = useRoute()
 const router = useRouter()
@@ -14,8 +14,17 @@ const data = ref<AssetDetail | null>(null)
 const loading = ref(true)
 const error = ref('')
 let controller: AbortController | undefined
+const fileActionId = ref<string | null>(null)
+const fileActionError = ref('')
+const previewingFile = ref<FileSummary | null>(null)
+const previewUrl = ref('')
 
 const meta = computed(() => (data.value ? assetMeta[data.value.type] : null))
+const previewableMimeTypes = new Set([
+  'application/json', 'application/pdf', 'application/x-yaml', 'text/csv',
+  'text/markdown', 'text/plain', 'text/tab-separated-values', 'text/yaml',
+  'image/avif', 'image/gif', 'image/jpeg', 'image/png', 'image/webp',
+])
 
 async function load() {
   controller?.abort()
@@ -51,8 +60,43 @@ function healthLabel(status: string) {
   return { healthy: '健康', missing: '缺失', unverified: '待校验', changed: '已变更' }[status] ?? status
 }
 
+function canPreview(file: FileSummary) {
+  return !!file.mime_type && previewableMimeTypes.has(file.mime_type)
+}
+
+async function accessFile(file: FileSummary, mode: FileAccessMode) {
+  fileActionId.value = file.id
+  fileActionError.value = ''
+  try {
+    const ticket = await getFileAccessTicket(file.id, mode)
+    if (mode === 'preview') {
+      previewingFile.value = file
+      previewUrl.value = ticket.content_url
+      return
+    }
+    const link = document.createElement('a')
+    link.href = ticket.content_url
+    link.download = file.file_name
+    document.body.append(link)
+    link.click()
+    link.remove()
+  } catch (reason) {
+    fileActionError.value = reason instanceof Error ? reason.message : '文件操作失败'
+  } finally {
+    fileActionId.value = null
+  }
+}
+
+function closePreview() {
+  previewingFile.value = null
+  previewUrl.value = ''
+}
+
 watch(() => route.params.assetId, load, { immediate: true })
-onBeforeUnmount(() => controller?.abort())
+onBeforeUnmount(() => {
+  controller?.abort()
+  closePreview()
+})
 </script>
 
 <template>
@@ -92,7 +136,12 @@ onBeforeUnmount(() => controller?.abort())
           <div v-if="data.files.length" class="detail-list">
             <div v-for="file in data.files" :key="file.id" class="detail-list-row">
               <FileText :size="19" /><span><strong>{{ file.file_name }}</strong><small>{{ file.file_kind }} · {{ file.mime_type ?? 'unknown type' }}</small></span><em :class="{ warning: file.health_status !== 'healthy' }">{{ healthLabel(file.health_status) }}</em><time>{{ formatBytes(file.file_size) }}</time>
+              <div class="file-actions">
+                <button v-if="canPreview(file)" :disabled="file.health_status !== 'healthy' || fileActionId === file.id" title="浏览器预览" @click="accessFile(file, 'preview')"><Eye :size="15" /></button>
+                <button :disabled="file.health_status !== 'healthy' || fileActionId === file.id" title="下载文件" @click="accessFile(file, 'download')"><ArrowDownToLine :size="15" /></button>
+              </div>
             </div>
+            <p v-if="fileActionError" class="file-action-error">{{ fileActionError }}</p>
           </div>
           <p v-else class="detail-empty">尚未从受控存储根索引到文件记录。</p>
         </article>
@@ -122,6 +171,12 @@ onBeforeUnmount(() => controller?.abort())
         </article>
       </section>
       <p class="detail-privacy"><Layers3 :size="15" /> 此页面仅展示数据库中的归档元数据；服务器文件路径不会发送到浏览器。</p>
+      <div v-if="previewingFile" class="preview-overlay" role="dialog" aria-modal="true" :aria-label="`预览 ${previewingFile.file_name}`">
+        <section class="preview-dialog">
+          <header><div><p class="eyebrow">CONTROLLED PREVIEW</p><h2>{{ previewingFile.file_name }}</h2></div><button title="关闭预览" @click="closePreview"><X :size="18" /></button></header>
+          <iframe v-if="previewUrl" :src="previewUrl" :title="`预览 ${previewingFile.file_name}`"></iframe>
+        </section>
+      </div>
     </template>
   </div>
 </template>
@@ -140,8 +195,10 @@ onBeforeUnmount(() => controller?.abort())
 .detail-facts dt { margin-bottom: 6px; color: #94a097; font-size: 10px; text-transform: capitalize; }
 .detail-facts dd { display: flex; margin: 0; align-items: center; gap: 6px; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 14px; overflow-wrap: anywhere; }
 .detail-list { margin-top: 15px; border-top: 1px solid var(--line); }
-.detail-list-row { display: grid; min-height: 62px; grid-template-columns: 25px minmax(0, 1fr) auto auto; padding: 10px 0; align-items: center; gap: 10px; border-bottom: 1px solid var(--line); }
+.detail-list-row { display: grid; min-height: 62px; grid-template-columns: 25px minmax(0, 1fr) auto auto auto; padding: 10px 0; align-items: center; gap: 10px; border-bottom: 1px solid var(--line); }
 .detail-list-row > svg { color: var(--asset-accent); }.detail-list-row span { display: grid; min-width: 0; gap: 3px; }.detail-list-row strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }.detail-list-row em { color: var(--sage); font-size: 10px; font-style: normal; }.detail-list-row em.warning { color: #b37225; }.detail-list-row time, .detail-timeline time { color: #95a097; font-size: 10px; white-space: nowrap; }
+.file-actions { display: flex; gap: 4px; }.file-actions button, .preview-dialog header button { display: grid; width: 29px; height: 29px; padding: 0; color: #506356; place-items: center; background: #f4f6f1; border: 1px solid var(--line); border-radius: 5px; cursor: pointer; }.file-actions button:hover:not(:disabled), .preview-dialog header button:hover { color: var(--asset-accent); border-color: var(--asset-accent); }.file-actions button:disabled { cursor: not-allowed; opacity: .45; }.file-action-error { margin: 12px 0 0; color: #a6633b; font-size: 11px; }
 .detail-link { grid-template-columns: 25px minmax(0, 1fr); color: inherit; }.detail-empty { margin: 18px 0 0; }.detail-timeline { display: grid; margin: 15px 0 0; padding: 0; gap: 14px; list-style: none; }.detail-timeline li { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 8px; }.detail-timeline svg { color: var(--asset-accent); }.detail-timeline strong { font-size: 12px; }.detail-timeline strong small { margin-left: 5px; color: var(--asset-accent); font-size: 10px; }.detail-timeline p { margin: 4px 0 0; line-height: 1.5; }.detail-privacy { display: flex; margin: 18px 1px 0; align-items: center; gap: 6px; }
-@media (max-width: 760px) { .detail-grid { grid-template-columns: 1fr; }.detail-overview { grid-row: auto; }.detail-status { text-align: left; }.detail-facts { grid-template-columns: 1fr; gap: 14px; }.detail-list-row { grid-template-columns: 23px minmax(0, 1fr) auto; }.detail-list-row time { display: none; } }
+.preview-overlay { position: fixed; z-index: 20; inset: 0; display: grid; padding: 26px; place-items: center; background: rgba(18, 29, 22, .52); }.preview-dialog { display: grid; width: min(100%, 1040px); height: min(84vh, 780px); grid-template-rows: auto minmax(0, 1fr); padding: 18px; background: #fff; border-radius: 11px; box-shadow: 0 25px 70px rgba(0,0,0,.28); }.preview-dialog header { display: flex; margin-bottom: 13px; align-items: flex-start; justify-content: space-between; gap: 12px; }.preview-dialog h2 { margin: 3px 0 0; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 17px; font-weight: 500; }.preview-dialog iframe { width: 100%; height: 100%; border: 1px solid var(--line); border-radius: 5px; background: #f8faf7; }
+@media (max-width: 760px) { .detail-grid { grid-template-columns: 1fr; }.detail-overview { grid-row: auto; }.detail-status { text-align: left; }.detail-facts { grid-template-columns: 1fr; gap: 14px; }.detail-list-row { grid-template-columns: 23px minmax(0, 1fr) auto; }.detail-list-row time { display: none; }.file-actions { grid-column: 2 / -1; }.preview-overlay { padding: 12px; }.preview-dialog { height: 88vh; padding: 13px; } }
 </style>

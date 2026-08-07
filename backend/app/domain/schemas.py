@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -174,6 +174,15 @@ class UploadCommandResponse(BaseModel):
     asset_title: str
     archive_relative_path: str
     command: str
+
+
+class FileAccessTicketRequest(BaseModel):
+    mode: Literal["download", "preview"]
+
+
+class FileAccessTicketResponse(BaseModel):
+    content_url: str
+    expires_at: datetime
 
 
 class AccountSummary(BaseModel):

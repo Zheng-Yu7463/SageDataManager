@@ -4,9 +4,18 @@ import base64
 import hashlib
 import hmac
 import json
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 from app.core.config import settings
+
+
+@dataclass(frozen=True)
+class FileAccessClaims:
+    file_id: UUID
+    mode: str
+    username: str
 
 
 def _encode(value: bytes) -> str:
@@ -40,5 +49,40 @@ def read_session_token(token: str) -> str | None:
         ):
             return None
         return value["username"]
+    except (ValueError, json.JSONDecodeError, TypeError):
+        return None
+
+
+def create_file_access_token(file_id: UUID, mode: str, username: str) -> tuple[str, datetime]:
+    expires_at = datetime.now(UTC) + timedelta(seconds=settings.file_access_ttl_seconds)
+    payload = _encode(
+        json.dumps(
+            {
+                "file_id": str(file_id),
+                "mode": mode,
+                "username": username,
+                "exp": expires_at.timestamp(),
+            }
+        ).encode()
+    )
+    return f"{payload}.{_sign(payload)}", expires_at
+
+
+def read_file_access_token(token: str) -> FileAccessClaims | None:
+    try:
+        payload, signature = token.split(".", 1)
+        if not hmac.compare_digest(signature, _sign(payload)):
+            return None
+        value = json.loads(_decode(payload))
+        if (
+            not isinstance(value.get("file_id"), str)
+            or value.get("mode") not in {"download", "preview"}
+            or not isinstance(value.get("username"), str)
+            or datetime.now(UTC).timestamp() >= value["exp"]
+        ):
+            return None
+        return FileAccessClaims(
+            file_id=UUID(value["file_id"]), mode=value["mode"], username=value["username"]
+        )
     except (ValueError, json.JSONDecodeError, TypeError):
         return None

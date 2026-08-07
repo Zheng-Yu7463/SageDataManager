@@ -44,6 +44,8 @@ GET /api/archive/health
 POST /api/auth/login
 GET /api/auth/me
 GET /api/auth/registration-status
+POST /api/files/{id}/tickets
+GET /api/files/{id}/content?ticket=...
 POST /api/archive/scans
 GET /api/archive/unclaimed
 POST /api/archive/unclaimed/{id}/claim
@@ -59,6 +61,8 @@ POST /api/archive/upload-command
 
 
 扫描接口只接受服务端配置的存储根，不接受浏览器传入路径。它使用 `资产类型/资产 slug/文件` 约定匹配既有资产，只同步文件大小、类型、修改时间与健康状态；无法匹配的文件只计为待认领。
+
+文件预览与下载先由已登录管理员申请仅 120 秒有效的、绑定文件 ID 和用途的签名访问票据。实际内容请求会再次验证票据对应的管理员仍处于启用状态、文件记录仍健康，随后写入审计活动。后端仅发送 Nginx 内部重定向；Nginx 在同一只读存储挂载中传输字节。浏览器和 API 均不会收到服务器文件路径。
 
 
 上传准备接口不会传输文件。它根据已登记资产、当前登录账号和服务端配置的 SSH 主机、端口与宿主机归档根目录生成 `ssh mkdir + scp` 命令；源路径只参与命令文本，不会由服务端读取。目标子目录必须位于该资产目录内。
@@ -84,6 +88,5 @@ POST /api/archive/upload-command
 
 1. 增量或计划扫描；
 2. OIDC 或实验室账户认证；
-3. 文件预览和受控下载；
-4. CSV/YAML 一次性导入。
+3. CSV/YAML 一次性导入。
 

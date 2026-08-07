@@ -150,6 +150,13 @@ export interface UploadCommandResult {
   command: string
 }
 
+export type FileAccessMode = 'download' | 'preview'
+
+export interface FileAccessTicket {
+  content_url: string
+  expires_at: string
+}
+
 export interface AccountSummary {
   id: string
   username: string

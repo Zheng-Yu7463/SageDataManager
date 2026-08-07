@@ -6,6 +6,8 @@ import type {
   AssetCreateInput,
   AssetSummary,
   AssetListResponse,
+  FileAccessMode,
+  FileAccessTicket,
   AssetType,
   DashboardSummary,
   FileClaimResult,
@@ -93,6 +95,10 @@ export function claimUnclaimedFile(unclaimedFileId: string, assetId: string) {
 
 export function getUploadCommand(input: UploadCommandInput) {
   return request<UploadCommandResult>('/api/archive/upload-command', undefined, 'POST', input)
+}
+
+export function getFileAccessTicket(fileId: string, mode: FileAccessMode) {
+  return request<FileAccessTicket>(`/api/files/${fileId}/tickets`, undefined, 'POST', { mode })
 }
 
 export function loginAccount(username: string, password: string) {

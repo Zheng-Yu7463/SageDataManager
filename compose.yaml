@@ -42,6 +42,8 @@ services:
       context: ./frontend
     depends_on:
       - backend
+    volumes:
+      - ${SAGE_STORAGE_ROOT:-./sample-archive}:/data/sage-archive:ro
     ports:
       - "8080:80"
 
