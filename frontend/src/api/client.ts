@@ -1,5 +1,7 @@
 import type {
   ArchiveHealthSummary,
+  AccountLoginResponse,
+  AccountSummary,
   AssetDetail,
   AssetCreateInput,
   AssetSummary,
@@ -23,14 +25,25 @@ class ApiError extends Error {
 }
 
 async function request<T>(path: string, signal?: AbortSignal, method = 'GET', body?: unknown): Promise<T> {
+  const sessionToken = window.localStorage.getItem('sage-session-token')
+  const headers: Record<string, string> = { Accept: 'application/json' }
+  if (body) headers['Content-Type'] = 'application/json'
+  if (sessionToken) headers['X-Sage-Session'] = sessionToken
   const response = await fetch(path, {
-    headers: body ? { Accept: 'application/json', 'Content-Type': 'application/json' } : { Accept: 'application/json' },
+    headers,
     method,
     signal,
     body: body ? JSON.stringify(body) : undefined,
   })
   if (!response.ok) {
-    throw new ApiError(`请求失败（${response.status}）`, response.status)
+    let message = `请求失败（${response.status}）`
+    try {
+      const payload = await response.json()
+      if (typeof payload.detail === 'string') message = payload.detail
+    } catch {
+      // Keep the HTTP status message when the response has no JSON body.
+    }
+    throw new ApiError(message, response.status)
   }
   return response.json() as Promise<T>
 }
@@ -80,4 +93,16 @@ export function claimUnclaimedFile(unclaimedFileId: string, assetId: string) {
 
 export function getUploadCommand(input: UploadCommandInput) {
   return request<UploadCommandResult>('/api/archive/upload-command', undefined, 'POST', input)
+}
+
+export function getLoginAccounts() {
+  return request<AccountSummary[]>('/api/auth/accounts')
+}
+
+export function loginAccount(username: string, password: string) {
+  return request<AccountLoginResponse>('/api/auth/login', undefined, 'POST', { username, password })
+}
+
+export function getCurrentAccount() {
+  return request<AccountSummary>('/api/auth/me')
 }

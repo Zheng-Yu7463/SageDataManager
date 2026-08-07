@@ -149,3 +149,19 @@ export interface UploadCommandResult {
   archive_relative_path: string
   command: string
 }
+
+export interface AccountSummary {
+  id: string
+  username: string
+  name: string
+  role: string
+  upload_username: string
+}
+
+export interface AccountLoginResponse extends AccountSummary {
+  session_token: string
+}
+
+export interface RegistrationStatus {
+  enabled: boolean
+}

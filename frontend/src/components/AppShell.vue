@@ -15,11 +15,15 @@ import {
 import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import type { AccountSummary } from '@/types'
 import AssetIcon from '@/components/AssetIcon.vue'
 import { assetMeta, assetTypes } from '@/catalogue'
 
 const route = useRoute()
 const router = useRouter()
+defineProps<{ account: AccountSummary }>()
+const emit = defineEmits<{ signOut: [] }>()
+
 const mobileNavigationOpen = ref(false)
 const globalQuery = ref('')
 
@@ -98,9 +102,9 @@ function submitGlobalSearch() {
             <Bell :size="20" />
             <span class="notification-dot"></span>
           </button>
-          <button class="profile-button">
-            <span class="avatar">李</span>
-            <span class="profile-copy"><strong>李明</strong><small>归档管理员</small></span>
+          <button class="profile-button" title="退出当前账号" @click="emit('signOut')">
+            <span class="avatar">{{ account.username.slice(0, 1).toUpperCase() }}</span>
+            <span class="profile-copy"><strong>{{ account.name }}</strong><small>管理员 · 退出</small></span>
             <ChevronDown :size="16" />
           </button>
         </div>

@@ -1,7 +1,9 @@
 import pytest
+from fastapi import HTTPException
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.api.dependencies import require_admin
 from app.core.config import settings
 from app.db.base import Base
 from app.services.accounts import (
@@ -40,6 +42,10 @@ def test_fixed_account_login_requires_shared_password(monkeypatch: pytest.Monkey
 
     assert account.username == "zhengyu"
     assert account.upload_username == "zhengyu"
+    assert require_admin(session, token).username == "zhengyu"
+    with pytest.raises(HTTPException, match="请先登录"):
+        require_admin(session, None)
+
     assert read_session_token(token) == "zhengyu"
 
     with pytest.raises(AccountLoginError, match="账号或密码错误"):
