@@ -6,6 +6,7 @@ import PendingFilesView from '@/views/PendingFilesView.vue'
 import AssetDetailView from '@/views/AssetDetailView.vue'
 import DashboardView from '@/views/DashboardView.vue'
 import SearchView from '@/views/SearchView.vue'
+import SettingsView from '@/views/SettingsView.vue'
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -13,6 +14,7 @@ export const router = createRouter({
     { path: '/', name: 'dashboard', component: DashboardView },
     { path: '/search', name: 'search', component: SearchView },
     { path: '/papers', name: 'papers', component: AssetsView, meta: { assetType: 'paper' } },
+    { path: '/settings', name: 'settings', component: SettingsView },
     { path: '/archive-health', name: 'archive-health', component: ArchiveHealthView },
     { path: '/unclaimed-files', name: 'unclaimed-files', component: PendingFilesView },
     { path: '/assets/:assetId', name: 'asset-detail', component: AssetDetailView },

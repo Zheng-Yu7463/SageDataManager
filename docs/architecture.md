@@ -44,6 +44,9 @@ GET /api/archive/health
 POST /api/auth/login
 GET /api/auth/me
 GET /api/auth/registration-status
+GET /api/auth/admin-accounts
+POST /api/auth/admin-accounts
+PATCH /api/auth/admin-accounts/{username}
 POST /api/files/{id}/tickets
 GET /api/files/{id}/content?ticket=...
 POST /api/archive/scans
@@ -57,7 +60,7 @@ POST /api/archive/upload-command
 
 资产登记接口校验全局唯一的 slug，并创建或复用标签、初始版本和负责人记录。当前登录管理员会成为默认负责人和活动记录的操作人。
 
-系统初始化会预置六个管理员账号，但它们不是登录白名单。登录页要求手动输入账号；任何已预置、启用且具备管理员角色的账号都可通过本机环境变量中的共享密码登录，并获得有时效的签名会话令牌。注册状态接口已预留，默认关闭。SCP 命令使用当前登录账号同名的服务器用户。
+系统初始化会预置六个管理员账号，但它们不是登录白名单。登录页要求手动输入账号；任何已预置、启用且具备管理员角色的账号都可通过本机环境变量中的共享密码登录，并获得有时效的签名会话令牌。系统设置中的管理员可预置、启用或停用账号；当前登录账号不能自行停用。注册状态接口已预留，默认关闭。SCP 命令使用当前登录账号同名的服务器用户。
 
 
 扫描接口只接受服务端配置的存储根，不接受浏览器传入路径。它使用 `资产类型/资产 slug/文件` 约定匹配既有资产，只同步文件大小、类型、修改时间与健康状态；无法匹配的文件只计为待认领。

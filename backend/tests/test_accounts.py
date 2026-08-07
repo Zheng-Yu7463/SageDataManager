@@ -7,11 +7,16 @@ from app.api.dependencies import require_admin
 from app.core.config import settings
 from app.db.base import Base
 from app.domain.models import User
+from app.domain.schemas import AccountCreateRequest, AccountUpdateRequest
 from app.services.accounts import (
     FIXED_USERNAMES,
+    AccountConflictError,
     AccountLoginError,
+    create_admin_account,
     ensure_fixed_accounts,
+    list_admin_accounts,
     login_account,
+    update_admin_account,
 )
 from app.services.security import read_session_token
 
@@ -74,3 +79,55 @@ def test_preprovisioned_administrator_can_log_in(monkeypatch: pytest.MonkeyPatch
 
     assert account.username == "newadmin"
     assert require_admin(session, token).username == "newadmin"
+
+
+def test_administrator_can_preprovision_and_disable_an_account() -> None:
+    session = make_session()
+    actor = ensure_fixed_accounts(session)[0]
+
+    account = create_admin_account(
+        session,
+        AccountCreateRequest(
+            username="newadmin",
+            name="New Admin",
+            email="newadmin@sage.lab",
+        ),
+    )
+    disabled = update_admin_account(
+        session,
+        "newadmin",
+        AccountUpdateRequest(is_active=False),
+        actor=actor,
+    )
+
+    assert account.role == "admin"
+    assert disabled.is_active is False
+    assert {item.username for item in list_admin_accounts(session)} >= {"newadmin", "yukai"}
+
+
+def test_administrator_cannot_disable_their_own_account() -> None:
+    session = make_session()
+    actor = ensure_fixed_accounts(session)[0]
+
+    with pytest.raises(AccountConflictError, match="不能停用"):
+        update_admin_account(
+            session,
+            actor.username or "",
+            AccountUpdateRequest(is_active=False),
+            actor=actor,
+        )
+
+
+def test_fixed_account_is_not_reactivated_after_administrator_disables_it() -> None:
+    session = make_session()
+    actor, target = ensure_fixed_accounts(session)[:2]
+
+    update_admin_account(
+        session,
+        target.username or "",
+        AccountUpdateRequest(is_active=False),
+        actor=actor,
+    )
+    ensure_fixed_accounts(session)
+
+    assert target.is_active is False

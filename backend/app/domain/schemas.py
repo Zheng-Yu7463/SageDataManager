@@ -199,8 +199,21 @@ class AccountSummary(BaseModel):
     id: UUID
     username: str
     name: str
+    email: str
     role: str
     upload_username: str
+    is_active: bool
+
+
+class AccountCreateRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=80, pattern=r"^[a-z0-9]+$")
+    name: str = Field(min_length=1, max_length=80)
+    email: str = Field(min_length=3, max_length=255)
+
+
+class AccountUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    is_active: bool | None = None
 
 
 class AccountLoginRequest(BaseModel):

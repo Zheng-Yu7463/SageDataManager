@@ -169,12 +169,25 @@ export interface AccountSummary {
   id: string
   username: string
   name: string
+  email: string
   role: string
   upload_username: string
+  is_active: boolean
 }
 
 export interface AccountLoginResponse extends AccountSummary {
   session_token: string
+}
+
+export interface AccountCreateInput {
+  username: string
+  name: string
+  email: string
+}
+
+export interface AccountUpdateInput {
+  name?: string
+  is_active?: boolean
 }
 
 export interface RegistrationStatus {

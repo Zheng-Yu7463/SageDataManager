@@ -1,7 +1,9 @@
 import type {
   ArchiveHealthSummary,
+  AccountCreateInput,
   AccountLoginResponse,
   AccountSummary,
+  AccountUpdateInput,
   AssetDetail,
   AssetCreateInput,
   AssetSummary,
@@ -107,4 +109,16 @@ export function loginAccount(username: string, password: string) {
 
 export function getCurrentAccount() {
   return request<AccountSummary>('/api/auth/me')
+}
+
+export function getAdminAccounts() {
+  return request<AccountSummary[]>('/api/auth/admin-accounts')
+}
+
+export function createAdminAccount(input: AccountCreateInput) {
+  return request<AccountSummary>('/api/auth/admin-accounts', undefined, 'POST', input)
+}
+
+export function updateAdminAccount(username: string, input: AccountUpdateInput) {
+  return request<AccountSummary>(`/api/auth/admin-accounts/${username}`, undefined, 'PATCH', input)
 }

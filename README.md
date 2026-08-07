@@ -107,7 +107,7 @@ SAGE_UPLOAD_DESTINATION_ROOT=/home/zhengyu/SageDataManager/sample-archive
 
 ### 管理员账号
 
-系统首次初始化会预置 `yukai`、`zhengyu`、`zhourongyang`、`fengxuehan`、`chenshangyu` 和 `bisheng` 六个管理员账号。登录页需要手动输入账号；注册功能已预留但关闭。后续可由管理员或数据库预置其他启用的管理员账号，它们同样可以登录。共享初始密码必须保存在本机 `.env` 的 `SAGE_FIXED_ACCOUNT_PASSWORD` 中，不能提交到 Git。
+系统首次初始化会预置 `yukai`、`zhengyu`、`zhourongyang`、`fengxuehan`、`chenshangyu` 和 `bisheng` 六个管理员账号。登录页需要手动输入账号；注册功能已预留但关闭。已有管理员可在“系统设置”预置其他管理员账号，或停用不再使用的账号；账号名应与服务器 SSH 用户名一致。共享初始密码必须保存在本机 `.env` 的 `SAGE_FIXED_ACCOUNT_PASSWORD` 中，不能提交到 Git。
 
 这不是浏览器直传：网页不会读取本机路径或文件内容，也不会代替用户运行命令。
 
