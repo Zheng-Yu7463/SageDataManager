@@ -14,7 +14,7 @@ import {
   Tags,
   X,
 } from '@lucide/vue'
-import { ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import type { AccountSummary } from '@/types'
@@ -25,6 +25,7 @@ const route = useRoute()
 const router = useRouter()
 defineProps<{ account: AccountSummary }>()
 const emit = defineEmits<{ signOut: [] }>()
+const globalSearchInput = ref<HTMLInputElement | null>(null)
 
 const mobileNavigationOpen = ref(false)
 const globalQuery = ref('')
@@ -35,6 +36,20 @@ function submitGlobalSearch() {
   router.push({ name: 'search', query: { q: query } })
   mobileNavigationOpen.value = false
 }
+
+function focusGlobalSearch(event: KeyboardEvent) {
+  if (
+    (event.metaKey || event.ctrlKey) &&
+    event.key.toLowerCase() === 'k' &&
+    !event.altKey
+  ) {
+    event.preventDefault()
+    globalSearchInput.value?.focus()
+  }
+}
+
+onMounted(() => window.addEventListener('keydown', focusGlobalSearch))
+onBeforeUnmount(() => window.removeEventListener('keydown', focusGlobalSearch))
 </script>
 
 <template>
@@ -98,7 +113,7 @@ function submitGlobalSearch() {
         </button>
         <form class="global-search" @submit.prevent="submitGlobalSearch">
           <button type="submit" aria-label="提交全局搜索"><Search :size="19" /></button>
-          <input v-model="globalQuery" aria-label="全局搜索" placeholder="搜索论文、数据集、文献、项目或模型" />
+          <input ref="globalSearchInput" v-model="globalQuery" aria-label="全局搜索" placeholder="搜索论文、数据集、文献、项目或模型" />
           <span class="search-shortcut"><Command :size="13" /> K</span>
         </form>
         <div class="topbar-actions">
