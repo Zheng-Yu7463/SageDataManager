@@ -30,6 +30,12 @@ const router = useRouter()
 const data = ref<AssetListResponse | null>(null)
 const loading = ref(false)
 const error = ref('')
+const filtersOpen = ref(false)
+const filters = ref({
+  status: '',
+  visibility: '',
+  hasFiles: '',
+})
 const query = ref(typeof route.query.q === 'string' ? route.query.q : '')
 const page = ref(1)
 const view = ref<'list' | 'grid'>('list')
@@ -60,6 +66,7 @@ const upload = ref({
   recursive: false,
 })
 
+const activeFilterCount = computed(() => Object.values(filters.value).filter(Boolean).length)
 const meta = computed(() => assetMeta[assetType.value])
 const totalPages = computed(() => Math.max(1, Math.ceil((data.value?.total ?? 0) / 20)))
 const currentUploadFolders = computed(() => uploadAsset.value?.upload_directories ?? [])
@@ -72,7 +79,7 @@ async function load() {
   try {
     data.value = await getAssets(
       assetType.value,
-      { query: query.value.trim(), page: page.value, pageSize: 20 },
+      { query: query.value.trim(), status: filters.value.status, visibility: filters.value.visibility, hasFiles: filters.value.hasFiles === '' ? undefined : filters.value.hasFiles === 'present', page: page.value, pageSize: 20 },
       controller.signal,
     )
   } catch (reason) {
@@ -88,6 +95,16 @@ const updateSearch = useDebounceFn(() => {
   router.replace({ query: query.value.trim() ? { q: query.value.trim() } : {} })
   load()
 }, 280)
+
+function applyFilters() {
+  page.value = 1
+  load()
+}
+
+function clearFilters() {
+  filters.value = { status: '', visibility: '', hasFiles: '' }
+  applyFilters()
+}
 
 function changePage(nextPage: number) {
   if (nextPage < 1 || nextPage > totalPages.value) return
@@ -234,7 +251,46 @@ onBeforeUnmount(() => controller?.abort())
         <input v-model="query" :placeholder="`搜索${meta.label}标题、摘要或关键词`" @input="updateSearch" />
         <span v-if="loading" class="tiny-spinner"></span>
       </label>
-      <button class="filter-button" disabled title="结构化筛选将在下一阶段开放"><SlidersHorizontal :size="17" /> 筛选条件 <span>0</span></button>
+      <div class="asset-filters">
+        <button
+          class="filter-button"
+          :class="{ active: filtersOpen || activeFilterCount }"
+          :aria-expanded="filtersOpen"
+          @click="filtersOpen = !filtersOpen"
+        >
+          <SlidersHorizontal :size="17" /> 筛选条件 <span>{{ activeFilterCount }}</span>
+        </button>
+        <section v-if="filtersOpen" class="filter-popover" aria-label="结构化筛选">
+          <label>
+            状态
+            <select v-model="filters.status" @change="applyFilters">
+              <option value="">全部状态</option>
+              <option value="draft">draft</option>
+              <option value="active">active</option>
+              <option value="available">available</option>
+              <option value="collected">collected</option>
+            </select>
+          </label>
+          <label>
+            可见范围
+            <select v-model="filters.visibility" @change="applyFilters">
+              <option value="">全部范围</option>
+              <option value="lab">全实验室</option>
+              <option value="project">项目成员</option>
+              <option value="restricted">受限</option>
+            </select>
+          </label>
+          <label>
+            数据状态
+            <select v-model="filters.hasFiles" @change="applyFilters">
+              <option value="">全部</option>
+              <option value="present">已有数据</option>
+              <option value="missing">暂无数据</option>
+            </select>
+          </label>
+          <button v-if="activeFilterCount" type="button" class="filter-clear" @click="clearFilters">清除筛选</button>
+        </section>
+      </div>
       <div class="view-switch" aria-label="视图切换">
         <button :class="{ active: view === 'list' }" aria-label="列表视图" @click="view = 'list'"><List :size="18" /></button>
         <button :class="{ active: view === 'grid' }" aria-label="卡片视图" @click="view = 'grid'"><Grid2X2 :size="17" /></button>

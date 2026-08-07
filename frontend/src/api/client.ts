@@ -72,7 +72,7 @@ export function getActivities(page = 1, action?: string) {
 
 export function getAssets(
   assetType: AssetType | undefined,
-  options: { query?: string; page?: number; pageSize?: number },
+  options: { query?: string; status?: string; visibility?: string; hasFiles?: boolean; page?: number; pageSize?: number },
   signal?: AbortSignal,
 ) {
   const params = new URLSearchParams({
@@ -81,6 +81,9 @@ export function getAssets(
   })
   if (assetType) params.set('asset_type', assetType)
   if (options.query) params.set('query', options.query)
+  if (options.status) params.set('status', options.status)
+  if (options.visibility) params.set('visibility', options.visibility)
+  if (options.hasFiles !== undefined) params.set('has_files', String(options.hasFiles))
   return request<AssetListResponse>(`/api/assets?${params}`, signal)
 }
 

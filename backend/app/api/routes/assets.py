@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import AdminDependency
 from app.db.session import get_session
-from app.domain.enums import AssetType
+from app.domain.enums import AssetType, Visibility
 from app.domain.schemas import (
     AssetCreateRequest,
     AssetListResponse,
@@ -49,6 +49,9 @@ SessionDependency = Annotated[Session, Depends(get_session)]
 def assets(
     session: SessionDependency,
     asset_type: AssetType | None = None,
+    asset_status: str | None = Query(default=None, alias="status", max_length=40),
+    visibility: Visibility | None = None,
+    has_files: bool | None = None,
     query: str | None = Query(default=None, max_length=200),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
@@ -58,6 +61,9 @@ def assets(
         asset_type=asset_type,
         query=query,
         page=page,
+        status=asset_status,
+        visibility=visibility,
+        has_files=has_files,
         page_size=page_size,
     )
 

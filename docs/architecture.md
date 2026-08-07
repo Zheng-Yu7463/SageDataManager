@@ -64,7 +64,7 @@ POST /api/archive/unclaimed/{id}/claim
 POST /api/archive/upload-command
 ```
 
-`GET /api/assets` 支持 `asset_type`、`query`、`page` 和 `page_size`。前端五类页面使用同一个接口和组件。
+`GET /api/assets` 支持 `asset_type`、`query`、`status`、`visibility`、`has_files`、`page` 和 `page_size`。前端五类页面使用同一个接口和组件；状态、可见范围和有无已索引文件可组合筛选。
 
 
 资产登记接口校验全局唯一的 slug，并创建或复用标签、初始版本和负责人记录。当前登录管理员会成为默认负责人和活动记录的操作人。
@@ -116,5 +116,4 @@ POST /api/archive/upload-command
 
 1. 增量或计划扫描；
 2. OIDC 或实验室账户认证；
-3. CSV/YAML 一次性导入。
 

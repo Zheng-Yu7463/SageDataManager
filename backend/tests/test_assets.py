@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.base import Base
 from app.domain.enums import AssetType, Visibility
-from app.domain.models import Activity, Asset, AssetVersion, Tag, User
+from app.domain.models import Activity, Asset, AssetVersion, FileRecord, Tag, User
 from app.domain.schemas import (
     AssetCreateRequest,
     AssetRelationCreateRequest,
@@ -22,6 +22,7 @@ from app.services.assets import (
     get_asset,
     import_assets,
     list_archived_assets,
+    list_assets,
     remove_asset_relation,
     restore_asset,
     update_asset,
@@ -110,6 +111,58 @@ def test_asset_metadata_can_be_updated_archived_and_restored() -> None:
     assert (
         session.scalar(select(Activity.action).order_by(Activity.created_at.desc())) == "restored"
     )
+
+
+def test_asset_list_filters_status_visibility_and_file_presence() -> None:
+    session = make_session()
+    first = create_asset(session, payload())
+    second = create_asset(
+        session,
+        payload().model_copy(
+            update={
+                "slug": "published-soil-samples",
+                "title": "已发布样本",
+                "status": "available",
+                "visibility": Visibility.LAB,
+            }
+        ),
+    )
+    session.add(
+        FileRecord(
+            asset_id=second.id,
+            relative_path="dataset/published-soil-samples/raw/samples.csv",
+            file_name="samples.csv",
+            file_kind="csv",
+            file_size=128,
+        )
+    )
+    session.commit()
+
+    matching, total = list_assets(
+        session,
+        asset_type=AssetType.DATASET,
+        query=None,
+        status="available",
+        visibility=Visibility.LAB,
+        has_files=True,
+        page=1,
+        page_size=20,
+    )
+    no_files, no_files_total = list_assets(
+        session,
+        asset_type=AssetType.DATASET,
+        query=None,
+        status=None,
+        visibility=None,
+        has_files=False,
+        page=1,
+        page_size=20,
+    )
+
+    assert total == 1
+    assert [item.id for item in matching] == [second.id]
+    assert no_files_total == 1
+    assert [item.id for item in no_files] == [first.id]
 
 
 def test_asset_relation_can_be_created_and_removed() -> None:

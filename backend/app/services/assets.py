@@ -4,7 +4,7 @@ from uuid import UUID
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.domain.enums import AssetType
+from app.domain.enums import AssetType, Visibility
 from app.domain.models import Activity, Asset, AssetRelation, AssetVersion, Tag, User
 from app.domain.schemas import (
     ActivitySummary,
@@ -260,11 +260,22 @@ def list_assets(
     asset_type: AssetType | None,
     query: str | None,
     page: int,
+    status: str | None,
+    visibility: Visibility | None,
+    has_files: bool | None,
     page_size: int,
 ) -> tuple[list[AssetSummary], int]:
     filters = [Asset.archived_at.is_(None)]
     if asset_type:
         filters.append(Asset.type == asset_type)
+    if status and status.strip():
+        filters.append(Asset.status == status.strip())
+    if visibility:
+        filters.append(Asset.visibility == visibility)
+    if has_files is True:
+        filters.append(Asset.files.any())
+    elif has_files is False:
+        filters.append(~Asset.files.any())
     if query:
         pattern = f"%{query.strip()}%"
         filters.append(
