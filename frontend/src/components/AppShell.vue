@@ -117,7 +117,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', focusGlobalSearch))
           <span class="search-shortcut"><Command :size="13" /> K</span>
         </form>
         <div class="topbar-actions">
-          <button class="icon-button" aria-label="通知">
+          <button class="icon-button" aria-label="查看操作日志" title="查看操作日志" @click="router.push({ name: 'activity-log' })">
             <Bell :size="20" />
             <span class="notification-dot"></span>
           </button>
