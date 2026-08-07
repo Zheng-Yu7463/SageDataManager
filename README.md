@@ -111,6 +111,10 @@ SAGE_UPLOAD_DESTINATION_ROOT=/home/zhengyu/SageDataManager/sample-archive
 
 系统首次初始化会预置 `yukai`、`zhengyu`、`zhourongyang`、`fengxuehan`、`chenshangyu` 和 `bisheng` 六个管理员账号。登录页需要手动输入账号；注册功能已预留但关闭。已有管理员可在“系统设置”预置其他管理员账号，或停用不再使用的账号；账号名应与服务器 SSH 用户名一致。共享初始密码必须保存在本机 `.env` 的 `SAGE_FIXED_ACCOUNT_PASSWORD` 中，不能提交到 Git。
 
+### 批量导入元数据
+
+侧栏“批量导入”支持 JSON，也支持从 Excel 导出的 CSV。CSV 至少包含 `type`、`slug`、`title` 三列；`tags` 用 `|` 分隔，`details` 以 JSON 对象填写。文件会先在浏览器转换为可审阅 JSON，再由服务端全批校验；出现重复 slug 或字段错误时整批不会创建记录。
+
 这不是浏览器直传：网页不会读取本机路径或文件内容，也不会代替用户运行命令。
 
 ### 资产维护与归档
