@@ -40,6 +40,7 @@ GET /api/dashboard
 POST /api/assets
 GET /api/assets
 POST /api/assets/import
+POST /api/assets/import/yaml
 GET /api/assets/{id}
 PATCH /api/assets/{id}
 GET /api/assets/archived
@@ -67,6 +68,8 @@ POST /api/archive/upload-command
 
 
 资产登记接口校验全局唯一的 slug，并创建或复用标签、初始版本和负责人记录。当前登录管理员会成为默认负责人和活动记录的操作人。
+
+批量导入的 JSON 接口直接接收资产数组；CSV 由浏览器解析并转换为同一结构。YAML 只通过 `yaml.safe_load` 解析资产数组或 `assets` 数组后，再复用同一套 Pydantic 校验与原子导入服务，不会执行 YAML 中的自定义对象或读取文件路径。
 
 资产编辑只允许管理员更新标题、摘要、状态、可见范围、标签和扩展详情；每次更新都会写入活动记录。归档采用软删除：资产从普通列表、搜索和详情接口隐藏，但既有文件索引、关系、元数据和原始文件均不改变。管理员可以查看归档清单并恢复资产，归档和恢复也会写入活动记录。
 

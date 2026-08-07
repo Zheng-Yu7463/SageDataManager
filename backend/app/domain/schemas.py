@@ -195,6 +195,10 @@ class BatchAssetImportResponse(BaseModel):
     created: list[AssetSummary]
 
 
+class AssetYamlImportRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=1_000_000)
+
+
 class AssetRelationCreateRequest(BaseModel):
     target_asset_id: UUID
     relation_type: str = Field(min_length=1, max_length=60)

@@ -113,7 +113,7 @@ SAGE_UPLOAD_DESTINATION_ROOT=/home/zhengyu/SageDataManager/sample-archive
 
 ### 批量导入元数据
 
-侧栏“批量导入”支持 JSON，也支持从 Excel 导出的 CSV。CSV 至少包含 `type`、`slug`、`title` 三列；`tags` 用 `|` 分隔，`details` 以 JSON 对象填写。文件会先在浏览器转换为可审阅 JSON，再由服务端全批校验；出现重复 slug 或字段错误时整批不会创建记录。
+侧栏“批量导入”支持 JSON、从 Excel 导出的 CSV 和 YAML。CSV 至少包含 `type`、`slug`、`title` 三列；`tags` 用 `|` 分隔，`details` 以 JSON 对象填写。YAML 可以是资产数组，或包含 `assets:` 数组的对象。CSV 会先在浏览器转换为可审阅 JSON；JSON 与 YAML 均由服务端全批校验，出现重复 slug 或字段错误时整批不会创建记录。
 
 这不是浏览器直传：网页不会读取本机路径或文件内容，也不会代替用户运行命令。
 

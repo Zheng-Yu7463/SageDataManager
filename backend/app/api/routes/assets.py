@@ -1,7 +1,9 @@
 from typing import Annotated
 from uuid import UUID
 
+import yaml
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import AdminDependency
@@ -15,6 +17,7 @@ from app.domain.schemas import (
     AssetUpdateRequest,
     AssetVersionCreateRequest,
     AssetVersionSummary,
+    AssetYamlImportRequest,
     BatchAssetImportRequest,
     BatchAssetImportResponse,
     RelatedAssetSummary,
@@ -87,6 +90,39 @@ def import_metadata(
         created = import_assets(session, payload, actor=current_user)
         session.commit()
         return BatchAssetImportResponse(created=created)
+    except BatchAssetImportError as error:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=error.message) from None
+    except Exception:
+        session.rollback()
+        raise
+
+
+@router.post("/import/yaml", status_code=status.HTTP_201_CREATED)
+def import_yaml_metadata(
+    payload: AssetYamlImportRequest,
+    session: SessionDependency,
+    current_user: AdminDependency,
+) -> BatchAssetImportResponse:
+    try:
+        parsed = yaml.safe_load(payload.content)
+        assets = (
+            parsed
+            if isinstance(parsed, list)
+            else parsed.get("assets")
+            if isinstance(parsed, dict)
+            else None
+        )
+        request = BatchAssetImportRequest.model_validate({"assets": assets})
+        created = import_assets(session, request, actor=current_user)
+        session.commit()
+        return BatchAssetImportResponse(created=created)
+    except yaml.YAMLError:
+        session.rollback()
+        raise HTTPException(status_code=422, detail="YAML 格式无效。") from None
+    except ValidationError as error:
+        session.rollback()
+        raise HTTPException(status_code=422, detail=error.errors()) from None
     except BatchAssetImportError as error:
         session.rollback()
         raise HTTPException(status_code=409, detail=error.message) from None

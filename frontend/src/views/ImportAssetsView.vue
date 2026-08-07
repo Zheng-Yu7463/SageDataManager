@@ -2,7 +2,7 @@
 import { CheckCircle2, CircleAlert, FileJson, FileSpreadsheet, Upload } from '@lucide/vue'
 import { ref } from 'vue'
 
-import { importAssets } from '@/api/client'
+import { importAssets, importAssetsYaml } from '@/api/client'
 import type { AssetCreateInput } from '@/types'
 
 const source = ref(`[
@@ -19,6 +19,7 @@ const source = ref(`[
   }
 ]`)
 const importing = ref(false)
+const sourceFormat = ref<'json' | 'yaml'>('json')
 const error = ref('')
 const created = ref<string[]>([])
 
@@ -64,8 +65,14 @@ function parseCsv(text: string): AssetCreateInput[] {
 async function readCsv(event: Event) {
   const file = (event.target as HTMLInputElement).files?.[0]
   if (!file) return
-  try { source.value = JSON.stringify(parseCsv(await file.text()), null, 2); error.value = '' }
-  catch (reason) { error.value = reason instanceof Error ? reason.message : '无法读取 CSV 文件' }
+  try {
+    const content = await file.text()
+    sourceFormat.value = /\.ya?ml$/i.test(file.name) ? 'yaml' : 'json'
+    source.value = file.name.toLowerCase().endsWith('.csv') ? JSON.stringify(parseCsv(content), null, 2) : content
+    error.value = ''
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : '无法读取导入文件'
+  }
   ;(event.target as HTMLInputElement).value = ''
 }
 
@@ -73,6 +80,13 @@ async function submit() {
   error.value = ''
   created.value = []
   let assets: AssetCreateInput[]
+  if (sourceFormat.value === 'yaml') {
+    importing.value = true
+    try { const result = await importAssetsYaml(source.value); created.value = result.created.map((asset) => asset.title) }
+    catch (reason) { error.value = reason instanceof Error ? reason.message : 'YAML 导入失败' }
+    finally { importing.value = false }
+    return
+  }
   try { assets = parseAssets() } catch (reason) { error.value = reason instanceof Error ? reason.message : 'JSON 格式无效'; return }
   if (!assets.length) { error.value = '至少需要一条资产记录。'; return }
   importing.value = true
@@ -88,11 +102,11 @@ async function submit() {
 <template>
   <div class="page import-page">
     <header class="page-heading"><div><p class="eyebrow">SAGE METADATA INTAKE</p><h1>批量导入资产</h1><p>导入仅登记元数据。文件请在资产创建后通过对应行的 SCP 指令上传并运行扫描。</p></div></header>
-    <section class="import-grid"><article class="panel import-panel"><header class="panel-heading"><div><span class="section-number">01</span><div><h2>导入 JSON 或 CSV</h2><p>最多 100 条</p></div></div><FileJson :size="20" /></header><label class="csv-picker"><FileSpreadsheet :size="16" />从 CSV 文件载入<input type="file" accept=".csv,text/csv" :disabled="importing" @change="readCsv" /></label><textarea v-model="source" spellcheck="false" :disabled="importing"></textarea><p class="import-note">JSON 支持数组或 <code>{ "assets": [...] }</code>。CSV 必填列为 <code>type,slug,title</code>；可选 tags 用 <code>|</code> 分隔，details 为 JSON 对象。</p><p v-if="error" class="import-error"><CircleAlert :size="16" />{{ error }}</p><button class="button button--primary" :disabled="importing" @click="submit"><Upload :size="16" />{{ importing ? '正在导入' : '验证并导入' }}</button></article><aside class="panel import-side"><header class="panel-heading"><div><span class="section-number">02</span><div><h2>安全规则</h2><p>Atomic import</p></div></div></header><ul><li>先校验整批 JSON、字段与 slug。</li><li>发现重复 slug 时不会创建任何记录。</li><li>不会读取、移动或上传本机文件。</li><li>成功后进入分类页生成 SCP 指令。</li></ul><div v-if="created.length" class="import-success"><CheckCircle2 :size="21" /><strong>已创建 {{ created.length }} 条资产</strong><p>{{ created.join('、') }}</p></div></aside></section>
+    <section class="import-grid"><article class="panel import-panel"><header class="panel-heading"><div><span class="section-number">01</span><div><h2>导入 JSON、CSV 或 YAML</h2><p>最多 100 条</p></div></div><FileJson :size="20" /></header><label class="csv-picker"><FileSpreadsheet :size="16" />从导入文件载入<input type="file" accept=".csv,.yaml,.yml,text/csv,text/yaml" :disabled="importing" @change="readCsv" /></label><textarea v-model="source" spellcheck="false" :disabled="importing"></textarea><p class="import-note">JSON 支持数组或 <code>{ "assets": [...] }</code>。CSV 必填列为 <code>type,slug,title</code>；可选 tags 用 <code>|</code> 分隔，details 为 JSON 对象。YAML 支持同样的数组或 <code>assets:</code> 结构。</p><p v-if="error" class="import-error"><CircleAlert :size="16" />{{ error }}</p><button class="button button--primary" :disabled="importing" @click="submit"><Upload :size="16" />{{ importing ? '正在导入' : '验证并导入' }}</button></article><aside class="panel import-side"><header class="panel-heading"><div><span class="section-number">02</span><div><h2>安全规则</h2><p>Atomic import</p></div></div></header><ul><li>先校验整批内容、字段与 slug。</li><li>发现重复 slug 时不会创建任何记录。</li><li>不会读取、移动或上传本机文件。</li><li>成功后进入分类页生成 SCP 指令。</li></ul><div v-if="created.length" class="import-success"><CheckCircle2 :size="21" /><strong>已创建 {{ created.length }} 条资产</strong><p>{{ created.join('、') }}</p></div></aside></section>
   </div>
 </template>
-.csv-picker { display:flex; width:fit-content; align-items:center; gap:6px; color:#5c7163; font-size:11px; cursor:pointer; }.csv-picker input { display:none; }
 
 <style scoped>
+.csv-picker { display:flex; width:fit-content; align-items:center; gap:6px; color:#5c7163; font-size:11px; cursor:pointer; }.csv-picker input { display:none; }
 .import-grid { display:grid; grid-template-columns:minmax(0,1.6fr) minmax(250px,.8fr); gap:14px; }.import-panel { display:grid; gap:14px; }.import-panel textarea { min-height:430px; padding:14px; color:#dce9df; background:#17221b; border:1px solid #27362b; border-radius:7px; font:12px/1.55 ui-monospace,monospace; resize:vertical; }.import-note,.import-side li,.import-success p { color:#748178; font-size:12px; line-height:1.65; }.import-note { margin:0; }.import-error { display:flex; margin:0; align-items:center; gap:6px; color:#a6633b; font-size:12px; }.import-side ul { margin:17px 0; padding-left:18px; }.import-side li { margin:8px 0; }.import-success { margin-top:22px; padding:14px; color:#4f7658; background:#edf5ec; border:1px solid #d2e4d0; border-radius:7px; }.import-success strong { display:block; margin-top:5px; }.import-success p { margin:5px 0 0; } @media(max-width:800px){.import-grid{grid-template-columns:1fr}.import-panel textarea{min-height:320px}}
 </style>

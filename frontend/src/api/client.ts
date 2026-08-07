@@ -92,6 +92,10 @@ export function createAsset(input: AssetCreateInput) {
   return request<AssetSummary>('/api/assets', undefined, 'POST', input)
 }
 
+export function importAssetsYaml(content: string) {
+  return request<BatchAssetImportResult>('/api/assets/import/yaml', undefined, 'POST', { content })
+}
+
 export function updateAsset(assetId: string, input: AssetUpdateInput) {
   return request<AssetSummary>(`/api/assets/${assetId}`, undefined, 'PATCH', input)
 }
