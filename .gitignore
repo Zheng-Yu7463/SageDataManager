@@ -12,5 +12,6 @@ dist/
 .vite/
 .pnpm-store/
 frontend/.env.local
+frontend/.playwright-browsers/
 backend/.env
 *.egg-info/
