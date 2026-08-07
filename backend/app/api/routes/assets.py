@@ -4,6 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from app.api.dependencies import AdminDependency
 from app.db.session import get_session
 from app.domain.enums import AssetType
 from app.domain.schemas import AssetCreateRequest, AssetListResponse, AssetSummary
@@ -33,9 +34,11 @@ def assets(
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
-def create(payload: AssetCreateRequest, session: SessionDependency) -> AssetSummary:
+def create(
+    payload: AssetCreateRequest, session: SessionDependency, current_user: AdminDependency
+) -> AssetSummary:
     try:
-        result = create_asset(session, payload)
+        result = create_asset(session, payload, actor=current_user)
         session.commit()
         return result
     except AssetSlugConflictError:

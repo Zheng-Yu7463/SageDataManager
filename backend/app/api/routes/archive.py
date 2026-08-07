@@ -4,6 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.api.dependencies import AdminDependency
 from app.core.config import settings
 from app.db.session import get_session
 from app.domain.schemas import (
@@ -45,10 +46,11 @@ def claim_file(
     unclaimed_file_id: UUID,
     payload: ClaimUnclaimedFileRequest,
     session: SessionDependency,
+    current_user: AdminDependency,
 ) -> FileClaimResult:
     try:
         result = claim_unclaimed_file(
-            session, settings.storage_root, unclaimed_file_id, payload.asset_id
+            session, settings.storage_root, unclaimed_file_id, payload.asset_id, actor=current_user
         )
         session.commit()
         return result
@@ -71,14 +73,14 @@ def claim_file(
 
 @router.post("/upload-command")
 def upload_command(
-    payload: UploadCommandRequest, session: SessionDependency
+    payload: UploadCommandRequest, session: SessionDependency, current_user: AdminDependency
 ) -> UploadCommandResponse:
     try:
         return generate_upload_command(
             session,
             payload,
             ssh_host=settings.upload_ssh_host,
-            ssh_user=settings.upload_ssh_user,
+            ssh_user=current_user.username or "",
             ssh_port=settings.upload_ssh_port,
             destination_root=settings.upload_destination_root,
         )
@@ -87,7 +89,7 @@ def upload_command(
 
 
 @router.post("/scans", status_code=status.HTTP_201_CREATED)
-def create_scan(session: SessionDependency) -> ScanRunSummary:
+def create_scan(session: SessionDependency, current_user: AdminDependency) -> ScanRunSummary:
     try:
         result = scan_storage(session, settings.storage_root)
         session.commit()

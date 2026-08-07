@@ -19,8 +19,9 @@ SAGE 实验室内部科研资产归档与浏览系统。系统将论文、数据
 - 五类资产登记：标题、slug、摘要、状态、可见范围、初始版本和标签；
 - 局域网 SCP 上传准备器：为已有资产生成可复制的建目录与传输命令；
 - 显式样例数据脚本。
+- 六个固定管理员账号的密码登录与有时效的会话令牌；
 
-下一阶段是增量扫描、真实权限认证和受控文件访问。资产登记与管理员文件认领已开放；预览和下载按钮仍只呈现后续入口。
+下一阶段是增量扫描、OIDC 等实验室统一认证和受控文件访问。资产登记与管理员文件认领已开放；预览和下载按钮仍只呈现后续入口。
 
 ## 目录
 
@@ -86,12 +87,16 @@ export SAGE_STORAGE_ROOT="$(pwd)/sample-archive"
 
 ```bash
 SAGE_UPLOAD_SSH_HOST=192.168.1.213
-SAGE_UPLOAD_SSH_USER=zhengyu
+SAGE_FIXED_ACCOUNT_PASSWORD=在本机 .env 中设置，勿提交到 Git
 SAGE_UPLOAD_SSH_PORT=22
 SAGE_UPLOAD_DESTINATION_ROOT=/home/zhengyu/SageDataManager/sample-archive
 ```
 
-打开管理端的“上传准备”，选择已登记资产，填入保存文件的那台电脑上的绝对路径，然后复制生成的命令到该电脑终端执行。命令会先创建资产目录再执行 `scp`；完成后回到“归档健康”运行扫描。
+登录后打开管理端的“上传准备”，选择已登记资产，填入保存文件的那台电脑上的绝对路径，然后复制生成的命令到该电脑终端执行。命令会先创建资产目录再执行 `scp`；完成后回到“归档健康”运行扫描。SCP 用户名会自动使用当前登录账号名。
+
+### 固定管理员账号
+
+当前只开放 `yukai`、`zhengyu`、`zhourongyang`、`fengxuehan`、`chenshangyu` 和 `bisheng` 六个管理员账号。注册功能已预留但关闭；共享初始密码必须保存在本机 `.env` 的 `SAGE_FIXED_ACCOUNT_PASSWORD` 中，不能提交到 Git。
 
 这不是浏览器直传：网页不会读取本机路径或文件内容，也不会代替用户运行命令。
 

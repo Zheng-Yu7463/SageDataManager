@@ -39,11 +39,13 @@ def asset_summary(asset: Asset) -> AssetSummary:
     )
 
 
-def create_asset(session: Session, payload: AssetCreateRequest) -> AssetSummary:
+def create_asset(
+    session: Session, payload: AssetCreateRequest, *, actor: User | None = None
+) -> AssetSummary:
     if session.scalar(select(Asset.id).where(Asset.slug == payload.slug)):
         raise AssetSlugConflictError
 
-    owner = None
+    owner = actor
     if payload.owner_email:
         owner_email = payload.owner_email.strip().lower()
         owner = session.scalar(select(User).where(User.email == owner_email))
@@ -81,7 +83,7 @@ def create_asset(session: Session, payload: AssetCreateRequest) -> AssetSummary:
     session.add(
         Activity(
             asset=asset,
-            actor=owner,
+            actor=actor or owner,
             action="created",
             description=f"登记了{asset.title}",
         )

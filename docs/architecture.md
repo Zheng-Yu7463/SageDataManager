@@ -41,6 +41,10 @@ POST /api/assets
 GET /api/assets
 GET /api/assets/{id}
 GET /api/archive/health
+GET /api/auth/accounts
+POST /api/auth/login
+GET /api/auth/me
+GET /api/auth/registration-status
 POST /api/archive/scans
 GET /api/archive/unclaimed
 POST /api/archive/unclaimed/{id}/claim
@@ -50,7 +54,9 @@ POST /api/archive/upload-command
 `GET /api/assets` 支持 `asset_type`、`query`、`page` 和 `page_size`。前端五类页面使用同一个接口和组件。
 
 
-资产登记接口校验全局唯一的 slug，并创建或复用标签、初始版本和负责人记录。认证接入前，未显式指定负责人时会使用已有活跃用户；没有用户时才创建“归档管理员”。
+资产登记接口校验全局唯一的 slug，并创建或复用标签、初始版本和负责人记录。当前登录管理员会成为默认负责人和活动记录的操作人。
+
+当前账号系统只开放六个固定管理员账号；后端以本机环境变量中的共享密码校验登录，并签发带有效期的签名会话令牌。注册状态接口已预留，默认关闭。SCP 命令使用当前登录账号同名的服务器用户。
 
 
 扫描接口只接受服务端配置的存储根，不接受浏览器传入路径。它使用 `资产类型/资产 slug/文件` 约定匹配既有资产，只同步文件大小、类型、修改时间与健康状态；无法匹配的文件只计为待认领。

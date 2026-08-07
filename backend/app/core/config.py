@@ -12,8 +12,11 @@ class Settings(BaseSettings):
     allowed_origins: list[str] = ["http://localhost:5173"]
     storage_root: Path = Path("/data/sage-archive")
     upload_ssh_host: str = "192.168.1.213"
-    upload_ssh_user: str = "zhengyu"
     upload_ssh_port: int = 22
+    registration_enabled: bool = False
+    fixed_account_password: str = ""
+    auth_session_secret: str = ""
+    auth_session_ttl_seconds: int = 43200
     upload_destination_root: str = "/home/zhengyu/SageDataManager/sample-archive"
 
     model_config = SettingsConfigDict(

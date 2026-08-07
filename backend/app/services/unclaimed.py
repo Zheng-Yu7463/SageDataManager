@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.domain.enums import HealthStatus
-from app.domain.models import Asset, FileRecord, UnclaimedFile
+from app.domain.models import Activity, Asset, FileRecord, UnclaimedFile, User
 from app.domain.schemas import FileClaimResult, FileSummary, UnclaimedFileSummary
 
 
@@ -78,7 +78,12 @@ def sync_unclaimed_files(session: Session, storage_root: Path) -> None:
 
 
 def claim_unclaimed_file(
-    session: Session, storage_root: Path, unclaimed_file_id: UUID, asset_id: UUID
+    session: Session,
+    storage_root: Path,
+    unclaimed_file_id: UUID,
+    asset_id: UUID,
+    *,
+    actor: User | None = None,
 ) -> FileClaimResult:
     record = session.get(UnclaimedFile, unclaimed_file_id)
     if not record:
@@ -121,11 +126,22 @@ def claim_unclaimed_file(
     file_record.modified_at = datetime.fromtimestamp(stat.st_mtime, UTC)
     record.claimed_asset_id = asset.id
     record.claimed_at = datetime.now(UTC)
+    if actor:
+        session.add(
+            Activity(
+                asset=asset,
+                actor=actor,
+                action="claimed_file",
+                description=f"认领了文件 {record.file_name}",
+            )
+        )
+
     session.flush()
     return FileClaimResult(asset_id=asset.id, file=FileSummary.model_validate(file_record))
 
 
 def list_unclaimed_files(session: Session) -> list[UnclaimedFileSummary]:
+
     records = session.scalars(
         select(UnclaimedFile)
         .where(UnclaimedFile.claimed_asset_id.is_(None))

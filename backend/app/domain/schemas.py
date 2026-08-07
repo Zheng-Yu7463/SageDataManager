@@ -174,3 +174,27 @@ class UploadCommandResponse(BaseModel):
     asset_title: str
     archive_relative_path: str
     command: str
+
+
+class AccountSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    username: str
+    name: str
+    role: str
+    upload_username: str
+
+
+class AccountLoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=80, pattern=r"^[a-z0-9]+$")
+
+    password: str = Field(min_length=1, max_length=256)
+
+
+class RegistrationStatus(BaseModel):
+    enabled: bool
+
+
+class AccountLoginResponse(AccountSummary):
+    session_token: str

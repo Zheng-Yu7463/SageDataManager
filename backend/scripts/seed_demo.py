@@ -5,6 +5,7 @@ from sqlalchemy import delete
 from app.db.session import SessionLocal
 from app.domain.enums import AssetType, HealthStatus, Visibility
 from app.domain.models import Activity, Asset, AssetRelation, AssetVersion, FileRecord, Tag, User
+from app.services.accounts import ensure_fixed_accounts
 
 ASSETS = [
     {
@@ -75,9 +76,8 @@ def main() -> None:
         session.execute(delete(Tag))
         session.execute(delete(User))
 
-        owner = User(name="李明", email="liming@sage.lab")
-        session.add(owner)
-        session.flush()
+        fixed_accounts = {user.username: user for user in ensure_fixed_accounts(session)}
+        owner = fixed_accounts["zhengyu"]
         tag_index: dict[str, Tag] = {}
         now = datetime.now(UTC)
 
@@ -138,7 +138,6 @@ def main() -> None:
                 ),
             ]
         )
-
 
     print("Seeded SAGE demo catalogue.")
 
