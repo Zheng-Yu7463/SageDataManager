@@ -10,14 +10,17 @@ from app.domain.schemas import (
     AssetRelationCreateRequest,
     AssetUpdateRequest,
     AssetVersionCreateRequest,
+    BatchAssetImportRequest,
 )
 from app.services.assets import (
     AssetSlugConflictError,
+    BatchAssetImportError,
     add_asset_relation,
     add_asset_version,
     archive_asset,
     create_asset,
     get_asset,
+    import_assets,
     list_archived_assets,
     remove_asset_relation,
     restore_asset,
@@ -162,3 +165,23 @@ def test_asset_version_can_be_added_and_marked_current() -> None:
         session.scalar(select(Activity.action).order_by(Activity.created_at.desc()))
         == "added_version"
     )
+
+
+def test_batch_import_is_prevalidated_before_creating_assets() -> None:
+    session = make_session()
+    actor = User(name="管理员", email="admin@sage.lab")
+    session.add(actor)
+    session.flush()
+    first = payload().model_copy(update={"slug": "batch-one"})
+    second = payload().model_copy(update={"slug": "batch-two"})
+
+    created = import_assets(
+        session, BatchAssetImportRequest(assets=[first, second]), actor=actor
+    )
+
+    assert [item.slug for item in created] == ["batch-one", "batch-two"]
+    with pytest.raises(BatchAssetImportError):
+        import_assets(
+            session, BatchAssetImportRequest(assets=[first, first]), actor=actor
+        )
+    assert session.scalar(select(Asset).where(Asset.slug == "batch-one")) is not None

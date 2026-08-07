@@ -6,6 +6,7 @@ import type {
   AccountUpdateInput,
   AssetDetail,
   AssetCreateInput,
+  BatchAssetImportResult,
   AssetUpdateInput,
   AssetRelationInput,
   AssetSummary,
@@ -87,6 +88,10 @@ export function createAsset(input: AssetCreateInput) {
 export function updateAsset(assetId: string, input: AssetUpdateInput) {
   return request<AssetSummary>(`/api/assets/${assetId}`, undefined, 'PATCH', input)
 }
+export function importAssets(assets: AssetCreateInput[]) {
+  return request<BatchAssetImportResult>('/api/assets/import', undefined, 'POST', { assets })
+}
+
 
 export function archiveAsset(assetId: string) {
   return request<AssetSummary>(`/api/assets/${assetId}/archive`, undefined, 'POST')

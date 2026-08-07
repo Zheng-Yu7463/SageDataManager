@@ -180,6 +180,14 @@ class AssetUpdateRequest(BaseModel):
     details: dict[str, Any] | None = None
 
 
+class BatchAssetImportRequest(BaseModel):
+    assets: list[AssetCreateRequest] = Field(min_length=1, max_length=100)
+
+
+class BatchAssetImportResponse(BaseModel):
+    created: list[AssetSummary]
+
+
 class AssetRelationCreateRequest(BaseModel):
     target_asset_id: UUID
     relation_type: str = Field(min_length=1, max_length=60)

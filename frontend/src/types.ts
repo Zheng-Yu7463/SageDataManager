@@ -50,6 +50,10 @@ export interface AssetCreateInput {
   details: Record<string, unknown>
 }
 
+export interface BatchAssetImportResult {
+  created: AssetSummary[]
+}
+
 export interface AssetUpdateInput {
   title?: string
   summary?: string

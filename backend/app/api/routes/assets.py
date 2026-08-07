@@ -15,6 +15,8 @@ from app.domain.schemas import (
     AssetUpdateRequest,
     AssetVersionCreateRequest,
     AssetVersionSummary,
+    BatchAssetImportRequest,
+    BatchAssetImportResponse,
     RelatedAssetSummary,
 )
 from app.services.assets import (
@@ -22,11 +24,13 @@ from app.services.assets import (
     AssetRelationError,
     AssetSlugConflictError,
     AssetVersionError,
+    BatchAssetImportError,
     add_asset_relation,
     add_asset_version,
     archive_asset,
     create_asset,
     get_asset,
+    import_assets,
     list_archived_assets,
     list_assets,
     remove_asset_relation,
@@ -68,6 +72,24 @@ def create(
     except AssetSlugConflictError:
         session.rollback()
         raise HTTPException(status_code=409, detail="资产标识已存在，请使用另一个 slug。") from None
+    except Exception:
+        session.rollback()
+        raise
+
+
+@router.post("/import", status_code=status.HTTP_201_CREATED)
+def import_metadata(
+    payload: BatchAssetImportRequest,
+    session: SessionDependency,
+    current_user: AdminDependency,
+) -> BatchAssetImportResponse:
+    try:
+        created = import_assets(session, payload, actor=current_user)
+        session.commit()
+        return BatchAssetImportResponse(created=created)
+    except BatchAssetImportError as error:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=error.message) from None
     except Exception:
         session.rollback()
         raise

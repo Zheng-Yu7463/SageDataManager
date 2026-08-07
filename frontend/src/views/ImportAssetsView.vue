@@ -1,0 +1,61 @@
+<script setup lang="ts">
+import { CheckCircle2, CircleAlert, FileJson, Upload } from '@lucide/vue'
+import { ref } from 'vue'
+
+import { importAssets } from '@/api/client'
+import type { AssetCreateInput } from '@/types'
+
+const source = ref(`[
+  {
+    "type": "dataset",
+    "slug": "example-dataset-2026",
+    "title": "示例数据集",
+    "summary": "请替换为真实摘要。",
+    "status": "draft",
+    "visibility": "lab",
+    "version": "v0.1",
+    "tags": ["示例"],
+    "details": {}
+  }
+]`)
+const importing = ref(false)
+const error = ref('')
+const created = ref<string[]>([])
+
+function parseAssets(): AssetCreateInput[] {
+  const parsed: unknown = JSON.parse(source.value)
+  const assets = Array.isArray(parsed)
+    ? parsed
+    : typeof parsed === 'object' && parsed !== null && 'assets' in parsed
+      ? (parsed as { assets: unknown }).assets
+      : null
+  if (!Array.isArray(assets)) throw new Error('请输入资产数组，或包含 assets 数组的 JSON 对象。')
+  return assets as AssetCreateInput[]
+}
+
+async function submit() {
+  error.value = ''
+  created.value = []
+  let assets: AssetCreateInput[]
+  try { assets = parseAssets() } catch (reason) { error.value = reason instanceof Error ? reason.message : 'JSON 格式无效'; return }
+  if (!assets.length) { error.value = '至少需要一条资产记录。'; return }
+  importing.value = true
+  try {
+    const result = await importAssets(assets)
+    created.value = result.created.map((asset) => asset.title)
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : '导入失败'
+  } finally { importing.value = false }
+}
+</script>
+
+<template>
+  <div class="page import-page">
+    <header class="page-heading"><div><p class="eyebrow">SAGE METADATA INTAKE</p><h1>批量导入资产</h1><p>导入仅登记元数据。文件请在资产创建后通过对应行的 SCP 指令上传并运行扫描。</p></div></header>
+    <section class="import-grid"><article class="panel import-panel"><header class="panel-heading"><div><span class="section-number">01</span><div><h2>导入 JSON</h2><p>最多 100 条</p></div></div><FileJson :size="20" /></header><textarea v-model="source" spellcheck="false" :disabled="importing"></textarea><p class="import-note">支持数组，或 <code>{ "assets": [...] }</code>。每项需包含 type、slug、title；其余字段遵循创建资产表单。</p><p v-if="error" class="import-error"><CircleAlert :size="16" />{{ error }}</p><button class="button button--primary" :disabled="importing" @click="submit"><Upload :size="16" />{{ importing ? '正在导入' : '验证并导入' }}</button></article><aside class="panel import-side"><header class="panel-heading"><div><span class="section-number">02</span><div><h2>安全规则</h2><p>Atomic import</p></div></div></header><ul><li>先校验整批 JSON、字段与 slug。</li><li>发现重复 slug 时不会创建任何记录。</li><li>不会读取、移动或上传本机文件。</li><li>成功后进入分类页生成 SCP 指令。</li></ul><div v-if="created.length" class="import-success"><CheckCircle2 :size="21" /><strong>已创建 {{ created.length }} 条资产</strong><p>{{ created.join('、') }}</p></div></aside></section>
+  </div>
+</template>
+
+<style scoped>
+.import-grid { display:grid; grid-template-columns:minmax(0,1.6fr) minmax(250px,.8fr); gap:14px; }.import-panel { display:grid; gap:14px; }.import-panel textarea { min-height:430px; padding:14px; color:#dce9df; background:#17221b; border:1px solid #27362b; border-radius:7px; font:12px/1.55 ui-monospace,monospace; resize:vertical; }.import-note,.import-side li,.import-success p { color:#748178; font-size:12px; line-height:1.65; }.import-note { margin:0; }.import-error { display:flex; margin:0; align-items:center; gap:6px; color:#a6633b; font-size:12px; }.import-side ul { margin:17px 0; padding-left:18px; }.import-side li { margin:8px 0; }.import-success { margin-top:22px; padding:14px; color:#4f7658; background:#edf5ec; border:1px solid #d2e4d0; border-radius:7px; }.import-success strong { display:block; margin-top:5px; }.import-success p { margin:5px 0 0; } @media(max-width:800px){.import-grid{grid-template-columns:1fr}.import-panel textarea{min-height:320px}}
+</style>

@@ -15,6 +15,7 @@ from app.domain.schemas import (
     AssetUpdateRequest,
     AssetVersionCreateRequest,
     AssetVersionSummary,
+    BatchAssetImportRequest,
     FileSummary,
     RelatedAssetSummary,
     UploadDirectoryOption,
@@ -37,6 +38,12 @@ class AssetRelationError(Exception):
 
 
 class AssetVersionError(Exception):
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(message)
+
+
+class BatchAssetImportError(Exception):
     def __init__(self, message: str):
         self.message = message
         super().__init__(message)
@@ -122,6 +129,18 @@ def create_asset(
     )
     session.flush()
     return asset_summary(asset)
+
+
+def import_assets(
+    session: Session, payload: BatchAssetImportRequest, *, actor: User
+) -> list[AssetSummary]:
+    slugs = [asset.slug for asset in payload.assets]
+    if len(set(slugs)) != len(slugs):
+        raise BatchAssetImportError("导入内容中含有重复的 slug。")
+    existing = set(session.scalars(select(Asset.slug).where(Asset.slug.in_(slugs))).all())
+    if existing:
+        raise BatchAssetImportError(f"以下 slug 已存在：{', '.join(sorted(existing))}")
+    return [create_asset(session, item, actor=actor) for item in payload.assets]
 
 
 def update_asset(

@@ -39,6 +39,7 @@ GET /api/health
 GET /api/dashboard
 POST /api/assets
 GET /api/assets
+POST /api/assets/import
 GET /api/assets/{id}
 PATCH /api/assets/{id}
 GET /api/assets/archived
