@@ -13,5 +13,7 @@ dist/
 .pnpm-store/
 frontend/.env.local
 frontend/.playwright-browsers/
+frontend/test-results/
+frontend/playwright-report/
 backend/.env
 *.egg-info/
