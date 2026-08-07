@@ -267,7 +267,13 @@ def list_assets(
         filters.append(Asset.type == asset_type)
     if query:
         pattern = f"%{query.strip()}%"
-        filters.append(or_(Asset.title.ilike(pattern), Asset.summary.ilike(pattern)))
+        filters.append(
+            or_(
+                Asset.title.ilike(pattern),
+                Asset.summary.ilike(pattern),
+                Asset.tags.any(Tag.name.ilike(pattern)),
+            )
+        )
 
     total = session.scalar(select(func.count()).select_from(Asset).where(*filters)) or 0
     statement = (
