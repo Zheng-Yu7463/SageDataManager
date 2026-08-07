@@ -9,6 +9,7 @@ import ActivityLogView from '@/views/ActivityLogView.vue'
 import ArchivedAssetsView from '@/views/ArchivedAssetsView.vue'
 import DashboardView from '@/views/DashboardView.vue'
 import SearchView from '@/views/SearchView.vue'
+import NotFoundView from '@/views/NotFoundView.vue'
 import SettingsView from '@/views/SettingsView.vue'
 
 export const router = createRouter({
@@ -28,5 +29,6 @@ export const router = createRouter({
     { path: '/literature', name: 'literature', component: AssetsView, meta: { assetType: 'literature' } },
     { path: '/projects', name: 'projects', component: AssetsView, meta: { assetType: 'project' } },
     { path: '/models', name: 'models', component: AssetsView, meta: { assetType: 'model' } },
+    { path: '/:pathMatch(.*)*', name: 'not-found', component: NotFoundView },
   ],
 })
