@@ -9,6 +9,7 @@ import {
   Search,
   Settings,
   Tags,
+  Upload,
   X,
 } from '@lucide/vue'
 import { ref } from 'vue'
@@ -66,6 +67,7 @@ function submitGlobalSearch() {
       <nav class="primary-nav primary-nav--quiet" aria-label="管理导航">
         <RouterLink to="/unclaimed-files" :class="{ active: route.name === 'unclaimed-files' }" @click="mobileNavigationOpen = false"><Tags :size="19" /><span>待认领文件</span></RouterLink>
         <RouterLink to="/archive-health" :class="{ active: route.name === 'archive-health' }" @click="mobileNavigationOpen = false"><ArchiveRestore :size="19" /><span>归档健康</span></RouterLink>
+        <RouterLink to="/upload-prep" :class="{ active: route.name === 'upload-prep' }" @click="mobileNavigationOpen = false"><Upload :size="19" /><span>上传准备</span></RouterLink>
         <a href="#"><Settings :size="19" /><span>系统设置</span></a>
       </nav>
 

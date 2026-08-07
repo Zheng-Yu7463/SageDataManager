@@ -7,6 +7,8 @@ import type {
   AssetType,
   DashboardSummary,
   FileClaimResult,
+  UploadCommandInput,
+  UploadCommandResult,
   ScanRunSummary,
   UnclaimedFileSummary,
 } from '@/types'
@@ -74,4 +76,8 @@ export function getUnclaimedFiles(signal?: AbortSignal) {
 
 export function claimUnclaimedFile(unclaimedFileId: string, assetId: string) {
   return request<FileClaimResult>(`/api/archive/unclaimed/${unclaimedFileId}/claim`, undefined, 'POST', { asset_id: assetId })
+}
+
+export function getUploadCommand(input: UploadCommandInput) {
+  return request<UploadCommandResult>('/api/archive/upload-command', undefined, 'POST', input)
 }

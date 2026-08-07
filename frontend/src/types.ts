@@ -133,5 +133,19 @@ export interface UnclaimedFileSummary {
 export interface FileClaimResult {
   asset_id: string
   file: FileSummary
+
 }
 
+export interface UploadCommandInput {
+  asset_id: string
+  source_path: string
+  target_subdirectory: string
+  recursive: boolean
+}
+
+export interface UploadCommandResult {
+  asset_id: string
+  asset_title: string
+  archive_relative_path: string
+  command: string
+}
