@@ -3,6 +3,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import AssetsView from '@/views/AssetsView.vue'
 import ArchiveHealthView from '@/views/ArchiveHealthView.vue'
 import PendingFilesView from '@/views/PendingFilesView.vue'
+import ImportAssetsView from '@/views/ImportAssetsView.vue'
 import AssetDetailView from '@/views/AssetDetailView.vue'
 import ArchivedAssetsView from '@/views/ArchivedAssetsView.vue'
 import DashboardView from '@/views/DashboardView.vue'
@@ -18,6 +19,7 @@ export const router = createRouter({
     { path: '/settings', name: 'settings', component: SettingsView },
     { path: '/archive-health', name: 'archive-health', component: ArchiveHealthView },
     { path: '/archived-assets', name: 'archived-assets', component: ArchivedAssetsView },
+    { path: '/import-assets', name: 'import-assets', component: ImportAssetsView },
     { path: '/unclaimed-files', name: 'unclaimed-files', component: PendingFilesView },
     { path: '/assets/:assetId', name: 'asset-detail', component: AssetDetailView },
     { path: '/datasets', name: 'datasets', component: AssetsView, meta: { assetType: 'dataset' } },

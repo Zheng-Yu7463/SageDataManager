@@ -6,6 +6,7 @@ import {
   ChevronDown,
   Command,
   Home,
+  FileUp,
   Menu,
   Search,
   Settings,
@@ -71,6 +72,7 @@ function submitGlobalSearch() {
       <nav class="primary-nav primary-nav--quiet" aria-label="管理导航">
         <RouterLink to="/unclaimed-files" :class="{ active: route.name === 'unclaimed-files' }" @click="mobileNavigationOpen = false"><Tags :size="19" /><span>待认领文件</span></RouterLink>
         <RouterLink to="/archive-health" :class="{ active: route.name === 'archive-health' }" @click="mobileNavigationOpen = false"><ArchiveRestore :size="19" /><span>归档健康</span></RouterLink>
+        <RouterLink to="/import-assets" :class="{ active: route.name === 'import-assets' }" @click="mobileNavigationOpen = false"><FileUp :size="19" /><span>批量导入</span></RouterLink>
         <RouterLink to="/archived-assets" :class="{ active: route.name === 'archived-assets' }" @click="mobileNavigationOpen = false"><Archive :size="19" /><span>已归档资产</span></RouterLink>
         <RouterLink to="/settings" :class="{ active: route.name === 'settings' }" @click="mobileNavigationOpen = false"><Settings :size="19" /><span>系统设置</span></RouterLink>
       </nav>
