@@ -3,7 +3,7 @@ import { Archive, ArrowDownToLine, ArrowLeft, CheckCircle2, CircleAlert, Eye, Fi
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import { addAssetRelation, archiveAsset, getAsset, getAssets, getFileAccessTicket, removeAssetRelation, updateAsset } from '@/api/client'
+import { addAssetRelation, addAssetVersion, archiveAsset, getAsset, getAssets, getFileAccessTicket, removeAssetRelation, updateAsset } from '@/api/client'
 import AssetIcon from '@/components/AssetIcon.vue'
 import { assetMeta } from '@/catalogue'
 import type { AssetDetail, AssetSummary, FileAccessMode, FileSummary, RelatedAssetSummary, Visibility } from '@/types'
@@ -31,6 +31,10 @@ const relationType = ref('related_to')
 const relationSaving = ref(false)
 const relationError = ref('')
 const meta = computed(() => (data.value ? assetMeta[data.value.type] : null))
+const versionOpen = ref(false)
+const versionSaving = ref(false)
+const versionError = ref('')
+const versionDraft = ref({ version: '', releaseNotes: '', makeCurrent: true })
 const previewableMimeTypes = new Set([
   'application/json', 'application/pdf', 'application/x-yaml', 'text/csv',
   'text/markdown', 'text/plain', 'text/tab-separated-values', 'text/yaml',
@@ -155,6 +159,35 @@ async function archiveCurrentAsset() {
   }
 }
 
+function openVersion() {
+  versionDraft.value = { version: '', releaseNotes: '', makeCurrent: true }
+  versionError.value = ''
+  versionOpen.value = true
+}
+
+function closeVersion() {
+  if (!versionSaving.value) versionOpen.value = false
+}
+
+async function saveVersion() {
+  if (!data.value || !versionDraft.value.version.trim()) return
+  versionSaving.value = true
+  versionError.value = ''
+  try {
+    await addAssetVersion(data.value.id, {
+      version: versionDraft.value.version.trim(),
+      release_notes: versionDraft.value.releaseNotes.trim(),
+      make_current: versionDraft.value.makeCurrent,
+    })
+    versionOpen.value = false
+    await load()
+  } catch (reason) {
+    versionError.value = reason instanceof Error ? reason.message : '无法登记版本'
+  } finally {
+    versionSaving.value = false
+  }
+}
+
 async function openRelation() {
   if (!data.value) return
   relationOpen.value = true
@@ -262,7 +295,7 @@ onBeforeUnmount(() => {
         </article>
 
         <article class="panel detail-versions">
-          <header class="panel-heading"><div><span class="section-number">03</span><div><h2>版本沿革</h2><p>Version history</p></div></div></header>
+          <header class="panel-heading"><div><span class="section-number">03</span><div><h2>版本沿革</h2><p>Version history</p></div></div><button class="section-action" @click="openVersion"><Plus :size="14" />新增版本</button></header>
           <ol v-if="data.versions.length" class="detail-timeline">
             <li v-for="version in data.versions" :key="version.id"><CheckCircle2 :size="17" /><div><strong>{{ version.version }} <small v-if="version.is_current">当前版本</small></strong><p>{{ version.release_notes || '未附版本说明' }}</p></div><time>{{ formatDate(version.created_at) }}</time></li>
           </ol>
@@ -303,6 +336,16 @@ onBeforeUnmount(() => {
           <footer><button class="button button--outline" type="button" :disabled="saving" @click="closeEdit">取消</button><button class="button button--primary" :disabled="saving || !edit.title.trim()" type="submit"><Save :size="16" />{{ saving ? '正在保存' : '保存修改' }}</button></footer>
         </form>
       </div>
+      <div v-if="versionOpen" class="preview-overlay" role="dialog" aria-modal="true" aria-label="新增版本" @click.self="closeVersion">
+        <form class="edit-dialog" @submit.prevent="saveVersion">
+          <header><div><p class="eyebrow">REGISTER VERSION</p><h2>新增版本</h2></div><button type="button" title="关闭" :disabled="versionSaving" @click="closeVersion"><X :size="18" /></button></header>
+          <label>版本号<input v-model="versionDraft.version" required maxlength="80" placeholder="例如：v1.1 或 2026.08" /></label>
+          <label>版本说明<textarea v-model="versionDraft.releaseNotes" maxlength="5000" rows="3" placeholder="说明本次版本包含的变更" /></label>
+          <label class="version-current"><input v-model="versionDraft.makeCurrent" type="checkbox" />设为当前版本</label>
+          <p v-if="versionError" class="edit-error">{{ versionError }}</p>
+          <footer><button class="button button--outline" type="button" :disabled="versionSaving" @click="closeVersion">取消</button><button class="button button--primary" :disabled="versionSaving || !versionDraft.version.trim()" type="submit"><Save :size="16" />{{ versionSaving ? '正在登记' : '登记版本' }}</button></footer>
+        </form>
+      </div>
       <div v-if="relationOpen" class="preview-overlay" role="dialog" aria-modal="true" aria-label="添加关联资产" @click.self="closeRelation">
         <form class="edit-dialog relation-dialog" @submit.prevent="saveRelation">
           <header><div><p class="eyebrow">LINK ASSETS</p><h2>添加关联资产</h2></div><button type="button" title="关闭" :disabled="relationSaving" @click="closeRelation"><X :size="18" /></button></header>
@@ -327,6 +370,7 @@ onBeforeUnmount(() => {
 .detail-status { display: grid; padding: 7px 0; gap: 8px; text-align: right; }
 .detail-status small, .detail-list-row small, .detail-timeline p, .detail-empty, .detail-privacy { color: #7c887f; font-size: 11px; }
 .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.version-current { display: flex !important; align-items: center; gap: 8px !important; font-weight: 500 !important; }.version-current input { width: auto !important; accent-color: var(--sage); }
 .detail-overview { grid-row: span 2; }
 .detail-facts { display: grid; margin: 20px 0 0; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
 .detail-facts dt { margin-bottom: 6px; color: #94a097; font-size: 10px; text-transform: capitalize; }

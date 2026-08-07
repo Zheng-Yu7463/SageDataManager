@@ -185,6 +185,12 @@ class AssetRelationCreateRequest(BaseModel):
     relation_type: str = Field(min_length=1, max_length=60)
 
 
+class AssetVersionCreateRequest(BaseModel):
+    version: str = Field(min_length=1, max_length=80)
+    release_notes: str = Field(default="", max_length=5000)
+    make_current: bool = True
+
+
 class UploadCommandRequest(BaseModel):
     asset_id: UUID
     source_path: str = Field(min_length=1, max_length=4000)

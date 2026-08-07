@@ -9,7 +9,9 @@ import type {
   AssetUpdateInput,
   AssetRelationInput,
   AssetSummary,
+  AssetVersionCreateInput,
   RelatedAssetSummary,
+  AssetVersionSummary,
   AssetListResponse,
   FileAccessMode,
   FileAccessTicket,
@@ -96,6 +98,10 @@ export function restoreAsset(assetId: string) {
 
 export function getArchivedAssets() {
   return request<AssetSummary[]>('/api/assets/archived')
+}
+
+export function addAssetVersion(assetId: string, input: AssetVersionCreateInput) {
+  return request<AssetVersionSummary>(`/api/assets/${assetId}/versions`, undefined, 'POST', input)
 }
 
 export function addAssetRelation(assetId: string, input: AssetRelationInput) {

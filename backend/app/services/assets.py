@@ -13,6 +13,7 @@ from app.domain.schemas import (
     AssetRelationCreateRequest,
     AssetSummary,
     AssetUpdateRequest,
+    AssetVersionCreateRequest,
     AssetVersionSummary,
     FileSummary,
     RelatedAssetSummary,
@@ -30,6 +31,12 @@ class AssetNotFoundError(Exception):
 
 
 class AssetRelationError(Exception):
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(message)
+
+
+class AssetVersionError(Exception):
     def __init__(self, message: str):
         self.message = message
         super().__init__(message)
@@ -151,6 +158,43 @@ def update_asset(
     )
     session.flush()
     return asset_summary(asset)
+
+
+def add_asset_version(
+    session: Session, asset_id: UUID, payload: AssetVersionCreateRequest, *, actor: User
+) -> AssetVersionSummary:
+    asset = session.scalar(
+        select(Asset)
+        .where(Asset.id == asset_id, Asset.archived_at.is_(None))
+        .options(selectinload(Asset.versions))
+    )
+    if not asset:
+        raise AssetNotFoundError
+    version_name = payload.version.strip()
+    if not version_name:
+        raise AssetVersionError("版本号不能为空。")
+    if any(version.version == version_name for version in asset.versions):
+        raise AssetVersionError("该版本号已经登记。")
+    if payload.make_current:
+        for version in asset.versions:
+            version.is_current = False
+    version = AssetVersion(
+        version=version_name,
+        release_notes=payload.release_notes.strip(),
+        is_current=payload.make_current,
+    )
+    asset.versions.append(version)
+    session.flush()
+    current_label = "（设为当前版本）" if payload.make_current else ""
+    session.add(
+        Activity(
+            asset=asset,
+            actor=actor,
+            action="added_version",
+            description=f"登记了版本 {version_name}{current_label}",
+        )
+    )
+    return AssetVersionSummary.model_validate(version)
 
 
 def archive_asset(session: Session, asset_id: UUID, *, actor: User) -> AssetSummary:

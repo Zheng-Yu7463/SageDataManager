@@ -13,13 +13,17 @@ from app.domain.schemas import (
     AssetRelationCreateRequest,
     AssetSummary,
     AssetUpdateRequest,
+    AssetVersionCreateRequest,
+    AssetVersionSummary,
     RelatedAssetSummary,
 )
 from app.services.assets import (
     AssetNotFoundError,
     AssetRelationError,
     AssetSlugConflictError,
+    AssetVersionError,
     add_asset_relation,
+    add_asset_version,
     archive_asset,
     create_asset,
     get_asset,
@@ -120,6 +124,28 @@ def restore(
     except AssetNotFoundError:
         session.rollback()
         raise HTTPException(status_code=404, detail="已归档资产不存在。") from None
+    except Exception:
+        session.rollback()
+        raise
+
+
+@router.post("/{asset_id}/versions", status_code=status.HTTP_201_CREATED)
+def add_version(
+    asset_id: UUID,
+    payload: AssetVersionCreateRequest,
+    session: SessionDependency,
+    current_user: AdminDependency,
+) -> AssetVersionSummary:
+    try:
+        version = add_asset_version(session, asset_id, payload, actor=current_user)
+        session.commit()
+        return version
+    except AssetNotFoundError:
+        session.rollback()
+        raise HTTPException(status_code=404, detail="资产不存在或已归档。") from None
+    except AssetVersionError as error:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=error.message) from None
     except Exception:
         session.rollback()
         raise

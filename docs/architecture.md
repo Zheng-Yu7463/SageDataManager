@@ -43,6 +43,7 @@ GET /api/assets/{id}
 PATCH /api/assets/{id}
 GET /api/assets/archived
 POST /api/assets/{id}/archive
+POST /api/assets/{id}/versions
 POST /api/assets/{id}/relations
 DELETE /api/assets/{id}/relations/{relation_id}
 POST /api/assets/{id}/restore
@@ -67,6 +68,8 @@ POST /api/archive/upload-command
 资产登记接口校验全局唯一的 slug，并创建或复用标签、初始版本和负责人记录。当前登录管理员会成为默认负责人和活动记录的操作人。
 
 资产编辑只允许管理员更新标题、摘要、状态、可见范围、标签和扩展详情；每次更新都会写入活动记录。归档采用软删除：资产从普通列表、搜索和详情接口隐藏，但既有文件索引、关系、元数据和原始文件均不改变。管理员可以查看归档清单并恢复资产，归档和恢复也会写入活动记录。
+
+版本登记为元数据操作：管理员可附版本说明，并选择是否将新版本设为当前版本；设为当前时此前版本仍保留但不再标记为当前。不会复制、移动或删除已扫描文件。
 
 资产关联由当前资产、目标资产和简短关系类型组成（如 `derived_from`、`supports`、`documents`）。只能关联两条不同且未归档的资产，不允许建立相同方向、相同类型的重复关系。用户可从任一资产详情解除已有关系；建立与解除均记录到操作活动中，且不会影响文件内容或文件位置。
 

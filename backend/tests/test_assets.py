@@ -5,10 +5,16 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.db.base import Base
 from app.domain.enums import AssetType, Visibility
 from app.domain.models import Activity, Asset, AssetVersion, Tag, User
-from app.domain.schemas import AssetCreateRequest, AssetRelationCreateRequest, AssetUpdateRequest
+from app.domain.schemas import (
+    AssetCreateRequest,
+    AssetRelationCreateRequest,
+    AssetUpdateRequest,
+    AssetVersionCreateRequest,
+)
 from app.services.assets import (
     AssetSlugConflictError,
     add_asset_relation,
+    add_asset_version,
     archive_asset,
     create_asset,
     get_asset,
@@ -131,3 +137,28 @@ def test_asset_relation_can_be_created_and_removed() -> None:
     refreshed = get_asset(session, source.id)
     assert refreshed is not None
     assert refreshed.related_assets == []
+
+
+def test_asset_version_can_be_added_and_marked_current() -> None:
+    session = make_session()
+    result = create_asset(session, payload())
+    actor = session.get(User, result.owner.id)
+    assert actor is not None
+
+    version = add_asset_version(
+        session,
+        result.id,
+        AssetVersionCreateRequest(version="v0.2", release_notes="补充清洗说明", make_current=True),
+        actor=actor,
+    )
+
+    versions = session.scalars(select(AssetVersion).order_by(AssetVersion.version)).all()
+    assert version.version == "v0.2"
+    assert [(item.version, item.is_current) for item in versions] == [
+        ("v0.1", False),
+        ("v0.2", True),
+    ]
+    assert (
+        session.scalar(select(Activity.action).order_by(Activity.created_at.desc()))
+        == "added_version"
+    )

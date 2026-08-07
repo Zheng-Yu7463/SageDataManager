@@ -64,6 +64,12 @@ export interface AssetRelationInput {
   relation_type: string
 }
 
+export interface AssetVersionCreateInput {
+  version: string
+  release_notes: string
+  make_current: boolean
+}
+
 export interface AssetVersionSummary {
   id: string
   version: string
