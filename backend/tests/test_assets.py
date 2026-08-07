@@ -5,8 +5,15 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.db.base import Base
 from app.domain.enums import AssetType, Visibility
 from app.domain.models import Activity, Asset, AssetVersion, Tag, User
-from app.domain.schemas import AssetCreateRequest
-from app.services.assets import AssetSlugConflictError, create_asset
+from app.domain.schemas import AssetCreateRequest, AssetUpdateRequest
+from app.services.assets import (
+    AssetSlugConflictError,
+    archive_asset,
+    create_asset,
+    list_archived_assets,
+    restore_asset,
+    update_asset,
+)
 
 
 def make_session() -> Session:
@@ -65,3 +72,29 @@ def test_create_asset_rejects_duplicate_slug() -> None:
 
     with pytest.raises(AssetSlugConflictError):
         create_asset(session, payload())
+
+
+def test_asset_metadata_can_be_updated_archived_and_restored() -> None:
+    session = make_session()
+    result = create_asset(session, payload())
+    actor = session.get(User, result.owner.id)
+    assert actor is not None
+
+    updated = update_asset(
+        session,
+        result.id,
+        AssetUpdateRequest(title="更新后的土壤样本", tags=["新标签"], status="active"),
+        actor=actor,
+    )
+    archived = archive_asset(session, result.id, actor=actor)
+
+    assert updated.title == "更新后的土壤样本"
+    assert updated.tags == ["新标签"]
+    assert list_archived_assets(session)[0].id == archived.id
+
+    restored = restore_asset(session, result.id, actor=actor)
+
+    assert restored.id == result.id
+    assert (
+        session.scalar(select(Activity.action).order_by(Activity.created_at.desc())) == "restored"
+    )

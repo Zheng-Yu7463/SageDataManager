@@ -6,6 +6,7 @@ import type {
   AccountUpdateInput,
   AssetDetail,
   AssetCreateInput,
+  AssetUpdateInput,
   AssetSummary,
   AssetListResponse,
   FileAccessMode,
@@ -76,6 +77,22 @@ export function getAsset(assetId: string, signal?: AbortSignal) {
 
 export function createAsset(input: AssetCreateInput) {
   return request<AssetSummary>('/api/assets', undefined, 'POST', input)
+}
+
+export function updateAsset(assetId: string, input: AssetUpdateInput) {
+  return request<AssetSummary>(`/api/assets/${assetId}`, undefined, 'PATCH', input)
+}
+
+export function archiveAsset(assetId: string) {
+  return request<AssetSummary>(`/api/assets/${assetId}/archive`, undefined, 'POST')
+}
+
+export function restoreAsset(assetId: string) {
+  return request<AssetSummary>(`/api/assets/${assetId}/restore`, undefined, 'POST')
+}
+
+export function getArchivedAssets() {
+  return request<AssetSummary[]>('/api/assets/archived')
 }
 
 

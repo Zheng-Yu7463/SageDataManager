@@ -50,6 +50,15 @@ export interface AssetCreateInput {
   details: Record<string, unknown>
 }
 
+export interface AssetUpdateInput {
+  title?: string
+  summary?: string
+  status?: string
+  visibility?: Visibility
+  tags?: string[]
+  details?: Record<string, unknown>
+}
+
 export interface AssetVersionSummary {
   id: string
   version: string

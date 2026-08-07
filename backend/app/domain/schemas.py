@@ -170,6 +170,15 @@ class AssetCreateRequest(BaseModel):
     owner_email: str | None = Field(default=None, min_length=3, max_length=255)
 
 
+class AssetUpdateRequest(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+    summary: str | None = Field(default=None, max_length=5000)
+    status: str | None = Field(default=None, min_length=1, max_length=40)
+    visibility: Visibility | None = None
+    tags: list[str] | None = Field(default=None, max_length=20)
+    details: dict[str, Any] | None = None
+
+
 class UploadCommandRequest(BaseModel):
     asset_id: UUID
     source_path: str = Field(min_length=1, max_length=4000)

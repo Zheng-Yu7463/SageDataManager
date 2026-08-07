@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import func, or_, select
@@ -10,6 +11,7 @@ from app.domain.schemas import (
     AssetCreateRequest,
     AssetDetail,
     AssetSummary,
+    AssetUpdateRequest,
     AssetVersionSummary,
     FileSummary,
     RelatedAssetSummary,
@@ -19,6 +21,10 @@ from app.services.upload_directories import UPLOAD_DIRECTORY_OPTIONS
 
 
 class AssetSlugConflictError(Exception):
+    pass
+
+
+class AssetNotFoundError(Exception):
     pass
 
 
@@ -48,6 +54,14 @@ def asset_summary(asset: Asset) -> AssetSummary:
     )
 
 
+def _tags(session: Session, tag_values: list[str]) -> list[Tag]:
+    names = sorted({tag.strip() for tag in tag_values if tag.strip()})
+    existing = {
+        tag.name: tag for tag in session.scalars(select(Tag).where(Tag.name.in_(names))).all()
+    }
+    return [existing.get(name) or Tag(name=name) for name in names]
+
+
 def create_asset(
     session: Session, payload: AssetCreateRequest, *, actor: User | None = None
 ) -> AssetSummary:
@@ -69,11 +83,6 @@ def create_asset(
         )
         session.add(owner)
 
-    tag_names = sorted({tag.strip() for tag in payload.tags if tag.strip()})
-    existing_tags = {
-        tag.name: tag for tag in session.scalars(select(Tag).where(Tag.name.in_(tag_names))).all()
-    }
-    tags = [existing_tags.get(name) or Tag(name=name) for name in tag_names]
     asset = Asset(
         type=payload.type,
         slug=payload.slug,
@@ -83,7 +92,7 @@ def create_asset(
         visibility=payload.visibility,
         owner=owner,
         details=payload.details,
-        tags=tags,
+        tags=_tags(session, payload.tags),
     )
     if payload.version and payload.version.strip():
         asset.versions.append(AssetVersion(version=payload.version.strip(), is_current=True))
@@ -97,6 +106,80 @@ def create_asset(
             description=f"登记了{asset.title}",
         )
     )
+    session.flush()
+    return asset_summary(asset)
+
+
+def update_asset(
+    session: Session, asset_id: UUID, payload: AssetUpdateRequest, *, actor: User
+) -> AssetSummary:
+    asset = session.scalar(
+        select(Asset)
+        .where(Asset.id == asset_id, Asset.archived_at.is_(None))
+        .options(
+            selectinload(Asset.owner),
+            selectinload(Asset.tags),
+            selectinload(Asset.versions),
+            selectinload(Asset.files),
+        )
+    )
+    if not asset:
+        raise AssetNotFoundError
+    if payload.title is not None:
+        asset.title = payload.title.strip()
+    if payload.summary is not None:
+        asset.summary = payload.summary.strip()
+    if payload.status is not None:
+        asset.status = payload.status.strip()
+    if payload.visibility is not None:
+        asset.visibility = payload.visibility
+    if payload.tags is not None:
+        asset.tags = _tags(session, payload.tags)
+    if payload.details is not None:
+        asset.details = payload.details
+    session.add(
+        Activity(
+            asset=asset, actor=actor, action="updated_metadata", description="更新了资产基础信息"
+        )
+    )
+    session.flush()
+    return asset_summary(asset)
+
+
+def archive_asset(session: Session, asset_id: UUID, *, actor: User) -> AssetSummary:
+    asset = session.scalar(
+        select(Asset)
+        .where(Asset.id == asset_id, Asset.archived_at.is_(None))
+        .options(
+            selectinload(Asset.owner),
+            selectinload(Asset.tags),
+            selectinload(Asset.versions),
+            selectinload(Asset.files),
+        )
+    )
+    if not asset:
+        raise AssetNotFoundError
+    asset.archived_at = datetime.now(UTC)
+    session.add(Activity(asset=asset, actor=actor, action="archived", description="归档了该资产"))
+    session.flush()
+    return asset_summary(asset)
+
+
+def restore_asset(session: Session, asset_id: UUID, *, actor: User) -> AssetSummary:
+    asset = session.scalar(
+        select(Asset)
+        .where(Asset.id == asset_id, Asset.archived_at.is_not(None))
+        .options(
+            selectinload(Asset.owner),
+            selectinload(Asset.tags),
+            selectinload(Asset.versions),
+            selectinload(Asset.files),
+        )
+    )
+    if not asset:
+        raise AssetNotFoundError
+    asset.archived_at = None
+    session.add(Activity(asset=asset, actor=actor, action="restored", description="恢复了该资产"))
     session.flush()
     return asset_summary(asset)
 
@@ -131,6 +214,21 @@ def list_assets(
         .limit(page_size)
     )
     return [asset_summary(item) for item in session.scalars(statement).all()], total
+
+
+def list_archived_assets(session: Session) -> list[AssetSummary]:
+    statement = (
+        select(Asset)
+        .where(Asset.archived_at.is_not(None))
+        .options(
+            selectinload(Asset.owner),
+            selectinload(Asset.tags),
+            selectinload(Asset.versions),
+            selectinload(Asset.files),
+        )
+        .order_by(Asset.archived_at.desc())
+    )
+    return [asset_summary(asset) for asset in session.scalars(statement).all()]
 
 
 def get_asset(session: Session, asset_id: UUID) -> AssetDetail | None:
