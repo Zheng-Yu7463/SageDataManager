@@ -16,4 +16,5 @@ frontend/.playwright-browsers/
 frontend/test-results/
 frontend/playwright-report/
 backend/.env
+sample-archive/real-fixtures/
 *.egg-info/
