@@ -22,6 +22,10 @@ services:
       context: ./backend
     environment:
       SAGE_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-sage}:${POSTGRES_PASSWORD:-sage}@postgres:5432/${POSTGRES_DB:-sage}
+      SAGE_UPLOAD_SSH_HOST: ${SAGE_UPLOAD_SSH_HOST:-192.168.1.213}
+      SAGE_UPLOAD_SSH_USER: ${SAGE_UPLOAD_SSH_USER:-zhengyu}
+      SAGE_UPLOAD_SSH_PORT: ${SAGE_UPLOAD_SSH_PORT:-22}
+      SAGE_UPLOAD_DESTINATION_ROOT: ${SAGE_UPLOAD_DESTINATION_ROOT:-/home/zhengyu/SageDataManager/sample-archive}
       SAGE_ALLOWED_ORIGINS: '["http://localhost:5173"]'
       SAGE_STORAGE_ROOT: /data/sage-archive
     volumes:

@@ -160,3 +160,17 @@ class AssetCreateRequest(BaseModel):
     details: dict[str, Any] = Field(default_factory=dict)
     owner_name: str | None = Field(default=None, min_length=1, max_length=80)
     owner_email: str | None = Field(default=None, min_length=3, max_length=255)
+
+
+class UploadCommandRequest(BaseModel):
+    asset_id: UUID
+    source_path: str = Field(min_length=1, max_length=4000)
+    target_subdirectory: str = Field(default="incoming", min_length=1, max_length=400)
+    recursive: bool = False
+
+
+class UploadCommandResponse(BaseModel):
+    asset_id: UUID
+    asset_title: str
+    archive_relative_path: str
+    command: str

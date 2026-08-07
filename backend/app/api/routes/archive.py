@@ -12,8 +12,11 @@ from app.domain.schemas import (
     FileClaimResult,
     ScanRunSummary,
     UnclaimedFileSummary,
+    UploadCommandRequest,
+    UploadCommandResponse,
 )
 from app.services.archive import StorageScanError, archive_health, scan_storage
+from app.services.transfers import UploadCommandError, generate_upload_command
 from app.services.unclaimed import (
     AssetNotFoundError,
     ClaimSourceFileError,
@@ -64,6 +67,23 @@ def claim_file(
     except Exception:
         session.rollback()
         raise
+
+
+@router.post("/upload-command")
+def upload_command(
+    payload: UploadCommandRequest, session: SessionDependency
+) -> UploadCommandResponse:
+    try:
+        return generate_upload_command(
+            session,
+            payload,
+            ssh_host=settings.upload_ssh_host,
+            ssh_user=settings.upload_ssh_user,
+            ssh_port=settings.upload_ssh_port,
+            destination_root=settings.upload_destination_root,
+        )
+    except UploadCommandError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from None
 
 
 @router.post("/scans", status_code=status.HTTP_201_CREATED)

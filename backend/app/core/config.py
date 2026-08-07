@@ -11,6 +11,10 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://sage:sage@localhost:5432/sage"
     allowed_origins: list[str] = ["http://localhost:5173"]
     storage_root: Path = Path("/data/sage-archive")
+    upload_ssh_host: str = "192.168.1.213"
+    upload_ssh_user: str = "zhengyu"
+    upload_ssh_port: int = 22
+    upload_destination_root: str = "/home/zhengyu/SageDataManager/sample-archive"
 
     model_config = SettingsConfigDict(
         env_file=".env",
