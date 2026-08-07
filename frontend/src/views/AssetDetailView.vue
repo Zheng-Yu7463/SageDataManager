@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Archive, ArrowDownToLine, ArrowLeft, CheckCircle2, CircleAlert, Eye, FileText, GitBranch, History, Layers3, Link2, Pencil, Plus, Save, Trash2, X } from '@lucide/vue'
+import { Archive, ArrowDownToLine, ArrowLeft, CheckCircle2, ChevronDown, ChevronRight, CircleAlert, Eye, FileText, Folder, FolderOpen, GitBranch, History, Layers3, Link2, Pencil, Plus, Save, Trash2, X } from '@lucide/vue'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -42,13 +42,90 @@ const previewableMimeTypes = new Set([
 ])
 const removingRelationId = ref<string | null>(null)
 
+interface FileBrowserNode {
+  name: string
+  path: string
+  directory: boolean
+  file?: FileSummary
+  children: FileBrowserNode[]
+}
+
+interface FileBrowserRow {
+  name: string
+  path: string
+  directory: boolean
+  depth: number
+  childrenCount: number
+  file?: FileSummary
+}
+
+const expandedDirectories = ref<Set<string>>(new Set())
+
+function relativeFilePath(file: FileSummary, asset = data.value) {
+  const prefix = asset ? [asset.type, asset.slug].join("/") + "/" : ""
+  return prefix && file.relative_path.startsWith(prefix)
+    ? file.relative_path.slice(prefix.length)
+    : file.relative_path
+}
+
+function directoryPaths(asset: AssetDetail) {
+  return asset.files.flatMap((file) => {
+    const parts = relativeFilePath(file, asset).split("/").filter(Boolean)
+    return parts.slice(0, -1).map((_, index) => parts.slice(0, index + 1).join("/"))
+  })
+}
+
+function isDirectoryExpanded(path: string) {
+  return expandedDirectories.value.has(path)
+}
+
+function toggleDirectory(path: string) {
+  const next = new Set(expandedDirectories.value)
+  if (next.has(path)) next.delete(path)
+  else next.add(path)
+  expandedDirectories.value = next
+}
+
+function buildFileBrowserRows(asset: AssetDetail) {
+  const root: FileBrowserNode = { name: "", path: "", directory: true, children: [] }
+  for (const file of [...asset.files].sort((left, right) => relativeFilePath(left, asset).localeCompare(relativeFilePath(right, asset), "zh-CN"))) {
+    const filePath = relativeFilePath(file, asset)
+    const parts = filePath.split("/").filter(Boolean)
+    let parent = root
+    for (const [index, part] of parts.slice(0, -1).entries()) {
+      const path = parts.slice(0, index + 1).join("/")
+      let directory = parent.children.find((item) => item.directory && item.path === path)
+      if (!directory) {
+        directory = { name: part, path, directory: true, children: [] }
+        parent.children.push(directory)
+      }
+      parent = directory
+    }
+    parent.children.push({ name: file.file_name, path: filePath, directory: false, file, children: [] })
+  }
+
+  const rows: FileBrowserRow[] = []
+  const visit = (nodes: FileBrowserNode[], depth: number) => {
+    for (const node of [...nodes].sort((left, right) => Number(right.directory) - Number(left.directory) || left.name.localeCompare(right.name, "zh-CN"))) {
+      rows.push({ name: node.name, path: node.path, directory: node.directory, depth, childrenCount: node.children.length, file: node.file })
+      if (node.directory && isDirectoryExpanded(node.path)) visit(node.children, depth + 1)
+    }
+  }
+  visit(root.children, 0)
+  return rows
+}
+
+const fileBrowserRows = computed(() => (data.value ? buildFileBrowserRows(data.value) : []))
+
 async function load() {
   controller?.abort()
   controller = new AbortController()
   loading.value = true
   error.value = ''
   try {
-    data.value = await getAsset(String(route.params.assetId), controller.signal)
+    const next = await getAsset(String(route.params.assetId), controller.signal)
+    data.value = next
+    expandedDirectories.value = new Set(directoryPaths(next))
   } catch (reason) {
     if (reason instanceof DOMException && reason.name === 'AbortError') return
     error.value = reason instanceof Error ? reason.message : '无法读取资产详情'
@@ -280,14 +357,18 @@ onBeforeUnmount(() => {
         </article>
 
         <article class="panel detail-files">
-          <header class="panel-heading"><div><span class="section-number">02</span><div><h2>文件索引</h2><p>Read-only file records</p></div></div><span class="data-note">{{ data.files.length }} records</span></header>
-          <div v-if="data.files.length" class="detail-list">
-            <div v-for="file in data.files" :key="file.id" class="detail-list-row">
-              <FileText :size="19" /><span><strong>{{ file.file_name }}</strong><small>{{ file.file_kind }} · {{ file.mime_type ?? 'unknown type' }}</small></span><em :class="{ warning: file.health_status !== 'healthy' }">{{ healthLabel(file.health_status) }}</em><time>{{ formatBytes(file.file_size) }}</time>
-              <div class="file-actions">
-                <button v-if="canPreview(file)" :disabled="file.health_status !== 'healthy' || fileActionId === file.id" title="浏览器预览" @click="accessFile(file, 'preview')"><Eye :size="15" /></button>
-                <button :disabled="file.health_status !== 'healthy' || fileActionId === file.id" title="下载文件" @click="accessFile(file, 'download')"><ArrowDownToLine :size="15" /></button>
-              </div>
+          <header class="panel-heading"><div><span class="section-number">02</span><div><h2>文件浏览</h2><p>Repository browser</p></div></div><span class="data-note">{{ data.files.length }} files</span></header>
+          <div v-if="data.files.length" class="repository-browser">
+            <div class="repository-toolbar"><span>受控归档 · {{ data.files.length }} 个文件 · {{ formatBytes(data.total_size) }}</span><small>相对路径仅在当前资产内展示</small></div>
+            <div class="repository-head"><span>文件</span><span>类型</span><span>状态</span><span>大小</span><span>操作</span></div>
+            <div v-for="row in fileBrowserRows" :key="row.path" class="repository-row" :class="{ 'repository-row--directory': row.directory }">
+              <button v-if="row.directory" class="repository-name repository-directory" :aria-expanded="isDirectoryExpanded(row.path)" :style="{ paddingLeft: (16 + row.depth * 24) + 'px' }" @click="toggleDirectory(row.path)"><ChevronDown v-if="isDirectoryExpanded(row.path)" :size="15" /><ChevronRight v-else :size="15" /><FolderOpen v-if="isDirectoryExpanded(row.path)" :size="17" /><Folder v-else :size="17" /><strong>{{ row.name }}</strong><small>{{ row.childrenCount }} 项</small></button>
+              <div v-else-if="row.file" class="repository-name" :style="{ paddingLeft: (31 + row.depth * 24) + 'px' }"><FileText :size="17" /><span><strong>{{ row.name }}</strong><small>{{ row.file.relative_path }}</small></span></div>
+              <template v-if="!row.directory && row.file">
+                <span class="repository-kind">{{ row.file.file_kind }}</span><em :class="{ warning: row.file.health_status !== 'healthy' }">{{ healthLabel(row.file.health_status) }}</em><time>{{ formatBytes(row.file.file_size) }}</time>
+                <div class="file-actions"><button v-if="canPreview(row.file)" :disabled="row.file.health_status !== 'healthy' || fileActionId === row.file.id" title="浏览器预览" @click="accessFile(row.file, 'preview')"><Eye :size="15" /></button><button :disabled="row.file.health_status !== 'healthy' || fileActionId === row.file.id" title="下载文件" @click="accessFile(row.file, 'download')"><ArrowDownToLine :size="15" /></button></div>
+              </template>
+              <template v-else><span></span><span></span><span></span><span></span></template>
             </div>
             <p v-if="fileActionError" class="file-action-error">{{ fileActionError }}</p>
           </div>
@@ -376,6 +457,28 @@ onBeforeUnmount(() => {
 .detail-facts dt { margin-bottom: 6px; color: #94a097; font-size: 10px; text-transform: capitalize; }
 .detail-facts dd { display: flex; margin: 0; align-items: center; gap: 6px; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 14px; overflow-wrap: anywhere; }
 .detail-list { margin-top: 15px; border-top: 1px solid var(--line); }
+.detail-files { grid-column: 1 / -1; }
+.repository-browser { margin-top: 15px; overflow: hidden; border: 1px solid var(--line); border-radius: 7px; }
+.repository-toolbar { display: flex; min-height: 40px; padding: 0 14px; align-items: center; justify-content: space-between; gap: 12px; color: #5c6c61; background: #f6f8f4; border-bottom: 1px solid var(--line); font-size: 11px; }
+.repository-toolbar small { color: #8b968e; }
+.repository-head, .repository-row { display: grid; grid-template-columns: minmax(0, 1fr) 80px 70px 78px 76px; align-items: center; }
+.repository-head { min-height: 32px; padding: 0 13px; color: #8a968d; background: #fbfcfa; border-bottom: 1px solid var(--line); font-size: 10px; text-transform: uppercase; letter-spacing: .04em; }
+.repository-row { min-height: 48px; border-bottom: 1px solid #edf0eb; }
+.repository-row:last-of-type { border-bottom: 0; }
+.repository-row--directory { background: #fdfefd; }
+.repository-name { display: flex; min-width: 0; min-height: 48px; align-items: center; gap: 8px; color: #34483a; text-align: left; }
+.repository-name > svg { flex: 0 0 auto; color: var(--asset-accent); }
+.repository-name > span { display: grid; min-width: 0; gap: 2px; }
+.repository-name strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.repository-name small { overflow: hidden; color: #8b968e; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.repository-directory { width: 100%; padding-top: 0; padding-bottom: 0; background: transparent; border: 0; cursor: pointer; }
+.repository-directory:hover { color: var(--asset-accent); background: var(--asset-soft); }
+.repository-directory > svg:first-child { color: #89968d; }
+.repository-directory small { margin-left: auto; padding-right: 12px; }
+.repository-kind { color: #66766b; font-size: 10px; }
+.repository-row em { color: var(--sage); font-size: 10px; font-style: normal; }
+.repository-row em.warning { color: #b37225; }
+.repository-row time { color: #89968d; font-size: 10px; }
 .detail-list-row { display: grid; min-height: 62px; grid-template-columns: 25px minmax(0, 1fr) auto auto auto; padding: 10px 0; align-items: center; gap: 10px; border-bottom: 1px solid var(--line); }
 .detail-list-row > svg { color: var(--asset-accent); }.detail-list-row span { display: grid; min-width: 0; gap: 3px; }.detail-list-row strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }.detail-list-row em { color: var(--sage); font-size: 10px; font-style: normal; }.detail-list-row em.warning { color: #b37225; }.detail-list-row time, .detail-timeline time { color: #95a097; font-size: 10px; white-space: nowrap; }
 .file-actions { display: flex; gap: 4px; }.file-actions button, .preview-dialog header button { display: grid; width: 29px; height: 29px; padding: 0; color: #506356; place-items: center; background: #f4f6f1; border: 1px solid var(--line); border-radius: 5px; cursor: pointer; }.file-actions button:hover:not(:disabled), .preview-dialog header button:hover { color: var(--asset-accent); border-color: var(--asset-accent); }.file-actions button:disabled { cursor: not-allowed; opacity: .45; }.file-action-error { margin: 12px 0 0; color: #a6633b; font-size: 11px; }
@@ -383,5 +486,5 @@ onBeforeUnmount(() => {
 .section-action, .relation-remove { display: inline-flex; padding: 0; align-items: center; gap: 4px; color: #63746a; background: transparent; border: 0; cursor: pointer; font-size: 10px; }.section-action:hover, .relation-remove:hover:not(:disabled) { color: var(--asset-accent); }.detail-related-row { grid-template-columns: minmax(0, 1fr) auto; }.detail-related-row .detail-link { display: grid; min-width: 0; align-items: center; gap: 10px; }.relation-remove { width: 28px; height: 28px; justify-content: center; color: #a6633b; border: 1px solid #eddcd1; border-radius: 5px; }.relation-remove:disabled { opacity: .45; cursor: wait; }.relation-help { display: flex; margin: 0; align-items: center; gap: 6px; color: #6b7a70; font-size: 12px; line-height: 1.5; }.relation-help svg { color: var(--sage); }
 .preview-overlay { position: fixed; z-index: 20; inset: 0; display: grid; padding: 26px; place-items: center; background: rgba(18, 29, 22, .52); }.preview-dialog { display: grid; width: min(100%, 1040px); height: min(84vh, 780px); grid-template-rows: auto minmax(0, 1fr); padding: 18px; background: #fff; border-radius: 11px; box-shadow: 0 25px 70px rgba(0,0,0,.28); }.preview-dialog header { display: flex; margin-bottom: 13px; align-items: flex-start; justify-content: space-between; gap: 12px; }.preview-dialog h2 { margin: 3px 0 0; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 17px; font-weight: 500; }.preview-dialog iframe { width: 100%; height: 100%; border: 1px solid var(--line); border-radius: 5px; background: #f8faf7; }
 .detail-controls { display: flex; margin-top: 5px; justify-content: flex-end; gap: 6px; }.detail-controls .button { min-height: 29px; padding: 0 8px; font-size: 10px; }.detail-archive { color: #9a5b3c; background: #fff7f1; border: 1px solid #edd3c2; }.edit-dialog { display: grid; width: min(100%, 620px); max-height: 86vh; padding: 22px; overflow-y: auto; background: #fff; border-radius: 11px; box-shadow: 0 25px 70px rgba(0,0,0,.28); gap: 12px; }.edit-dialog header { display: flex; margin-bottom: 3px; align-items: flex-start; justify-content: space-between; gap: 12px; }.edit-dialog h2 { margin: 3px 0 0; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 19px; font-weight: 500; }.edit-dialog header button { display: grid; width: 29px; height: 29px; padding: 0; place-items: center; background: #f4f6f1; border: 1px solid var(--line); border-radius: 5px; cursor: pointer; }.edit-dialog label { display: grid; color: #526056; font-size: 12px; font-weight: 700; gap: 6px; }.edit-dialog input, .edit-dialog textarea, .edit-dialog select { width: 100%; padding: 9px 10px; color: var(--ink); font: inherit; font-size: 13px; background: #fff; border: 1px solid var(--line); border-radius: 5px; outline-color: var(--sage); }.edit-dialog textarea { resize: vertical; }.edit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }.edit-dialog footer { display: flex; justify-content: flex-end; gap: 8px; }.edit-error { margin: 0; color: #a6633b; font-size: 12px; }
-@media (max-width: 760px) { .detail-grid { grid-template-columns: 1fr; }.detail-overview { grid-row: auto; }.detail-status { text-align: left; }.detail-controls { justify-content: flex-start; }.detail-facts { grid-template-columns: 1fr; gap: 14px; }.detail-list-row { grid-template-columns: 23px minmax(0, 1fr) auto; }.detail-list-row time { display: none; }.file-actions { grid-column: 2 / -1; }.preview-overlay { padding: 12px; }.preview-dialog { height: 88vh; padding: 13px; }.edit-grid { grid-template-columns: 1fr; } }
+@media (max-width: 760px) { .detail-grid { grid-template-columns: 1fr; }.detail-overview { grid-row: auto; }.detail-status { text-align: left; }.detail-controls { justify-content: flex-start; }.detail-facts { grid-template-columns: 1fr; gap: 14px; }.detail-list-row { grid-template-columns: 23px minmax(0, 1fr) auto; } .repository-head { display: none; } .repository-row { grid-template-columns: minmax(0, 1fr) auto auto; } .repository-kind { display: none; } .repository-row time { display: none; } .repository-row .file-actions { grid-column: auto; margin-right: 10px; }.detail-list-row time { display: none; }.file-actions { grid-column: 2 / -1; }.preview-overlay { padding: 12px; }.preview-dialog { height: 88vh; padding: 13px; }.edit-grid { grid-template-columns: 1fr; } }
 </style>

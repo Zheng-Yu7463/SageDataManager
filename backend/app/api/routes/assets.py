@@ -11,6 +11,7 @@ from app.db.session import get_session
 from app.domain.enums import AssetType, Visibility
 from app.domain.schemas import (
     AssetCreateRequest,
+    AssetDetail,
     AssetListResponse,
     AssetRelationCreateRequest,
     AssetSummary,
@@ -253,7 +254,7 @@ def remove_relation(
 
 
 @router.get("/{asset_id}")
-def asset(asset_id: UUID, session: SessionDependency) -> AssetSummary:
+def asset(asset_id: UUID, session: SessionDependency) -> AssetDetail:
     result = get_asset(session, asset_id)
     if not result:
         raise HTTPException(status_code=404, detail="Asset not found")

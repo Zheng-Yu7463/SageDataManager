@@ -140,3 +140,23 @@ def test_file_content_endpoint_uses_ticket_and_accel_redirect(
     finally:
         app.dependency_overrides.clear()
         session.close()
+
+
+
+def test_asset_detail_endpoint_returns_file_records(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = make_session()
+    _, record = create_file_record(session, tmp_path)
+    session.commit()
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        client = TestClient(app)
+        response = client.get(f"/api/assets/{record.asset_id}")
+
+        assert response.status_code == 200
+        assert response.json()["files"][0]["relative_path"] == record.relative_path
+    finally:
+        app.dependency_overrides.clear()
+        session.close()

@@ -164,6 +164,10 @@ def test_asset_list_filters_status_visibility_and_file_presence() -> None:
     assert no_files_total == 1
     assert [item.id for item in no_files] == [first.id]
 
+    detail = get_asset(session, second.id)
+    assert detail is not None
+    assert detail.files[0].relative_path == "dataset/published-soil-samples/raw/samples.csv"
+
 
 def test_asset_relation_can_be_created_and_removed() -> None:
     session = make_session()

@@ -19,11 +19,13 @@ class FileSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
+    relative_path: str
     file_name: str
     file_kind: str
     mime_type: str | None
     file_size: int
     health_status: HealthStatus
+    modified_at: datetime | None = None
 
 
 class AssetVersionSummary(BaseModel):

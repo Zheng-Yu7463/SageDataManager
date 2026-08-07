@@ -84,11 +84,13 @@ export interface AssetVersionSummary {
 
 export interface FileSummary {
   id: string
+  relative_path: string
   file_name: string
   file_kind: string
   mime_type: string | null
   file_size: number
   health_status: 'healthy' | 'missing' | 'unverified'
+  modified_at: string | null
 }
 
 export interface RelatedAssetSummary {

@@ -30,6 +30,15 @@ test('管理员可登录、筛选目录并生成上传指令', async ({ page }) 
   await expect(page.getByText('上传指令已生成')).toBeVisible()
 })
 
+test('资产详情提供可折叠的文件浏览器', async ({ page }) => {
+  await signIn(page)
+  await page.getByRole('link', { name: /数据集/ }).click()
+  const climateBench = page.locator('.catalogue-card').filter({ hasText: 'ClimateBench v2.1 数据集' })
+  await climateBench.getByRole('link', { name: /查看详情/ }).click()
+  await expect(page.getByRole('heading', { name: '文件浏览' })).toBeVisible()
+  await expect(page.getByText('README.md')).toBeVisible()
+})
+
 test('总览与目录保留视觉基线', async ({ page }) => {
   await signIn(page)
   await expect(page).toHaveScreenshot('dashboard.png', {
