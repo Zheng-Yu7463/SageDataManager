@@ -17,4 +17,6 @@ frontend/test-results/
 frontend/playwright-report/
 backend/.env
 sample-archive/real-fixtures/
+sample-archive/dataset/movielens-100k/
+sample-archive/dataset/mnist/
 *.egg-info/
