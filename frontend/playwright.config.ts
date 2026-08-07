@@ -7,6 +7,7 @@ export default defineConfig({
   use: {
     baseURL: process.env.SAGE_E2E_BASE_URL ?? 'http://127.0.0.1:8080',
     screenshot: 'only-on-failure',
+    launchOptions: process.env.SAGE_E2E_CHROMIUM_PATH ? { executablePath: process.env.SAGE_E2E_CHROMIUM_PATH } : undefined,
     trace: 'retain-on-failure',
   },
   projects: [
