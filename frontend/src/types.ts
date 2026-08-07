@@ -116,6 +116,13 @@ export interface ActivitySummary {
   description: string
   created_at: string
 }
+export interface ActivityListResponse {
+  items: ActivitySummary[]
+  total: number
+  page: number
+  page_size: number
+}
+
 
 export interface DashboardSummary {
   counts: Record<AssetType, number>

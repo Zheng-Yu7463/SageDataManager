@@ -5,6 +5,7 @@ import ArchiveHealthView from '@/views/ArchiveHealthView.vue'
 import PendingFilesView from '@/views/PendingFilesView.vue'
 import ImportAssetsView from '@/views/ImportAssetsView.vue'
 import AssetDetailView from '@/views/AssetDetailView.vue'
+import ActivityLogView from '@/views/ActivityLogView.vue'
 import ArchivedAssetsView from '@/views/ArchivedAssetsView.vue'
 import DashboardView from '@/views/DashboardView.vue'
 import SearchView from '@/views/SearchView.vue'
@@ -21,6 +22,7 @@ export const router = createRouter({
     { path: '/archived-assets', name: 'archived-assets', component: ArchivedAssetsView },
     { path: '/import-assets', name: 'import-assets', component: ImportAssetsView },
     { path: '/unclaimed-files', name: 'unclaimed-files', component: PendingFilesView },
+    { path: '/activity-log', name: 'activity-log', component: ActivityLogView },
     { path: '/assets/:assetId', name: 'asset-detail', component: AssetDetailView },
     { path: '/datasets', name: 'datasets', component: AssetsView, meta: { assetType: 'dataset' } },
     { path: '/literature', name: 'literature', component: AssetsView, meta: { assetType: 'literature' } },

@@ -1,13 +1,14 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
+from app.api.dependencies import AdminDependency
 from app.db.session import get_session
 from app.domain.enums import AssetType, HealthStatus
 from app.domain.models import Activity, Asset, FileRecord, Tag, asset_tags
-from app.domain.schemas import ActivitySummary, DashboardSummary
+from app.domain.schemas import ActivityListResponse, ActivitySummary, DashboardSummary
 from app.services.assets import asset_summary
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -81,4 +82,44 @@ def dashboard(session: SessionDependency) -> DashboardSummary:
         recent_assets=[asset_summary(item) for item in recent_assets],
         recent_activities=activity_summaries,
         popular_tags=[(name, count) for name, count in popular_tags],
+    )
+
+
+@router.get("/activities")
+def activities(
+    session: SessionDependency,
+    _: AdminDependency,
+    action: str | None = Query(default=None, max_length=80),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=30, ge=1, le=100),
+) -> ActivityListResponse:
+    filters = [Activity.id.is_not(None)]
+    if action:
+        filters.append(Activity.action == action)
+    total = session.scalar(select(func.count()).select_from(Activity).where(*filters)) or 0
+    rows = session.scalars(
+        select(Activity)
+        .where(*filters)
+        .options(selectinload(Activity.asset), selectinload(Activity.actor))
+        .order_by(Activity.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    ).all()
+    return ActivityListResponse(
+        items=[
+            ActivitySummary(
+                id=item.id,
+                asset_id=item.asset_id,
+                asset_title=item.asset.title if item.asset else None,
+                asset_type=item.asset.type if item.asset else None,
+                actor_name=item.actor.name if item.actor else None,
+                action=item.action,
+                description=item.description,
+                created_at=item.created_at,
+            )
+            for item in rows
+        ],
+        total=total,
+        page=page,
+        page_size=page_size,
     )

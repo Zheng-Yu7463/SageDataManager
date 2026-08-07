@@ -112,6 +112,13 @@ class ScanRunSummary(BaseModel):
     completed_at: datetime | None
 
 
+class ActivityListResponse(BaseModel):
+    items: list[ActivitySummary]
+    total: int
+    page: int
+    page_size: int
+
+
 class ArchiveHealthSummary(BaseModel):
     storage_available: bool
     latest_scan: ScanRunSummary | None

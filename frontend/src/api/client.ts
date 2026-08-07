@@ -1,5 +1,6 @@
 import type {
   ArchiveHealthSummary,
+  ActivityListResponse,
   AccountCreateInput,
   AccountLoginResponse,
   AccountSummary,
@@ -61,6 +62,12 @@ async function request<T>(path: string, signal?: AbortSignal, method = 'GET', bo
 
 export function getDashboard(signal?: AbortSignal) {
   return request<DashboardSummary>('/api/dashboard', signal)
+}
+
+export function getActivities(page = 1, action?: string) {
+  const params = new URLSearchParams({ page: String(page), page_size: '30' })
+  if (action) params.set('action', action)
+  return request<ActivityListResponse>(`/api/dashboard/activities?${params}`)
 }
 
 export function getAssets(

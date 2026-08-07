@@ -9,6 +9,7 @@ import {
   FileUp,
   Menu,
   Search,
+  ScrollText,
   Settings,
   Tags,
   X,
@@ -76,6 +77,7 @@ function submitGlobalSearch() {
         <RouterLink to="/archived-assets" :class="{ active: route.name === 'archived-assets' }" @click="mobileNavigationOpen = false"><Archive :size="19" /><span>已归档资产</span></RouterLink>
         <RouterLink to="/settings" :class="{ active: route.name === 'settings' }" @click="mobileNavigationOpen = false"><Settings :size="19" /><span>系统设置</span></RouterLink>
       </nav>
+        <RouterLink to="/activity-log" :class="{ active: route.name === 'activity-log' }" @click="mobileNavigationOpen = false"><ScrollText :size="19" /><span>操作日志</span></RouterLink>
 
       <div class="lab-signature">
         <div class="sprig" aria-hidden="true">
