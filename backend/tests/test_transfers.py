@@ -72,3 +72,22 @@ def test_generate_upload_command_rejects_directory_escape() -> None:
             ssh_port=22,
             destination_root="/srv/sage-archive",
         )
+
+
+def test_generate_upload_command_requires_a_type_specific_directory() -> None:
+    session = make_session()
+    asset = create_asset(session)
+
+    with pytest.raises(UploadCommandError, match="dataset 资产的一级归档目录"):
+        generate_upload_command(
+            session,
+            UploadCommandRequest(
+                asset_id=asset.id,
+                source_path="/tmp/notes.pdf",
+                target_subdirectory="manuscript",
+            ),
+            ssh_host="192.168.1.213",
+            ssh_user="zhengyu",
+            ssh_port=22,
+            destination_root="/srv/sage-archive",
+        )

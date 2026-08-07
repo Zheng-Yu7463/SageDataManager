@@ -13,6 +13,15 @@ class UploadCommandError(Exception):
     pass
 
 
+UPLOAD_SUBDIRECTORIES = {
+    "paper": frozenset({"manuscript", "supplementary", "source", "reviews"}),
+    "dataset": frozenset({"raw", "processed", "documentation", "scripts"}),
+    "literature": frozenset({"original", "annotations", "notes"}),
+    "project": frozenset({"documentation", "code", "data", "outputs"}),
+    "model": frozenset({"weights", "checkpoints", "configs", "evaluation"}),
+}
+
+
 def generate_upload_command(
     session: Session,
     payload: UploadCommandRequest,
@@ -35,6 +44,11 @@ def generate_upload_command(
         or any(part in {".", ".."} for part in subdirectory.parts)
     ):
         raise UploadCommandError("目标子目录必须是归档目录内的相对路径。")
+
+    allowed_subdirectories = UPLOAD_SUBDIRECTORIES[asset.type.value]
+    if subdirectory.parts[0] not in allowed_subdirectories:
+        allowed_names = "、".join(sorted(allowed_subdirectories))
+        raise UploadCommandError(f"{asset.type.value} 资产的一级归档目录必须是：{allowed_names}。")
 
     root = PurePosixPath(destination_root.strip())
     if not root.is_absolute():

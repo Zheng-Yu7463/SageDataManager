@@ -95,6 +95,16 @@ SAGE_UPLOAD_DESTINATION_ROOT=/home/zhengyu/SageDataManager/sample-archive
 
 登录后进入对应分类，先登记资产并填写基础信息。资产会在当前列表显示“暂无数据”，点击该行右侧“上传指令”，填入保存文件的那台电脑上的绝对路径，再复制命令到该电脑终端执行。命令会先创建资产目录再执行 `scp`；完成后回到“归档健康”运行扫描，资产状态将更新为“已有数据”。SCP 用户名会自动使用当前登录账号名。
 
+目标目录的完整结构固定为 `资产类型/资产 slug/一级目录/可选细分目录`。一级目录不可随意命名：
+
+| 资产类型 | 默认目录 | 其他可选目录 |
+| --- | --- | --- |
+| 论文 | `manuscript` | `supplementary`、`source`、`reviews` |
+| 数据集 | `raw` | `processed`、`documentation`、`scripts` |
+| 文献 | `original` | `annotations`、`notes` |
+| 项目 | `documentation` | `code`、`data`、`outputs` |
+| 模型 | `weights` | `checkpoints`、`configs`、`evaluation` |
+
 ### 管理员账号
 
 系统首次初始化会预置 `yukai`、`zhengyu`、`zhourongyang`、`fengxuehan`、`chenshangyu` 和 `bisheng` 六个管理员账号。登录页需要手动输入账号；注册功能已预留但关闭。后续可由管理员或数据库预置其他启用的管理员账号，它们同样可以登录。共享初始密码必须保存在本机 `.env` 的 `SAGE_FIXED_ACCOUNT_PASSWORD` 中，不能提交到 Git。

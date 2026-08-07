@@ -53,14 +53,23 @@ const uploadGenerating = ref(false)
 const uploadError = ref('')
 const uploadCopied = ref(false)
 const uploadResult = ref<UploadCommandResult | null>(null)
+const uploadFolderOptions: Record<AssetType, { value: string; label: string }[]> = {
+  paper: [{ value: 'manuscript', label: 'manuscript · 正文' }, { value: 'supplementary', label: 'supplementary · 补充材料' }, { value: 'source', label: 'source · 源文件' }, { value: 'reviews', label: 'reviews · 审稿材料' }],
+  dataset: [{ value: 'raw', label: 'raw · 原始数据' }, { value: 'processed', label: 'processed · 处理后数据' }, { value: 'documentation', label: 'documentation · 说明文档' }, { value: 'scripts', label: 'scripts · 处理脚本' }],
+  literature: [{ value: 'original', label: 'original · 原文' }, { value: 'annotations', label: 'annotations · 批注版' }, { value: 'notes', label: 'notes · 阅读笔记' }],
+  project: [{ value: 'documentation', label: 'documentation · 项目文档' }, { value: 'code', label: 'code · 源代码' }, { value: 'data', label: 'data · 项目数据' }, { value: 'outputs', label: 'outputs · 产出结果' }],
+  model: [{ value: 'weights', label: 'weights · 模型权重' }, { value: 'checkpoints', label: 'checkpoints · 训练检查点' }, { value: 'configs', label: 'configs · 配置文件' }, { value: 'evaluation', label: 'evaluation · 评测结果' }],
+}
 const upload = ref({
   sourcePath: '',
-  targetSubdirectory: 'incoming',
+  directory: '',
+  nestedPath: '',
   recursive: false,
 })
 
 const meta = computed(() => assetMeta[assetType.value])
 const totalPages = computed(() => Math.max(1, Math.ceil((data.value?.total ?? 0) / 20)))
+const currentUploadFolders = computed(() => uploadAsset.value ? uploadFolderOptions[uploadAsset.value.type] : [])
 
 async function load() {
   controller?.abort()
@@ -158,7 +167,12 @@ async function registerAsset() {
 
 function openUpload(asset: AssetSummary) {
   uploadAsset.value = asset
-  upload.value = { sourcePath: '', targetSubdirectory: 'incoming', recursive: false }
+  upload.value = {
+    sourcePath: '',
+    directory: uploadFolderOptions[asset.type][0].value,
+    nestedPath: '',
+    recursive: false,
+  }
   uploadError.value = ''
   uploadCopied.value = false
   uploadResult.value = null
@@ -177,7 +191,7 @@ async function generateUploadCommand() {
     uploadResult.value = await getUploadCommand({
       asset_id: uploadAsset.value.id,
       source_path: upload.value.sourcePath.trim(),
-      target_subdirectory: upload.value.targetSubdirectory.trim(),
+      target_subdirectory: [upload.value.directory, upload.value.nestedPath.trim()].filter(Boolean).join('/'),
       recursive: upload.value.recursive,
     })
   } catch (reason) {
@@ -312,12 +326,13 @@ onBeforeUnmount(() => controller?.abort())
         <button class="registration-close" type="button" aria-label="关闭" :disabled="uploadGenerating" @click="closeUpload"><X :size="18" /></button>
         <p class="eyebrow">SCP UPLOAD · {{ meta.english.toUpperCase() }}</p>
         <h2 id="upload-title">上传到「{{ uploadAsset.title }}」</h2>
-        <p class="registration-note">目标资产已固定，无需再次选择。填写保存文件的那台电脑上的路径，复制命令到该电脑终端执行。</p>
-        <label>本机文件或目录路径<input v-model="upload.sourcePath" required placeholder="/path/to/local/file-or-directory" /></label>
-        <label>资产内目标子目录<input v-model="upload.targetSubdirectory" required placeholder="例如：incoming 或 raw/2026-08" /></label>
+        <p class="registration-note">目标资产与一级归档目录均按资产类型固定。填写本机待上传文件或目录的路径，复制命令到该电脑终端执行。</p>
+        <label>本机待上传文件或目录<input v-model="upload.sourcePath" required placeholder="例如：/mnt/research/soil-samples.csv" /></label>
+        <label>归档一级目录<select v-model="upload.directory" required><option v-for="folder in currentUploadFolders" :key="folder.value" :value="folder.value">{{ folder.label }}</option></select></label>
+        <label>目录内细分路径（可选）<input v-model="upload.nestedPath" placeholder="例如：2026-08 或 experiment-a" /></label>
         <label class="upload-recursive"><input v-model="upload.recursive" type="checkbox" /> 上传整个目录（添加 <code>-r</code>）</label>
         <p v-if="uploadError" class="registration-error">{{ uploadError }}</p>
-        <footer><button class="button button--outline" type="button" :disabled="uploadGenerating" @click="closeUpload">取消</button><button class="button button--primary" :disabled="uploadGenerating || !upload.sourcePath.trim() || !upload.targetSubdirectory.trim()" type="submit"><FolderUp :size="16" />{{ uploadGenerating ? '正在生成' : '生成 SCP 命令' }}</button></footer>
+        <footer><button class="button button--outline" type="button" :disabled="uploadGenerating" @click="closeUpload">取消</button><button class="button button--primary" :disabled="uploadGenerating || !upload.sourcePath.trim() || !upload.directory" type="submit"><FolderUp :size="16" />{{ uploadGenerating ? '正在生成' : '生成 SCP 命令' }}</button></footer>
         <section v-if="uploadResult" class="upload-command-result">
           <header><div><strong>上传指令已生成</strong><small>归档目录：{{ uploadResult.archive_relative_path }}</small></div><button class="button button--outline" type="button" @click="copyUploadCommand"><Check v-if="uploadCopied" :size="16" /><Copy v-else :size="16" />{{ uploadCopied ? '已复制' : '复制' }}</button></header>
           <pre><code>{{ uploadResult.command }}</code></pre>
