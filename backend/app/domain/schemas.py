@@ -36,6 +36,11 @@ class AssetVersionSummary(BaseModel):
     created_at: datetime
 
 
+class UploadDirectoryOption(BaseModel):
+    name: str
+    label: str
+
+
 class AssetSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -52,6 +57,8 @@ class AssetSummary(BaseModel):
     current_version: str | None = None
     total_size: int = 0
     file_count: int = 0
+    upload_directories: list[UploadDirectoryOption] = Field(default_factory=list)
+    default_upload_directory: str
     updated_at: datetime
 
 

@@ -13,7 +13,9 @@ from app.domain.schemas import (
     AssetVersionSummary,
     FileSummary,
     RelatedAssetSummary,
+    UploadDirectoryOption,
 )
+from app.services.upload_directories import UPLOAD_DIRECTORY_OPTIONS
 
 
 class AssetSlugConflictError(Exception):
@@ -22,6 +24,10 @@ class AssetSlugConflictError(Exception):
 
 def asset_summary(asset: Asset) -> AssetSummary:
     current_version = next((item.version for item in asset.versions if item.is_current), None)
+    upload_directories = [
+        UploadDirectoryOption(name=name, label=label)
+        for name, label in UPLOAD_DIRECTORY_OPTIONS[asset.type]
+    ]
     return AssetSummary(
         id=asset.id,
         type=asset.type,
@@ -36,6 +42,8 @@ def asset_summary(asset: Asset) -> AssetSummary:
         current_version=current_version,
         total_size=sum(file.file_size for file in asset.files),
         file_count=len(asset.files),
+        upload_directories=upload_directories,
+        default_upload_directory=upload_directories[0].name,
         updated_at=asset.updated_at,
     )
 

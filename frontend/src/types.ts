@@ -7,6 +7,11 @@ export interface OwnerSummary {
   avatar_url: string | null
 }
 
+export interface UploadDirectoryOption {
+  name: string
+  label: string
+}
+
 export interface AssetSummary {
   id: string
   type: AssetType
@@ -21,6 +26,8 @@ export interface AssetSummary {
   current_version: string | null
   total_size: number
   file_count: number
+  upload_directories: UploadDirectoryOption[]
+  default_upload_directory: string
   updated_at: string
 }
 

@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.base import Base
 from app.domain.enums import AssetType, Visibility
-from app.domain.models import Asset, User
+from app.domain.models import Activity, Asset, User
 from app.domain.schemas import UploadCommandRequest
 from app.services.transfers import UploadCommandError, generate_upload_command
 
@@ -91,3 +91,28 @@ def test_generate_upload_command_requires_a_type_specific_directory() -> None:
             ssh_port=22,
             destination_root="/srv/sage-archive",
         )
+
+
+def test_generate_upload_command_records_audited_target_only() -> None:
+    session = make_session()
+    asset = create_asset(session)
+
+    generate_upload_command(
+        session,
+        UploadCommandRequest(
+            asset_id=asset.id,
+            source_path="/private/local/path/soil-samples.csv",
+            target_subdirectory="raw/2026-08",
+        ),
+        ssh_host="192.168.1.213",
+        ssh_user="zhengyu",
+        ssh_port=22,
+        destination_root="/srv/sage-archive",
+        actor=asset.owner,
+    )
+    session.commit()
+
+    activity = session.query(Activity).one()
+    assert activity.action == "prepared_upload"
+    assert "dataset/soil-samples-2026/raw/2026-08" in activity.description
+    assert "/private/local/path" not in activity.description

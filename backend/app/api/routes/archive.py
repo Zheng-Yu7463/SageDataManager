@@ -76,16 +76,23 @@ def upload_command(
     payload: UploadCommandRequest, session: SessionDependency, current_user: AdminDependency
 ) -> UploadCommandResponse:
     try:
-        return generate_upload_command(
+        result = generate_upload_command(
             session,
             payload,
             ssh_host=settings.upload_ssh_host,
             ssh_user=current_user.username or "",
             ssh_port=settings.upload_ssh_port,
             destination_root=settings.upload_destination_root,
+            actor=current_user,
         )
+        session.commit()
+        return result
     except UploadCommandError as error:
+        session.rollback()
         raise HTTPException(status_code=409, detail=str(error)) from None
+    except Exception:
+        session.rollback()
+        raise
 
 
 @router.post("/scans", status_code=status.HTTP_201_CREATED)

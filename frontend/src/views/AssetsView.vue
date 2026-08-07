@@ -53,13 +53,6 @@ const uploadGenerating = ref(false)
 const uploadError = ref('')
 const uploadCopied = ref(false)
 const uploadResult = ref<UploadCommandResult | null>(null)
-const uploadFolderOptions: Record<AssetType, { value: string; label: string }[]> = {
-  paper: [{ value: 'manuscript', label: 'manuscript · 正文' }, { value: 'supplementary', label: 'supplementary · 补充材料' }, { value: 'source', label: 'source · 源文件' }, { value: 'reviews', label: 'reviews · 审稿材料' }],
-  dataset: [{ value: 'raw', label: 'raw · 原始数据' }, { value: 'processed', label: 'processed · 处理后数据' }, { value: 'documentation', label: 'documentation · 说明文档' }, { value: 'scripts', label: 'scripts · 处理脚本' }],
-  literature: [{ value: 'original', label: 'original · 原文' }, { value: 'annotations', label: 'annotations · 批注版' }, { value: 'notes', label: 'notes · 阅读笔记' }],
-  project: [{ value: 'documentation', label: 'documentation · 项目文档' }, { value: 'code', label: 'code · 源代码' }, { value: 'data', label: 'data · 项目数据' }, { value: 'outputs', label: 'outputs · 产出结果' }],
-  model: [{ value: 'weights', label: 'weights · 模型权重' }, { value: 'checkpoints', label: 'checkpoints · 训练检查点' }, { value: 'configs', label: 'configs · 配置文件' }, { value: 'evaluation', label: 'evaluation · 评测结果' }],
-}
 const upload = ref({
   sourcePath: '',
   directory: '',
@@ -69,7 +62,7 @@ const upload = ref({
 
 const meta = computed(() => assetMeta[assetType.value])
 const totalPages = computed(() => Math.max(1, Math.ceil((data.value?.total ?? 0) / 20)))
-const currentUploadFolders = computed(() => uploadAsset.value ? uploadFolderOptions[uploadAsset.value.type] : [])
+const currentUploadFolders = computed(() => uploadAsset.value?.upload_directories ?? [])
 
 async function load() {
   controller?.abort()
@@ -142,7 +135,7 @@ async function registerAsset() {
   creating.value = true
   createError.value = ''
   try {
-    const asset = await createAsset({
+    await createAsset({
       type: assetType.value,
       title: registration.value.title.trim(),
       slug: registration.value.slug.trim(),
@@ -169,7 +162,7 @@ function openUpload(asset: AssetSummary) {
   uploadAsset.value = asset
   upload.value = {
     sourcePath: '',
-    directory: uploadFolderOptions[asset.type][0].value,
+    directory: asset.default_upload_directory,
     nestedPath: '',
     recursive: false,
   }
@@ -328,7 +321,7 @@ onBeforeUnmount(() => controller?.abort())
         <h2 id="upload-title">上传到「{{ uploadAsset.title }}」</h2>
         <p class="registration-note">目标资产与一级归档目录均按资产类型固定。填写本机待上传文件或目录的路径，复制命令到该电脑终端执行。</p>
         <label>本机待上传文件或目录<input v-model="upload.sourcePath" required placeholder="例如：/mnt/research/soil-samples.csv" /></label>
-        <label>归档一级目录<select v-model="upload.directory" required><option v-for="folder in currentUploadFolders" :key="folder.value" :value="folder.value">{{ folder.label }}</option></select></label>
+        <label>归档一级目录<select v-model="upload.directory" required><option v-for="folder in currentUploadFolders" :key="folder.name" :value="folder.name">{{ folder.name }} · {{ folder.label }}</option></select></label>
         <label>目录内细分路径（可选）<input v-model="upload.nestedPath" placeholder="例如：2026-08 或 experiment-a" /></label>
         <label class="upload-recursive"><input v-model="upload.recursive" type="checkbox" /> 上传整个目录（添加 <code>-r</code>）</label>
         <p v-if="uploadError" class="registration-error">{{ uploadError }}</p>

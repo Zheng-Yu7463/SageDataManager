@@ -5,21 +5,13 @@ from shlex import quote
 
 from sqlalchemy.orm import Session
 
-from app.domain.models import Asset
+from app.domain.models import Activity, Asset, User
 from app.domain.schemas import UploadCommandRequest, UploadCommandResponse
+from app.services.upload_directories import upload_directory_names
 
 
 class UploadCommandError(Exception):
     pass
-
-
-UPLOAD_SUBDIRECTORIES = {
-    "paper": frozenset({"manuscript", "supplementary", "source", "reviews"}),
-    "dataset": frozenset({"raw", "processed", "documentation", "scripts"}),
-    "literature": frozenset({"original", "annotations", "notes"}),
-    "project": frozenset({"documentation", "code", "data", "outputs"}),
-    "model": frozenset({"weights", "checkpoints", "configs", "evaluation"}),
-}
 
 
 def generate_upload_command(
@@ -30,6 +22,7 @@ def generate_upload_command(
     ssh_user: str,
     ssh_port: int,
     destination_root: str,
+    actor: User | None = None,
 ) -> UploadCommandResponse:
     asset = session.get(Asset, payload.asset_id)
     if not asset or asset.archived_at:
@@ -45,7 +38,7 @@ def generate_upload_command(
     ):
         raise UploadCommandError("目标子目录必须是归档目录内的相对路径。")
 
-    allowed_subdirectories = UPLOAD_SUBDIRECTORIES[asset.type.value]
+    allowed_subdirectories = upload_directory_names(asset.type)
     if subdirectory.parts[0] not in allowed_subdirectories:
         allowed_names = "、".join(sorted(allowed_subdirectories))
         raise UploadCommandError(f"{asset.type.value} 资产的一级归档目录必须是：{allowed_names}。")
@@ -64,6 +57,15 @@ def generate_upload_command(
         f"scp -P {ssh_port} {recursive}-- {quote(source_path)} "
         f"{quote(f'{remote_login}:{destination.as_posix()}/')}"
     )
+    if actor:
+        session.add(
+            Activity(
+                asset=asset,
+                actor=actor,
+                action="prepared_upload",
+                description=f"为 {archive_relative_path} 生成了 SCP 上传指令",
+            )
+        )
     return UploadCommandResponse(
         asset_id=asset.id,
         asset_title=asset.title,
