@@ -51,6 +51,7 @@ def sync_unclaimed_files(session: Session, storage_root: Path) -> None:
         record.relative_path: record for record in session.scalars(select(UnclaimedFile)).all()
     }
     root = storage_root.resolve()
+    seen_paths: set[str] = set()
     for candidate in root.rglob("*"):
         if candidate.is_symlink() or not candidate.is_file():
             continue
@@ -63,6 +64,7 @@ def sync_unclaimed_files(session: Session, storage_root: Path) -> None:
         if len(parts) >= 3 and (parts[0], parts[1]) in assets:
             continue
         relative_path = relative.as_posix()
+        seen_paths.add(relative_path)
         record = existing.get(relative_path)
         if not record:
             record = UnclaimedFile(relative_path=relative_path)
@@ -75,6 +77,9 @@ def sync_unclaimed_files(session: Session, storage_root: Path) -> None:
         record.file_size = stat.st_size
         record.modified_at = datetime.fromtimestamp(stat.st_mtime, UTC)
         record.last_seen_at = datetime.now(UTC)
+    for relative_path, record in existing.items():
+        if relative_path not in seen_paths and record.claimed_asset_id is None:
+            session.delete(record)
 
 
 def claim_unclaimed_file(

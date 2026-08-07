@@ -66,3 +66,20 @@ def test_claimed_file_is_indexed_on_future_scans(tmp_path: Path) -> None:
     assert file_record.health_status == HealthStatus.HEALTHY
     assert scan.files_indexed == 1
     assert scan.files_unclaimed == 0
+
+
+def test_sync_removes_unclaimed_records_when_source_file_disappears(tmp_path: Path) -> None:
+    storage_root = tmp_path / "archive"
+    incoming = storage_root / "incoming"
+    incoming.mkdir(parents=True)
+    source = incoming / "temporary.csv"
+    source.write_text("value\n1\n")
+
+    session = make_session()
+    sync_unclaimed_files(session, storage_root)
+    assert session.scalar(select(UnclaimedFile)) is not None
+
+    source.unlink()
+    sync_unclaimed_files(session, storage_root)
+
+    assert session.scalars(select(UnclaimedFile)).all() == []
