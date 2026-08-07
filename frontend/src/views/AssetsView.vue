@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { useDebounceFn } from '@vueuse/core'
 import {
-  ArrowDownToLine,
   ArrowLeft,
   ArrowRight,
-  Eye,
+  Check,
+  Copy,
+  Database,
+  FolderUp,
   Grid2X2,
   List,
   LockKeyhole,
@@ -19,9 +21,9 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import AssetIcon from '@/components/AssetIcon.vue'
-import { createAsset, getAssets } from '@/api/client'
+import { createAsset, getAssets, getUploadCommand } from '@/api/client'
 import { assetMeta } from '@/catalogue'
-import type { AssetListResponse, AssetType, Visibility } from '@/types'
+import type { AssetListResponse, AssetSummary, AssetType, UploadCommandResult, Visibility } from '@/types'
 
 const route = useRoute()
 const router = useRouter()
@@ -45,6 +47,16 @@ const registration = ref({
   visibility: 'lab' as Visibility,
   version: '',
   tags: '',
+})
+const uploadAsset = ref<AssetSummary | null>(null)
+const uploadGenerating = ref(false)
+const uploadError = ref('')
+const uploadCopied = ref(false)
+const uploadResult = ref<UploadCommandResult | null>(null)
+const upload = ref({
+  sourcePath: '',
+  targetSubdirectory: 'incoming',
+  recursive: false,
 })
 
 const meta = computed(() => assetMeta[assetType.value])
@@ -133,11 +145,55 @@ async function registerAsset() {
       details: {},
     })
     registrationOpen.value = false
-    await router.push({ name: 'asset-detail', params: { assetId: asset.id } })
+    query.value = ''
+    page.value = 1
+    await router.replace({ query: {} })
+    await load()
   } catch (reason) {
     createError.value = reason instanceof Error ? reason.message : '登记失败，请稍后重试'
   } finally {
     creating.value = false
+  }
+}
+
+function openUpload(asset: AssetSummary) {
+  uploadAsset.value = asset
+  upload.value = { sourcePath: '', targetSubdirectory: 'incoming', recursive: false }
+  uploadError.value = ''
+  uploadCopied.value = false
+  uploadResult.value = null
+}
+
+function closeUpload() {
+  if (!uploadGenerating.value) uploadAsset.value = null
+}
+
+async function generateUploadCommand() {
+  if (!uploadAsset.value || !upload.value.sourcePath.trim()) return
+  uploadGenerating.value = true
+  uploadError.value = ''
+  uploadCopied.value = false
+  try {
+    uploadResult.value = await getUploadCommand({
+      asset_id: uploadAsset.value.id,
+      source_path: upload.value.sourcePath.trim(),
+      target_subdirectory: upload.value.targetSubdirectory.trim(),
+      recursive: upload.value.recursive,
+    })
+  } catch (reason) {
+    uploadError.value = reason instanceof Error ? reason.message : '无法生成上传命令'
+  } finally {
+    uploadGenerating.value = false
+  }
+}
+
+async function copyUploadCommand() {
+  if (!uploadResult.value) return
+  try {
+    await navigator.clipboard.writeText(uploadResult.value.command)
+    uploadCopied.value = true
+  } catch {
+    uploadError.value = '浏览器无法写入剪贴板，请手动复制命令。'
   }
 }
 
@@ -207,6 +263,7 @@ onBeforeUnmount(() => controller?.abort())
         <dl class="catalogue-facts">
           <div><dt>当前版本</dt><dd>{{ asset.current_version ?? '—' }}</dd></div>
           <div><dt>文件规模</dt><dd>{{ formatBytes(asset.total_size) }}</dd></div>
+          <div><dt>数据状态</dt><dd><span class="data-status" :class="{ 'data-status--present': asset.file_count > 0 }"><Database :size="13" />{{ asset.file_count > 0 ? `已有数据 · ${asset.file_count} 个文件` : '暂无数据' }}</span></dd></div>
           <div><dt>负责人</dt><dd><span class="mini-avatar">{{ asset.owner.name.slice(0, 1) }}</span>{{ asset.owner.name }}</dd></div>
           <div><dt>更新日期</dt><dd>{{ formatDate(asset.updated_at) }}</dd></div>
         </dl>
@@ -217,8 +274,7 @@ onBeforeUnmount(() => controller?.abort())
           {{ asset.visibility === 'lab' ? '全实验室可见' : asset.visibility === 'project' ? '项目成员可见' : '受限资产' }}
         </div>
         <div class="catalogue-actions">
-          <button disabled title="文件预览将在下一阶段开放"><Eye :size="18" /><span>预览</span></button>
-          <button disabled title="受控下载将在下一阶段开放"><ArrowDownToLine :size="18" /><span>下载</span></button>
+          <button title="获取此资产的 SCP 上传指令" @click="openUpload(asset)"><FolderUp :size="18" /><span>上传指令</span></button>
           <RouterLink class="action-primary" :to="{ name: 'asset-detail', params: { assetId: asset.id } }">查看详情 <ArrowRight :size="16" /></RouterLink>
         </div>
       </article>
@@ -251,6 +307,24 @@ onBeforeUnmount(() => controller?.abort())
         <footer><button class="button button--outline" type="button" :disabled="creating" @click="closeRegistration">取消</button><button class="button button--primary" :disabled="creating || !registration.title.trim() || !registration.slug.trim()" type="submit"><Save :size="16" />{{ creating ? '正在登记' : '确认登记' }}</button></footer>
       </form>
     </div>
+    <div v-if="uploadAsset" class="registration-backdrop" @click.self="closeUpload">
+      <form class="registration-dialog upload-dialog" aria-labelledby="upload-title" @submit.prevent="generateUploadCommand">
+        <button class="registration-close" type="button" aria-label="关闭" :disabled="uploadGenerating" @click="closeUpload"><X :size="18" /></button>
+        <p class="eyebrow">SCP UPLOAD · {{ meta.english.toUpperCase() }}</p>
+        <h2 id="upload-title">上传到「{{ uploadAsset.title }}」</h2>
+        <p class="registration-note">目标资产已固定，无需再次选择。填写保存文件的那台电脑上的路径，复制命令到该电脑终端执行。</p>
+        <label>本机文件或目录路径<input v-model="upload.sourcePath" required placeholder="/path/to/local/file-or-directory" /></label>
+        <label>资产内目标子目录<input v-model="upload.targetSubdirectory" required placeholder="例如：incoming 或 raw/2026-08" /></label>
+        <label class="upload-recursive"><input v-model="upload.recursive" type="checkbox" /> 上传整个目录（添加 <code>-r</code>）</label>
+        <p v-if="uploadError" class="registration-error">{{ uploadError }}</p>
+        <footer><button class="button button--outline" type="button" :disabled="uploadGenerating" @click="closeUpload">取消</button><button class="button button--primary" :disabled="uploadGenerating || !upload.sourcePath.trim() || !upload.targetSubdirectory.trim()" type="submit"><FolderUp :size="16" />{{ uploadGenerating ? '正在生成' : '生成 SCP 命令' }}</button></footer>
+        <section v-if="uploadResult" class="upload-command-result">
+          <header><div><strong>上传指令已生成</strong><small>归档目录：{{ uploadResult.archive_relative_path }}</small></div><button class="button button--outline" type="button" @click="copyUploadCommand"><Check v-if="uploadCopied" :size="16" /><Copy v-else :size="16" />{{ uploadCopied ? '已复制' : '复制' }}</button></header>
+          <pre><code>{{ uploadResult.command }}</code></pre>
+          <p>完成传输后，到“归档健康”运行扫描；成功索引后此资产会显示为“已有数据”。</p>
+        </section>
+      </form>
+    </div>
 
   </div>
 </template>
@@ -258,4 +332,5 @@ onBeforeUnmount(() => controller?.abort())
 <style scoped>
 .registration-backdrop { position: fixed; z-index: 40; inset: 0; display: grid; padding: 20px; place-items: center; background: rgba(23, 34, 26, .48); }
 .registration-dialog { position: relative; display: grid; width: min(100%, 610px); max-height: calc(100vh - 40px); padding: 28px; overflow-y: auto; background: #fdfefb; border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 20px 50px rgba(24, 37, 29, .22); gap: 11px; }.registration-dialog h2 { margin: -5px 0 0; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 24px; font-weight: 500; }.registration-note { margin: -3px 0 7px; color: var(--muted); font-size: 12px; line-height: 1.55; }.registration-dialog label { display: grid; color: #526056; font-size: 12px; font-weight: 700; gap: 6px; }.registration-dialog input, .registration-dialog textarea, .registration-dialog select { width: 100%; padding: 9px 10px; color: var(--ink); font: inherit; font-size: 13px; background: #fff; border: 1px solid var(--line); border-radius: 5px; outline-color: var(--sage); }.registration-dialog textarea { resize: vertical; }.registration-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }.registration-close { position: absolute; top: 13px; right: 13px; display: grid; width: 31px; height: 31px; color: #68776d; place-items: center; background: transparent; border: 0; border-radius: 50%; cursor: pointer; }.registration-close:hover { background: #eef2ed; }.registration-error { margin: 1px 0; color: #a6633b; font-size: 12px; }.registration-dialog footer { display: flex; margin-top: 9px; justify-content: flex-end; gap: 9px; } @media (max-width: 560px) { .registration-dialog { padding: 24px 20px; }.registration-grid { grid-template-columns: 1fr; } }
+.data-status { display: inline-flex; color: #89968e; align-items: center; gap: 4px; font-family: inherit; font-size: 11px; }.data-status--present { color: var(--asset-accent); }.upload-dialog { width: min(100%, 720px); }.upload-recursive { display: flex !important; align-items: center; color: #637068 !important; font-weight: 500 !important; gap: 7px !important; }.upload-recursive input { width: auto !important; accent-color: var(--sage); }.upload-command-result { display: grid; margin-top: 8px; padding-top: 17px; gap: 10px; border-top: 1px solid var(--line); }.upload-command-result header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }.upload-command-result header div { display: grid; gap: 3px; }.upload-command-result strong { font-size: 13px; }.upload-command-result small, .upload-command-result p { color: var(--muted); font-size: 11px; line-height: 1.55; }.upload-command-result p { margin: 0; }.upload-command-result pre { margin: 0; padding: 13px; overflow-x: auto; color: #dfeade; background: #17221b; border-radius: 6px; font-size: 11px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }.upload-command-result code { color: inherit; }
 </style>

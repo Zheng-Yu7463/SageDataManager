@@ -35,6 +35,7 @@ def asset_summary(asset: Asset) -> AssetSummary:
         tags=sorted(tag.name for tag in asset.tags),
         current_version=current_version,
         total_size=sum(file.file_size for file in asset.files),
+        file_count=len(asset.files),
         updated_at=asset.updated_at,
     )
 

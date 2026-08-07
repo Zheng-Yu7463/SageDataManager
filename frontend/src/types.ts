@@ -20,6 +20,7 @@ export interface AssetSummary {
   tags: string[]
   current_version: string | null
   total_size: number
+  file_count: number
   updated_at: string
 }
 

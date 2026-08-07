@@ -781,7 +781,7 @@ a {
 .catalogue-card {
   position: relative;
   display: grid;
-  min-height: 142px;
+  min-height: 158px;
   padding: 18px 18px 17px;
   align-items: start;
   background: rgba(252, 253, 249, 0.93);
@@ -868,7 +868,7 @@ a {
   .profile-copy { display: none; }
   .metric-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .catalogue-card { grid-template-columns: 46px minmax(220px, 1fr) minmax(260px, .85fr); }
-  .catalogue-actions { display: none; }
+  .catalogue-actions { display: flex; height: auto; padding: 10px 0 0; grid-column: 1 / -1; justify-content: flex-end; flex-direction: row; border-top: 1px solid #e5e9e3; border-left: 0; }.catalogue-actions span { display: inline; }.catalogue-actions .action-primary { width: auto; font-size: 11px; }
   .visibility-line { left: auto; right: 18px; }
 }
 

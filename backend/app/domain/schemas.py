@@ -51,6 +51,7 @@ class AssetSummary(BaseModel):
     tags: list[str] = Field(default_factory=list)
     current_version: str | None = None
     total_size: int = 0
+    file_count: int = 0
     updated_at: datetime
 
 

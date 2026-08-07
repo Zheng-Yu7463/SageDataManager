@@ -48,6 +48,7 @@ def test_create_asset_creates_owner_tags_version_and_activity() -> None:
     assert session.scalar(select(AssetVersion.version)) == "v0.1"
     assert session.scalar(select(Activity.action)) == "created"
     assert session.scalar(select(User.email)) == "wangxue@sage.lab"
+    assert result.file_count == 0
 
 
 def test_create_asset_rejects_duplicate_slug() -> None:
