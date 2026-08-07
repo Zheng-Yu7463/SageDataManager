@@ -452,8 +452,8 @@ onBeforeUnmount(() => {
 .detail-status small, .detail-list-row small, .detail-timeline p, .detail-empty, .detail-privacy { color: #7c887f; font-size: 11px; }
 .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .version-current { display: flex !important; align-items: center; gap: 8px !important; font-weight: 500 !important; }.version-current input { width: auto !important; accent-color: var(--sage); }
-.detail-overview { grid-row: span 2; }
-.detail-facts { display: grid; margin: 20px 0 0; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.detail-overview { grid-column: 1 / -1; grid-row: auto; }
+.detail-facts { display: grid; margin: 20px 0 0; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: 20px; }
 .detail-facts dt { margin-bottom: 6px; color: #94a097; font-size: 10px; text-transform: capitalize; }
 .detail-facts dd { display: flex; margin: 0; align-items: center; gap: 6px; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 14px; overflow-wrap: anywhere; }
 .detail-list { margin-top: 15px; border-top: 1px solid var(--line); }

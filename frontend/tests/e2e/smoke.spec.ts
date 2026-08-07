@@ -20,7 +20,7 @@ async function signIn(page: Page) {
 
 test('管理员可登录、筛选目录并生成上传指令', async ({ page }) => {
   await signIn(page)
-  await page.getByRole('link', { name: /数据集/ }).click()
+  await page.getByRole('link', { name: '数据集 Datasets', exact: true }).click()
   await page.getByRole('button', { name: /筛选条件/ }).click()
   await page.getByLabel('数据状态').selectOption('present')
   await expect(page.getByText('ClimateBench v2.1 数据集')).toBeVisible()
@@ -32,11 +32,11 @@ test('管理员可登录、筛选目录并生成上传指令', async ({ page }) 
 
 test('资产详情提供可折叠的文件浏览器', async ({ page }) => {
   await signIn(page)
-  await page.getByRole('link', { name: /数据集/ }).click()
+  await page.getByRole('link', { name: '数据集 Datasets', exact: true }).click()
   const climateBench = page.locator('.catalogue-card').filter({ hasText: 'ClimateBench v2.1 数据集' })
   await climateBench.getByRole('link', { name: /查看详情/ }).click()
   await expect(page.getByRole('heading', { name: '文件浏览' })).toBeVisible()
-  await expect(page.getByText('README.md')).toBeVisible()
+  await expect(page.getByText('README.md', { exact: true })).toBeVisible()
 })
 
 test('总览与目录保留视觉基线', async ({ page }) => {
@@ -45,7 +45,7 @@ test('总览与目录保留视觉基线', async ({ page }) => {
     fullPage: true,
     maxDiffPixelRatio: 0.02,
   })
-  await page.getByRole('link', { name: /数据集/ }).click()
+  await page.getByRole('link', { name: '数据集 Datasets', exact: true }).click()
   await expect(page).toHaveScreenshot('datasets.png', {
     fullPage: true,
     maxDiffPixelRatio: 0.02,
