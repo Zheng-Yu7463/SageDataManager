@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { Archive, ArrowDownToLine, ArrowLeft, CheckCircle2, CircleAlert, Eye, FileText, GitBranch, History, Layers3, Pencil, Save, X } from '@lucide/vue'
+import { Archive, ArrowDownToLine, ArrowLeft, CheckCircle2, CircleAlert, Eye, FileText, GitBranch, History, Layers3, Link2, Pencil, Plus, Save, Trash2, X } from '@lucide/vue'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import { archiveAsset, getAsset, getFileAccessTicket, updateAsset } from '@/api/client'
+import { addAssetRelation, archiveAsset, getAsset, getAssets, getFileAccessTicket, removeAssetRelation, updateAsset } from '@/api/client'
 import AssetIcon from '@/components/AssetIcon.vue'
 import { assetMeta } from '@/catalogue'
-import type { AssetDetail, FileAccessMode, FileSummary, Visibility } from '@/types'
+import type { AssetDetail, AssetSummary, FileAccessMode, FileSummary, RelatedAssetSummary, Visibility } from '@/types'
 
 const route = useRoute()
 const router = useRouter()
@@ -24,12 +24,19 @@ const archiving = ref(false)
 const editError = ref('')
 const edit = ref({ title: '', summary: '', status: '', visibility: 'lab' as Visibility, tags: '' })
 
+const relationOpen = ref(false)
+const relationCandidates = ref<AssetSummary[]>([])
+const relationTargetId = ref('')
+const relationType = ref('related_to')
+const relationSaving = ref(false)
+const relationError = ref('')
 const meta = computed(() => (data.value ? assetMeta[data.value.type] : null))
 const previewableMimeTypes = new Set([
   'application/json', 'application/pdf', 'application/x-yaml', 'text/csv',
   'text/markdown', 'text/plain', 'text/tab-separated-values', 'text/yaml',
   'image/avif', 'image/gif', 'image/jpeg', 'image/png', 'image/webp',
 ])
+const removingRelationId = ref<string | null>(null)
 
 async function load() {
   controller?.abort()
@@ -148,6 +155,58 @@ async function archiveCurrentAsset() {
   }
 }
 
+async function openRelation() {
+  if (!data.value) return
+  relationOpen.value = true
+  relationError.value = ''
+  relationTargetId.value = ''
+  relationType.value = 'related_to'
+  try {
+    const result = await getAssets(undefined, { pageSize: 100 })
+    relationCandidates.value = result.items.filter(
+      (asset) => asset.id !== data.value?.id,
+    )
+  } catch (reason) {
+    relationCandidates.value = []
+    relationError.value = reason instanceof Error ? reason.message : '无法读取可关联资产'
+  }
+}
+
+function closeRelation() {
+  if (!relationSaving.value) relationOpen.value = false
+}
+
+async function saveRelation() {
+  if (!data.value || !relationTargetId.value || !relationType.value.trim()) return
+  relationSaving.value = true
+  relationError.value = ''
+  try {
+    await addAssetRelation(data.value.id, {
+      target_asset_id: relationTargetId.value,
+      relation_type: relationType.value.trim(),
+    })
+    relationOpen.value = false
+    await load()
+  } catch (reason) {
+    relationError.value = reason instanceof Error ? reason.message : '无法建立关联'
+  } finally {
+    relationSaving.value = false
+  }
+}
+
+async function removeRelation(relation: RelatedAssetSummary) {
+  if (!data.value || !window.confirm(`解除与「${relation.title}」的关联吗？`)) return
+  removingRelationId.value = relation.relation_id
+  try {
+    await removeAssetRelation(data.value.id, relation.relation_id)
+    await load()
+  } catch (reason) {
+    error.value = reason instanceof Error ? reason.message : '无法解除关联'
+  } finally {
+    removingRelationId.value = null
+  }
+}
+
 watch(() => route.params.assetId, load, { immediate: true })
 onBeforeUnmount(() => {
   controller?.abort()
@@ -211,11 +270,11 @@ onBeforeUnmount(() => {
         </article>
 
         <article class="panel detail-related">
-          <header class="panel-heading"><div><span class="section-number">04</span><div><h2>关联资产</h2><p>Research context</p></div></div></header>
+          <header class="panel-heading"><div><span class="section-number">04</span><div><h2>关联资产</h2><p>Research context</p></div></div><button class="section-action" @click="openRelation"><Plus :size="14" />添加关联</button></header>
           <div v-if="data.related_assets.length" class="detail-list">
-            <RouterLink v-for="asset in data.related_assets" :key="asset.id" :to="{ name: 'asset-detail', params: { assetId: asset.id } }" class="detail-list-row detail-link"><GitBranch :size="18" /><span><strong>{{ asset.title }}</strong><small>{{ asset.relation_type }} · {{ assetMeta[asset.type].label }}</small></span></RouterLink>
+            <div v-for="asset in data.related_assets" :key="asset.relation_id" class="detail-list-row detail-related-row"><RouterLink :to="{ name: 'asset-detail', params: { assetId: asset.id } }" class="detail-link"><GitBranch :size="18" /><span><strong>{{ asset.title }}</strong><small>{{ asset.relation_type }} · {{ assetMeta[asset.type].label }}</small></span></RouterLink><button class="relation-remove" :disabled="removingRelationId === asset.relation_id" :title="`解除与 ${asset.title} 的关联`" @click="removeRelation(asset)"><Trash2 :size="14" /></button></div>
           </div>
-          <p v-else class="detail-empty">尚未登记关联资产。</p>
+          <p v-else class="detail-empty">尚未登记关联资产。可将论文、数据集、项目或模型串联为研究上下文。</p>
         </article>
 
         <article class="panel detail-activity">
@@ -244,6 +303,17 @@ onBeforeUnmount(() => {
           <footer><button class="button button--outline" type="button" :disabled="saving" @click="closeEdit">取消</button><button class="button button--primary" :disabled="saving || !edit.title.trim()" type="submit"><Save :size="16" />{{ saving ? '正在保存' : '保存修改' }}</button></footer>
         </form>
       </div>
+      <div v-if="relationOpen" class="preview-overlay" role="dialog" aria-modal="true" aria-label="添加关联资产" @click.self="closeRelation">
+        <form class="edit-dialog relation-dialog" @submit.prevent="saveRelation">
+          <header><div><p class="eyebrow">LINK ASSETS</p><h2>添加关联资产</h2></div><button type="button" title="关闭" :disabled="relationSaving" @click="closeRelation"><X :size="18" /></button></header>
+          <p class="relation-help"><Link2 :size="16" />关联只补充元数据，不会移动、复制或删除任何文件。</p>
+          <label>关联到<select v-model="relationTargetId" required :disabled="relationSaving || !relationCandidates.length"><option value="" disabled>请选择已登记资产</option><option v-for="asset in relationCandidates" :key="asset.id" :value="asset.id">{{ asset.title }} · {{ assetMeta[asset.type].label }}</option></select></label>
+          <label>关系类型<input v-model="relationType" required maxlength="60" placeholder="例如：derived_from、supports、documents" /></label>
+          <p v-if="!relationCandidates.length && !relationError" class="edit-error">没有可关联的其他已登记资产。</p>
+          <p v-if="relationError" class="edit-error">{{ relationError }}</p>
+          <footer><button class="button button--outline" type="button" :disabled="relationSaving" @click="closeRelation">取消</button><button class="button button--primary" :disabled="relationSaving || !relationTargetId || !relationType.trim()" type="submit"><Link2 :size="16" />{{ relationSaving ? '正在关联' : '建立关联' }}</button></footer>
+        </form>
+      </div>
     </template>
   </div>
 </template>
@@ -266,6 +336,7 @@ onBeforeUnmount(() => {
 .detail-list-row > svg { color: var(--asset-accent); }.detail-list-row span { display: grid; min-width: 0; gap: 3px; }.detail-list-row strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }.detail-list-row em { color: var(--sage); font-size: 10px; font-style: normal; }.detail-list-row em.warning { color: #b37225; }.detail-list-row time, .detail-timeline time { color: #95a097; font-size: 10px; white-space: nowrap; }
 .file-actions { display: flex; gap: 4px; }.file-actions button, .preview-dialog header button { display: grid; width: 29px; height: 29px; padding: 0; color: #506356; place-items: center; background: #f4f6f1; border: 1px solid var(--line); border-radius: 5px; cursor: pointer; }.file-actions button:hover:not(:disabled), .preview-dialog header button:hover { color: var(--asset-accent); border-color: var(--asset-accent); }.file-actions button:disabled { cursor: not-allowed; opacity: .45; }.file-action-error { margin: 12px 0 0; color: #a6633b; font-size: 11px; }
 .detail-link { grid-template-columns: 25px minmax(0, 1fr); color: inherit; }.detail-empty { margin: 18px 0 0; }.detail-timeline { display: grid; margin: 15px 0 0; padding: 0; gap: 14px; list-style: none; }.detail-timeline li { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 8px; }.detail-timeline svg { color: var(--asset-accent); }.detail-timeline strong { font-size: 12px; }.detail-timeline strong small { margin-left: 5px; color: var(--asset-accent); font-size: 10px; }.detail-timeline p { margin: 4px 0 0; line-height: 1.5; }.detail-privacy { display: flex; margin: 18px 1px 0; align-items: center; gap: 6px; }
+.section-action, .relation-remove { display: inline-flex; padding: 0; align-items: center; gap: 4px; color: #63746a; background: transparent; border: 0; cursor: pointer; font-size: 10px; }.section-action:hover, .relation-remove:hover:not(:disabled) { color: var(--asset-accent); }.detail-related-row { grid-template-columns: minmax(0, 1fr) auto; }.detail-related-row .detail-link { display: grid; min-width: 0; align-items: center; gap: 10px; }.relation-remove { width: 28px; height: 28px; justify-content: center; color: #a6633b; border: 1px solid #eddcd1; border-radius: 5px; }.relation-remove:disabled { opacity: .45; cursor: wait; }.relation-help { display: flex; margin: 0; align-items: center; gap: 6px; color: #6b7a70; font-size: 12px; line-height: 1.5; }.relation-help svg { color: var(--sage); }
 .preview-overlay { position: fixed; z-index: 20; inset: 0; display: grid; padding: 26px; place-items: center; background: rgba(18, 29, 22, .52); }.preview-dialog { display: grid; width: min(100%, 1040px); height: min(84vh, 780px); grid-template-rows: auto minmax(0, 1fr); padding: 18px; background: #fff; border-radius: 11px; box-shadow: 0 25px 70px rgba(0,0,0,.28); }.preview-dialog header { display: flex; margin-bottom: 13px; align-items: flex-start; justify-content: space-between; gap: 12px; }.preview-dialog h2 { margin: 3px 0 0; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 17px; font-weight: 500; }.preview-dialog iframe { width: 100%; height: 100%; border: 1px solid var(--line); border-radius: 5px; background: #f8faf7; }
 .detail-controls { display: flex; margin-top: 5px; justify-content: flex-end; gap: 6px; }.detail-controls .button { min-height: 29px; padding: 0 8px; font-size: 10px; }.detail-archive { color: #9a5b3c; background: #fff7f1; border: 1px solid #edd3c2; }.edit-dialog { display: grid; width: min(100%, 620px); max-height: 86vh; padding: 22px; overflow-y: auto; background: #fff; border-radius: 11px; box-shadow: 0 25px 70px rgba(0,0,0,.28); gap: 12px; }.edit-dialog header { display: flex; margin-bottom: 3px; align-items: flex-start; justify-content: space-between; gap: 12px; }.edit-dialog h2 { margin: 3px 0 0; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 19px; font-weight: 500; }.edit-dialog header button { display: grid; width: 29px; height: 29px; padding: 0; place-items: center; background: #f4f6f1; border: 1px solid var(--line); border-radius: 5px; cursor: pointer; }.edit-dialog label { display: grid; color: #526056; font-size: 12px; font-weight: 700; gap: 6px; }.edit-dialog input, .edit-dialog textarea, .edit-dialog select { width: 100%; padding: 9px 10px; color: var(--ink); font: inherit; font-size: 13px; background: #fff; border: 1px solid var(--line); border-radius: 5px; outline-color: var(--sage); }.edit-dialog textarea { resize: vertical; }.edit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }.edit-dialog footer { display: flex; justify-content: flex-end; gap: 8px; }.edit-error { margin: 0; color: #a6633b; font-size: 12px; }
 @media (max-width: 760px) { .detail-grid { grid-template-columns: 1fr; }.detail-overview { grid-row: auto; }.detail-status { text-align: left; }.detail-controls { justify-content: flex-start; }.detail-facts { grid-template-columns: 1fr; gap: 14px; }.detail-list-row { grid-template-columns: 23px minmax(0, 1fr) auto; }.detail-list-row time { display: none; }.file-actions { grid-column: 2 / -1; }.preview-overlay { padding: 12px; }.preview-dialog { height: 88vh; padding: 13px; }.edit-grid { grid-template-columns: 1fr; } }

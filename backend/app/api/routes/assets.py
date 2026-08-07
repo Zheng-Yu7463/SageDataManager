@@ -10,17 +10,22 @@ from app.domain.enums import AssetType
 from app.domain.schemas import (
     AssetCreateRequest,
     AssetListResponse,
+    AssetRelationCreateRequest,
     AssetSummary,
     AssetUpdateRequest,
+    RelatedAssetSummary,
 )
 from app.services.assets import (
     AssetNotFoundError,
+    AssetRelationError,
     AssetSlugConflictError,
+    add_asset_relation,
     archive_asset,
     create_asset,
     get_asset,
     list_archived_assets,
     list_assets,
+    remove_asset_relation,
     restore_asset,
     update_asset,
 )
@@ -115,6 +120,43 @@ def restore(
     except AssetNotFoundError:
         session.rollback()
         raise HTTPException(status_code=404, detail="已归档资产不存在。") from None
+    except Exception:
+        session.rollback()
+        raise
+
+
+@router.post("/{asset_id}/relations", status_code=status.HTTP_201_CREATED)
+def add_relation(
+    asset_id: UUID,
+    payload: AssetRelationCreateRequest,
+    session: SessionDependency,
+    current_user: AdminDependency,
+) -> RelatedAssetSummary:
+    try:
+        relation = add_asset_relation(session, asset_id, payload, actor=current_user)
+        session.commit()
+        return relation
+    except AssetRelationError as error:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=error.message) from None
+    except Exception:
+        session.rollback()
+        raise
+
+
+@router.delete("/{asset_id}/relations/{relation_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove_relation(
+    asset_id: UUID,
+    relation_id: UUID,
+    session: SessionDependency,
+    current_user: AdminDependency,
+) -> None:
+    try:
+        remove_asset_relation(session, asset_id, relation_id, actor=current_user)
+        session.commit()
+    except AssetRelationError as error:
+        session.rollback()
+        raise HTTPException(status_code=404, detail=error.message) from None
     except Exception:
         session.rollback()
         raise

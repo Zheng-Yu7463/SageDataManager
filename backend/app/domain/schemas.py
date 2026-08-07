@@ -70,6 +70,7 @@ class AssetListResponse(BaseModel):
 
 
 class RelatedAssetSummary(BaseModel):
+    relation_id: UUID
     id: UUID
     type: AssetType
     slug: str
@@ -177,6 +178,11 @@ class AssetUpdateRequest(BaseModel):
     visibility: Visibility | None = None
     tags: list[str] | None = Field(default=None, max_length=20)
     details: dict[str, Any] | None = None
+
+
+class AssetRelationCreateRequest(BaseModel):
+    target_asset_id: UUID
+    relation_type: str = Field(min_length=1, max_length=60)
 
 
 class UploadCommandRequest(BaseModel):

@@ -7,7 +7,9 @@ import type {
   AssetDetail,
   AssetCreateInput,
   AssetUpdateInput,
+  AssetRelationInput,
   AssetSummary,
+  RelatedAssetSummary,
   AssetListResponse,
   FileAccessMode,
   FileAccessTicket,
@@ -50,6 +52,7 @@ async function request<T>(path: string, signal?: AbortSignal, method = 'GET', bo
     }
     throw new ApiError(message, response.status)
   }
+  if (response.status === 204) return undefined as T
   return response.json() as Promise<T>
 }
 
@@ -93,6 +96,14 @@ export function restoreAsset(assetId: string) {
 
 export function getArchivedAssets() {
   return request<AssetSummary[]>('/api/assets/archived')
+}
+
+export function addAssetRelation(assetId: string, input: AssetRelationInput) {
+  return request<RelatedAssetSummary>(`/api/assets/${assetId}/relations`, undefined, 'POST', input)
+}
+
+export function removeAssetRelation(assetId: string, relationId: string) {
+  return request<void>(`/api/assets/${assetId}/relations/${relationId}`, undefined, 'DELETE')
 }
 
 

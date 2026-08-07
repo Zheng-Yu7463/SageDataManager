@@ -10,6 +10,7 @@ from app.domain.schemas import (
     ActivitySummary,
     AssetCreateRequest,
     AssetDetail,
+    AssetRelationCreateRequest,
     AssetSummary,
     AssetUpdateRequest,
     AssetVersionSummary,
@@ -26,6 +27,12 @@ class AssetSlugConflictError(Exception):
 
 class AssetNotFoundError(Exception):
     pass
+
+
+class AssetRelationError(Exception):
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(message)
 
 
 def asset_summary(asset: Asset) -> AssetSummary:
@@ -231,6 +238,83 @@ def list_archived_assets(session: Session) -> list[AssetSummary]:
     return [asset_summary(asset) for asset in session.scalars(statement).all()]
 
 
+def add_asset_relation(
+    session: Session, asset_id: UUID, payload: AssetRelationCreateRequest, *, actor: User
+) -> RelatedAssetSummary:
+    if asset_id == payload.target_asset_id:
+        raise AssetRelationError("资产不能关联到自身。")
+    assets = session.scalars(
+        select(Asset).where(
+            Asset.id.in_([asset_id, payload.target_asset_id]), Asset.archived_at.is_(None)
+        )
+    ).all()
+    asset_by_id = {asset.id: asset for asset in assets}
+    source = asset_by_id.get(asset_id)
+    target = asset_by_id.get(payload.target_asset_id)
+    if not source or not target:
+        raise AssetRelationError("关联资产不存在或已归档。")
+    relation_type = payload.relation_type.strip()
+    if not relation_type:
+        raise AssetRelationError("关系类型不能为空。")
+    existing = session.scalar(
+        select(AssetRelation).where(
+            AssetRelation.source_asset_id == source.id,
+            AssetRelation.target_asset_id == target.id,
+            AssetRelation.relation_type == relation_type,
+        )
+    )
+    if existing:
+        raise AssetRelationError("相同的关联已存在。")
+    relation = AssetRelation(
+        source_asset_id=source.id, target_asset_id=target.id, relation_type=relation_type
+    )
+    session.add(relation)
+    session.flush()
+    session.add(
+        Activity(
+            asset=source,
+            actor=actor,
+            action="linked_asset",
+            description=f"关联了资产「{target.title}」：{relation_type}",
+        )
+    )
+    return RelatedAssetSummary(
+        relation_id=relation.id,
+        id=target.id,
+        type=target.type,
+        slug=target.slug,
+        title=target.title,
+        relation_type=relation.relation_type,
+    )
+
+
+def remove_asset_relation(
+    session: Session, asset_id: UUID, relation_id: UUID, *, actor: User
+) -> None:
+    relation = session.scalar(
+        select(AssetRelation).where(
+            AssetRelation.id == relation_id,
+            or_(
+                AssetRelation.source_asset_id == asset_id,
+                AssetRelation.target_asset_id == asset_id,
+            ),
+        )
+    )
+    if not relation:
+        raise AssetRelationError("关联不存在或不能从当前资产移除。")
+    other_asset_id = (
+        relation.target_asset_id
+        if relation.source_asset_id == asset_id
+        else relation.source_asset_id
+    )
+    target = session.get(Asset, other_asset_id)
+    description = f"移除了与资产「{target.title if target else '已删除资产'}」的关联"
+    session.delete(relation)
+    session.add(
+        Activity(asset_id=asset_id, actor=actor, action="unlinked_asset", description=description)
+    )
+
+
 def get_asset(session: Session, asset_id: UUID) -> AssetDetail | None:
     statement = (
         select(Asset)
@@ -285,6 +369,7 @@ def get_asset(session: Session, asset_id: UUID) -> AssetDetail | None:
         files=[FileSummary.model_validate(file) for file in asset.files],
         related_assets=[
             RelatedAssetSummary(
+                relation_id=relation.id,
                 id=related.id,
                 type=related.type,
                 slug=related.slug,

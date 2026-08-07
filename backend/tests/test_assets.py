@@ -5,12 +5,15 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.db.base import Base
 from app.domain.enums import AssetType, Visibility
 from app.domain.models import Activity, Asset, AssetVersion, Tag, User
-from app.domain.schemas import AssetCreateRequest, AssetUpdateRequest
+from app.domain.schemas import AssetCreateRequest, AssetRelationCreateRequest, AssetUpdateRequest
 from app.services.assets import (
     AssetSlugConflictError,
+    add_asset_relation,
     archive_asset,
     create_asset,
+    get_asset,
     list_archived_assets,
+    remove_asset_relation,
     restore_asset,
     update_asset,
 )
@@ -98,3 +101,33 @@ def test_asset_metadata_can_be_updated_archived_and_restored() -> None:
     assert (
         session.scalar(select(Activity.action).order_by(Activity.created_at.desc())) == "restored"
     )
+
+
+def test_asset_relation_can_be_created_and_removed() -> None:
+    session = make_session()
+    source = create_asset(session, payload())
+    target_payload = payload().model_copy(
+        update={"slug": "soil-analysis-notebook", "title": "土壤分析笔记"}
+    )
+    target = create_asset(session, target_payload)
+    actor = session.get(User, source.owner.id)
+    assert actor is not None
+
+    relation = add_asset_relation(
+        session,
+        source.id,
+        AssetRelationCreateRequest(target_asset_id=target.id, relation_type="documents"),
+        actor=actor,
+    )
+
+    detail = get_asset(session, source.id)
+    assert relation.id == target.id
+    assert detail is not None
+    assert detail.related_assets[0].relation_id == relation.relation_id
+    assert detail.related_assets[0].title == "土壤分析笔记"
+
+    remove_asset_relation(session, target.id, relation.relation_id, actor=actor)
+
+    refreshed = get_asset(session, source.id)
+    assert refreshed is not None
+    assert refreshed.related_assets == []

@@ -59,6 +59,11 @@ export interface AssetUpdateInput {
   details?: Record<string, unknown>
 }
 
+export interface AssetRelationInput {
+  target_asset_id: string
+  relation_type: string
+}
+
 export interface AssetVersionSummary {
   id: string
   version: string
@@ -77,6 +82,7 @@ export interface FileSummary {
 }
 
 export interface RelatedAssetSummary {
+  relation_id: string
   id: string
   type: AssetType
   slug: string
