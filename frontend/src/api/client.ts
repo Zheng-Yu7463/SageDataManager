@@ -95,10 +95,6 @@ export function getUploadCommand(input: UploadCommandInput) {
   return request<UploadCommandResult>('/api/archive/upload-command', undefined, 'POST', input)
 }
 
-export function getLoginAccounts() {
-  return request<AccountSummary[]>('/api/auth/accounts')
-}
-
 export function loginAccount(username: string, password: string) {
   return request<AccountLoginResponse>('/api/auth/login', undefined, 'POST', { username, password })
 }

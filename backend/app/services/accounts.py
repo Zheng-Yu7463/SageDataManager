@@ -48,24 +48,18 @@ def account_summary(user: User) -> AccountSummary:
     )
 
 
-def login_fixed_account(
-    session: Session, username: str, password: str
-) -> tuple[AccountSummary, str]:
-    if username not in FIXED_USERNAMES:
-        raise AccountLoginError("该账号未获授权。")
+def login_account(session: Session, username: str, password: str) -> tuple[AccountSummary, str]:
     if not settings.fixed_account_password:
         raise AccountLoginError("服务器尚未配置固定账号密码。")
     if not hmac.compare_digest(password, settings.fixed_account_password):
         raise AccountLoginError("账号或密码错误。")
 
     ensure_fixed_accounts(session)
-    user = session.scalar(select(User).where(User.username == username, User.is_active.is_(True)))
-    if not user:
+    user = get_active_account(session, username)
+    if not user or user.role != "admin":
         raise AccountLoginError("账号不可用。")
     return account_summary(user), create_session_token(username)
 
 
-def get_fixed_account(session: Session, username: str) -> User | None:
-    if username not in FIXED_USERNAMES:
-        return None
+def get_active_account(session: Session, username: str) -> User | None:
     return session.scalar(select(User).where(User.username == username, User.is_active.is_(True)))

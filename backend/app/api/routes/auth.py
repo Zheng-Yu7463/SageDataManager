@@ -15,25 +15,17 @@ from app.domain.schemas import (
 from app.services.accounts import (
     AccountLoginError,
     account_summary,
-    ensure_fixed_accounts,
-    login_fixed_account,
+    login_account,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 SessionDependency = Annotated[Session, Depends(get_session)]
 
 
-@router.get("/accounts")
-def accounts(session: SessionDependency) -> list[AccountSummary]:
-    result = [account_summary(user) for user in ensure_fixed_accounts(session)]
-    session.commit()
-    return result
-
-
 @router.post("/login")
 def login(payload: AccountLoginRequest, session: SessionDependency) -> AccountLoginResponse:
     try:
-        account, session_token = login_fixed_account(session, payload.username, payload.password)
+        account, session_token = login_account(session, payload.username, payload.password)
         session.commit()
         return AccountLoginResponse(**account.model_dump(), session_token=session_token)
     except AccountLoginError as error:
