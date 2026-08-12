@@ -5,11 +5,13 @@ import { computed, onMounted, ref } from 'vue'
 import AssetIcon from '@/components/AssetIcon.vue'
 import { getDashboard } from '@/api/client'
 import { assetMeta, assetTypes } from '@/catalogue'
+import { useBranding } from '@/composables/useBranding'
 import type { DashboardSummary } from '@/types'
 
 const data = ref<DashboardSummary | null>(null)
 const loading = ref(true)
 const error = ref('')
+const { pageEyebrow } = useBranding()
 
 const totalAssets = computed(() => {
   if (!data.value) return 0
@@ -55,7 +57,7 @@ onMounted(load)
   <div class="page dashboard-page">
     <header class="page-heading page-heading--dashboard">
       <div>
-        <p class="eyebrow">SAGE KNOWLEDGE COMMONS · 2026</p>
+        <p class="eyebrow">{{ pageEyebrow(`KNOWLEDGE COMMONS · ${new Date().getFullYear()}`) }}</p>
         <h1>实验室科研资产总览</h1>
         <p>让散落在服务器里的研究成果，成为可检索、可理解、可传承的共同记忆。</p>
       </div>
@@ -66,12 +68,12 @@ onMounted(load)
       </div>
     </header>
 
-    <div v-if="loading" class="state-panel">
+    <div v-if="loading" class="state-panel" role="status" aria-live="polite">
       <span class="loader-ring"></span>
       <p>正在读取实验室目录…</p>
     </div>
 
-    <div v-else-if="error" class="state-panel state-panel--error">
+    <div v-else-if="error" class="state-panel state-panel--error" role="alert">
       <CircleAlert :size="28" />
       <strong>暂时无法连接归档服务</strong>
       <p>{{ error }}</p>

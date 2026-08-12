@@ -12,6 +12,7 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    LargeBinary,
     String,
     Table,
     Text,
@@ -47,6 +48,23 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(30), default="admin", nullable=False)
     avatar_url: Mapped[str | None] = mapped_column(String(500))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class InstanceBranding(Base):
+    __tablename__ = "instance_branding"
+
+    id: Mapped[int] = mapped_column(primary_key=True, default=1)
+    product_name: Mapped[str] = mapped_column(String(80), nullable=False)
+    product_subtitle: Mapped[str] = mapped_column(String(120), nullable=False)
+    organization_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    slogan: Mapped[str] = mapped_column(String(160), nullable=False)
+    slogan_secondary: Mapped[str] = mapped_column(String(160), nullable=False)
+    primary_color: Mapped[str] = mapped_column(String(7), nullable=False)
+    logo_data: Mapped[bytes | None] = mapped_column(LargeBinary)
+    logo_mime_type: Mapped[str | None] = mapped_column(String(40))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
+    )
 
 
 class Asset(Base):

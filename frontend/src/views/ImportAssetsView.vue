@@ -3,6 +3,7 @@ import { CheckCircle2, CircleAlert, FileJson, FileSpreadsheet, Upload } from '@l
 import { ref } from 'vue'
 
 import { importAssets, importAssetsYaml } from '@/api/client'
+import { useBranding } from '@/composables/useBranding'
 import type { AssetCreateInput } from '@/types'
 
 const source = ref(`[
@@ -22,6 +23,7 @@ const importing = ref(false)
 const sourceFormat = ref<'json' | 'yaml'>('json')
 const error = ref('')
 const created = ref<string[]>([])
+const { pageEyebrow } = useBranding()
 
 function parseAssets(): AssetCreateInput[] {
   const parsed: unknown = JSON.parse(source.value)
@@ -101,7 +103,7 @@ async function submit() {
 
 <template>
   <div class="page import-page">
-    <header class="page-heading"><div><p class="eyebrow">SAGE METADATA INTAKE</p><h1>批量导入资产</h1><p>导入仅登记元数据。文件请在资产创建后通过对应行的 SCP 指令上传并运行扫描。</p></div></header>
+    <header class="page-heading"><div><p class="eyebrow">{{ pageEyebrow('METADATA INTAKE') }}</p><h1>批量导入资产</h1><p>导入仅登记元数据。文件请在资产创建后通过对应行的 SCP 指令上传并运行扫描。</p></div></header>
     <section class="import-grid"><article class="panel import-panel"><header class="panel-heading"><div><span class="section-number">01</span><div><h2>导入 JSON、CSV 或 YAML</h2><p>最多 100 条</p></div></div><FileJson :size="20" /></header><label class="csv-picker"><FileSpreadsheet :size="16" />从导入文件载入<input type="file" accept=".csv,.yaml,.yml,text/csv,text/yaml" :disabled="importing" @change="readCsv" /></label><textarea v-model="source" spellcheck="false" :disabled="importing"></textarea><p class="import-note">JSON 支持数组或 <code>{ "assets": [...] }</code>。CSV 必填列为 <code>type,slug,title</code>；可选 tags 用 <code>|</code> 分隔，details 为 JSON 对象。YAML 支持同样的数组或 <code>assets:</code> 结构。</p><p v-if="error" class="import-error"><CircleAlert :size="16" />{{ error }}</p><button class="button button--primary" :disabled="importing" @click="submit"><Upload :size="16" />{{ importing ? '正在导入' : '验证并导入' }}</button></article><aside class="panel import-side"><header class="panel-heading"><div><span class="section-number">02</span><div><h2>安全规则</h2><p>Atomic import</p></div></div></header><ul><li>先校验整批内容、字段与 slug。</li><li>发现重复 slug 时不会创建任何记录。</li><li>不会读取、移动或上传本机文件。</li><li>成功后进入分类页生成 SCP 指令。</li></ul><div v-if="created.length" class="import-success"><CheckCircle2 :size="21" /><strong>已创建 {{ created.length }} 条资产</strong><p>{{ created.join('、') }}</p></div></aside></section>
   </div>
 </template>

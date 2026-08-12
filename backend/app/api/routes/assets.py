@@ -21,9 +21,12 @@ from app.domain.schemas import (
     AssetYamlImportRequest,
     BatchAssetImportRequest,
     BatchAssetImportResponse,
+    PaperCitationExportResponse,
+    PaperCitationResponse,
     RelatedAssetSummary,
 )
 from app.services.assets import (
+    AssetMetadataError,
     AssetNotFoundError,
     AssetRelationError,
     AssetSlugConflictError,
@@ -37,9 +40,16 @@ from app.services.assets import (
     import_assets,
     list_archived_assets,
     list_assets,
+    list_paper_catalogue_facets,
+    list_papers_for_citation_export,
     remove_asset_relation,
     restore_asset,
     update_asset,
+)
+from app.services.citations import (
+    PaperCitationError,
+    build_paper_citation,
+    build_paper_citation_export,
 )
 
 router = APIRouter(prefix="/assets", tags=["assets"])
@@ -53,6 +63,8 @@ def assets(
     asset_status: str | None = Query(default=None, alias="status", max_length=40),
     visibility: Visibility | None = None,
     has_files: bool | None = None,
+    venue: str | None = Query(default=None, min_length=2, max_length=80),
+    year: int | None = Query(default=None, ge=1900, le=2200),
     query: str | None = Query(default=None, max_length=200),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=1, le=100),
@@ -65,10 +77,45 @@ def assets(
         status=asset_status,
         visibility=visibility,
         has_files=has_files,
+        venue=venue,
+        year=year,
         page_size=page_size,
     )
 
-    return AssetListResponse(items=items, total=total, page=page, page_size=page_size)
+    paper_facets = list_paper_catalogue_facets(session) if asset_type == AssetType.PAPER else None
+    return AssetListResponse(
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
+        paper_facets=paper_facets,
+    )
+
+
+@router.get("/citations/bibtex")
+def export_bibtex(
+    session: SessionDependency,
+    _: AdminDependency,
+    asset_status: str | None = Query(default=None, alias="status", max_length=40),
+    visibility: Visibility | None = None,
+    has_files: bool | None = None,
+    venue: str | None = Query(default=None, min_length=2, max_length=80),
+    year: int | None = Query(default=None, ge=1900, le=2200),
+    query: str | None = Query(default=None, max_length=200),
+) -> PaperCitationExportResponse:
+    papers = list_papers_for_citation_export(
+        session,
+        query=query,
+        status=asset_status,
+        visibility=visibility,
+        has_files=has_files,
+        venue=venue,
+        year=year,
+    )
+    try:
+        return build_paper_citation_export(papers)
+    except PaperCitationError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from None
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -82,6 +129,9 @@ def create(
     except AssetSlugConflictError:
         session.rollback()
         raise HTTPException(status_code=409, detail="资产标识已存在，请使用另一个 slug。") from None
+    except AssetMetadataError as error:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=error.message) from None
     except Exception:
         session.rollback()
         raise
@@ -157,6 +207,9 @@ def update(
     except AssetNotFoundError:
         session.rollback()
         raise HTTPException(status_code=404, detail="资产不存在或已归档。") from None
+    except AssetMetadataError as error:
+        session.rollback()
+        raise HTTPException(status_code=422, detail=error.message) from None
     except Exception:
         session.rollback()
         raise
@@ -259,3 +312,16 @@ def asset(asset_id: UUID, session: SessionDependency) -> AssetDetail:
     if not result:
         raise HTTPException(status_code=404, detail="Asset not found")
     return result
+
+
+@router.get("/{asset_id}/citation/bibtex")
+def paper_bibtex(
+    asset_id: UUID, session: SessionDependency, _: AdminDependency
+) -> PaperCitationResponse:
+    result = get_asset(session, asset_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="资产不存在或已归档。")
+    try:
+        return build_paper_citation(result)
+    except PaperCitationError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from None

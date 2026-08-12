@@ -3,12 +3,14 @@ import { ArchiveRestore, CheckCircle2, CircleAlert, FileSearch, RefreshCw, Shiel
 import { onMounted, ref } from 'vue'
 
 import { getArchiveHealth, runArchiveScan } from '@/api/client'
+import { useBranding } from '@/composables/useBranding'
 import type { ArchiveHealthSummary } from '@/types'
 
 const data = ref<ArchiveHealthSummary | null>(null)
 const loading = ref(true)
 const running = ref(false)
 const error = ref('')
+const { pageEyebrow } = useBranding()
 
 async function load() {
   loading.value = true
@@ -47,7 +49,7 @@ onMounted(load)
   <div class="page archive-health-page">
     <header class="page-heading">
       <div>
-        <p class="eyebrow">SAGE ARCHIVE INTEGRITY</p>
+        <p class="eyebrow">{{ pageEyebrow('ARCHIVE INTEGRITY') }}</p>
         <h1>归档健康</h1>
         <p>扫描器只同步文件事实；未匹配文件会保留为待认领，不会自动登记为科研资产。</p>
       </div>
@@ -56,8 +58,8 @@ onMounted(load)
       </button>
     </header>
 
-    <div v-if="loading" class="state-panel"><span class="loader-ring"></span><p>正在读取扫描索引…</p></div>
-    <div v-else-if="error" class="state-panel state-panel--error"><CircleAlert :size="28" /><strong>归档服务暂不可用</strong><p>{{ error }}</p><button class="button button--outline" @click="load">重试</button></div>
+    <div v-if="loading" class="state-panel" role="status" aria-live="polite"><span class="loader-ring"></span><p>正在读取扫描索引…</p></div>
+    <div v-else-if="error" class="state-panel state-panel--error" role="alert"><CircleAlert :size="28" /><strong>归档服务暂不可用</strong><p>{{ error }}</p><button class="button button--outline" @click="load">重试</button></div>
     <template v-else-if="data">
       <section class="archive-metrics">
         <article class="archive-metric"><CheckCircle2 :size="21" /><strong>{{ data.healthy_files }}</strong><span>健康文件</span></article>
@@ -93,6 +95,6 @@ onMounted(load)
 </template>
 
 <style scoped>
-.archive-metrics { display: grid; margin-bottom: 14px; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }.archive-metric { display: grid; min-height: 118px; padding: 18px; color: var(--sage); background: rgba(252,253,249,.92); border: 1px solid var(--line); border-radius: 10px; align-content: start; gap: 5px; }.archive-metric.warning { color: #b4772d; }.archive-metric strong { color: var(--ink); font-family: "Iowan Old Style", serif; font-size: 31px; font-weight: 500; }.archive-metric span { color: #849087; font-size: 11px; }.archive-grid { display: grid; grid-template-columns: minmax(280px, .75fr) minmax(0, 1.25fr); gap: 14px; }.archive-status-body { display: flex; padding: 24px 21px; align-items: flex-start; gap: 14px; }.archive-status-icon { display: grid; width: 50px; height: 50px; flex: 0 0 auto; color: var(--sage); place-items: center; background: var(--sage-soft); border-radius: 50%; }.archive-status-icon.offline { color: #a6633b; background: #f7e9e1; }.archive-status-body strong { font-family: "Iowan Old Style", "Songti SC", serif; font-size: 17px; }.archive-status-body p, .latest-scan small, .scan-row p, .archive-empty, .archive-note { color: #7c887f; font-size: 11px; line-height: 1.6; }.archive-status-body p { margin: 7px 0 0; }.latest-scan { display: grid; margin: 0 21px 21px; padding: 13px 0; gap: 4px; border-top: 1px solid #e4e9e2; }.latest-scan span { color: #9aa39d; font-size: 10px; }.latest-scan strong { font-family: "Iowan Old Style", serif; font-size: 14px; }.latest-scan small { margin: 0; }.scan-history { display: grid; }.scan-row { display: grid; min-height: 72px; padding: 13px 20px; align-items: center; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 10px; border-bottom: 1px solid #e6ebe4; }.scan-state { width: 9px; height: 9px; background: var(--sage); border-radius: 50%; }.scan-state.failed { background: #a6633b; }.scan-row strong { font-size: 12px; }.scan-row p { margin: 3px 0 0; }.scan-row time { color: #98a29c; font-size: 10px; white-space: nowrap; }.archive-empty { margin: 24px 20px; }.archive-note { margin: 16px 2px 0; }.is-spinning { animation: spin 800ms linear infinite; }
-@media (max-width: 850px) { .archive-metrics { grid-template-columns: repeat(2, 1fr); }.archive-grid { grid-template-columns: 1fr; } } @media (max-width: 460px) { .archive-metrics { grid-template-columns: 1fr; }.scan-row { grid-template-columns: 16px 1fr; }.scan-row time { display: none; } }
+.archive-metrics { display: grid; margin-bottom: 14px; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }.archive-metric { display: grid; min-height: 118px; padding: 18px; color: var(--sage); background: rgba(252,253,249,.92); border: 1px solid var(--line); border-radius: 8px; align-content: start; gap: 5px; }.archive-metric.warning { color: #b4772d; }.archive-metric strong { color: var(--ink); font-family: "Iowan Old Style", serif; font-size: 31px; font-weight: 500; }.archive-metric span { color: #849087; font-size: 11px; }.archive-grid { display: grid; grid-template-columns: minmax(280px, .75fr) minmax(0, 1.25fr); gap: 14px; }.archive-status-body { display: flex; padding: 24px 21px; align-items: flex-start; gap: 14px; }.archive-status-icon { display: grid; width: 50px; height: 50px; flex: 0 0 auto; color: var(--sage); place-items: center; background: var(--sage-soft); border-radius: 50%; }.archive-status-icon.offline { color: #a6633b; background: #f7e9e1; }.archive-status-body strong { font-family: "Iowan Old Style", "Songti SC", serif; font-size: 17px; }.archive-status-body p, .latest-scan small, .scan-row p, .archive-empty, .archive-note { color: #7c887f; font-size: 11px; line-height: 1.6; }.archive-status-body p { margin: 7px 0 0; }.latest-scan { display: grid; margin: 0 21px 21px; padding: 13px 0; gap: 4px; border-top: 1px solid #e4e9e2; }.latest-scan span { color: #9aa39d; font-size: 10px; }.latest-scan strong { font-family: "Iowan Old Style", serif; font-size: 14px; }.latest-scan small { margin: 0; }.scan-history { display: grid; }.scan-row { display: grid; min-height: 72px; padding: 13px 20px; align-items: center; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 10px; border-bottom: 1px solid #e6ebe4; }.scan-state { width: 9px; height: 9px; background: var(--sage); border-radius: 50%; }.scan-state.failed { background: #a6633b; }.scan-row strong { font-size: 12px; }.scan-row p { margin: 3px 0 0; }.scan-row time { color: #98a29c; font-size: 10px; white-space: nowrap; }.archive-empty { margin: 24px 20px; }.archive-note { margin: 16px 2px 0; }.is-spinning { animation: spin 800ms linear infinite; }
+@media (max-width: 850px) { .archive-metrics { grid-template-columns: repeat(2, 1fr); }.archive-grid { grid-template-columns: 1fr; } } @media (max-width: 460px) { .archive-metric { min-height: 102px; padding: 15px; }.archive-metric strong { font-size: 27px; }.scan-row { grid-template-columns: 16px 1fr; }.scan-row time { display: none; } }
 </style>

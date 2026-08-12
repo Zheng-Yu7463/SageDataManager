@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.domain.enums import AssetType, HealthStatus, Visibility
 
@@ -64,11 +64,17 @@ class AssetSummary(BaseModel):
     updated_at: datetime
 
 
+class PaperCatalogueFacets(BaseModel):
+    venues: list[str] = Field(default_factory=list)
+    years: list[int] = Field(default_factory=list)
+
+
 class AssetListResponse(BaseModel):
     items: list[AssetSummary]
     total: int
     page: int
     page_size: int
+    paper_facets: PaperCatalogueFacets | None = None
 
 
 class RelatedAssetSummary(BaseModel):
@@ -166,6 +172,87 @@ class FileClaimResult(BaseModel):
     file: FileSummary
 
 
+class PaperMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    venue: str = Field(min_length=2, max_length=80)
+    year: int = Field(ge=1900, le=2200)
+    track: str = Field(min_length=2, max_length=120)
+    authors: list[str] = Field(min_length=1, max_length=200)
+    source_id: str = Field(min_length=2, max_length=200)
+    source_url: AnyHttpUrl
+    publication_url: AnyHttpUrl | None = None
+    pdf_url: AnyHttpUrl
+    abstract: str | None = Field(default=None, max_length=20_000)
+    doi: str | None = Field(default=None, max_length=300)
+    published_at: str | None = Field(default=None, max_length=40)
+    citation_key: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=160,
+        pattern=r"^[A-Za-z][A-Za-z0-9_:+.-]*$",
+    )
+    entry_type: Literal["article", "inproceedings", "misc", "proceedings"] = (
+        "inproceedings"
+    )
+    booktitle: str | None = Field(default=None, max_length=500)
+    pages: str | None = Field(default=None, max_length=80)
+    publisher: str | None = Field(default=None, max_length=300)
+    month: str | None = Field(default=None, max_length=40)
+    volume: str | None = Field(default=None, max_length=80)
+
+    @field_validator("venue", "track", "source_id")
+    @classmethod
+    def strip_required_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if len(normalized) < 2:
+            raise ValueError("论文元数据字段不能为空。")
+        return normalized
+
+    @field_validator("authors")
+    @classmethod
+    def normalize_authors(cls, authors: list[str]) -> list[str]:
+        normalized = [author.strip() for author in authors if author.strip()]
+        if not normalized:
+            raise ValueError("论文至少需要一位作者。")
+        return normalized
+
+    @field_validator("doi")
+    @classmethod
+    def normalize_doi(cls, doi: str | None) -> str | None:
+        if doi is None:
+            return None
+        normalized = doi.removeprefix("https://doi.org/").strip().lower()
+        return normalized or None
+
+    @field_validator(
+        "citation_key", "booktitle", "pages", "publisher", "month", "volume"
+    )
+    @classmethod
+    def normalize_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
+
+
+class PaperCitationResponse(BaseModel):
+    citation_key: str
+    filename: str
+    bibtex: str
+
+
+class PaperCitationExportResponse(BaseModel):
+    count: int
+    filename: str
+    bibtex: str
+
+
+def normalized_asset_details(asset_type: AssetType, details: dict[str, Any]) -> dict[str, Any]:
+    if asset_type != AssetType.PAPER:
+        return details
+    return PaperMetadata.model_validate(details).model_dump(mode="json", exclude_none=True)
+
+
 class AssetCreateRequest(BaseModel):
     type: AssetType
     slug: str = Field(min_length=3, max_length=160, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -178,6 +265,11 @@ class AssetCreateRequest(BaseModel):
     details: dict[str, Any] = Field(default_factory=dict)
     owner_name: str | None = Field(default=None, min_length=1, max_length=80)
     owner_email: str | None = Field(default=None, min_length=3, max_length=255)
+
+    @model_validator(mode="after")
+    def validate_details_for_asset_type(self) -> "AssetCreateRequest":
+        self.details = normalized_asset_details(self.type, self.details)
+        return self
 
 
 class AssetUpdateRequest(BaseModel):
@@ -270,3 +362,49 @@ class RegistrationStatus(BaseModel):
 
 class AccountLoginResponse(AccountSummary):
     session_token: str
+
+
+class InstanceBrandingResponse(BaseModel):
+    product_name: str
+    product_subtitle: str
+    organization_name: str
+    slogan: str
+    slogan_secondary: str
+    primary_color: str
+    logo_url: str | None
+
+
+class InstanceBrandingUpdateRequest(BaseModel):
+    product_name: str = Field(min_length=1, max_length=80)
+    product_subtitle: str = Field(min_length=1, max_length=120)
+    organization_name: str = Field(min_length=1, max_length=120)
+    slogan: str = Field(min_length=1, max_length=160)
+    slogan_secondary: str = Field(min_length=1, max_length=160)
+    primary_color: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")
+
+    @field_validator(
+        "product_name",
+        "product_subtitle",
+        "organization_name",
+        "slogan",
+        "slogan_secondary",
+    )
+    @classmethod
+    def strip_brand_text(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("primary_color")
+    @classmethod
+    def require_accessible_primary_color(cls, value: str) -> str:
+        color = value.upper()
+        channels = [int(color[index : index + 2], 16) / 255 for index in (1, 3, 5)]
+        linear = [
+            channel / 12.92
+            if channel <= 0.04045
+            else ((channel + 0.055) / 1.055) ** 2.4
+            for channel in channels
+        ]
+        luminance = 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+        if 1.05 / (luminance + 0.05) < 3:
+            raise ValueError("品牌主色与白色文字的对比度不足。")
+        return color

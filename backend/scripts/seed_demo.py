@@ -16,7 +16,15 @@ ASSETS = [
         "status": "accepted",
         "version": "camera-ready",
         "tags": ["科学问答", "推理模型", "大模型"],
-        "details": {"venue": "ACL 2026", "year": 2026, "authors": ["李明", "王雪", "张伟"]},
+        "details": {
+            "venue": "ACL",
+            "year": 2026,
+            "track": "Main Conference - Long Papers",
+            "authors": ["李明", "王雪", "张伟"],
+            "source_id": "sage-demo-acl-2026",
+            "source_url": "https://aclanthology.org/events/acl-2026/",
+            "pdf_url": "https://aclanthology.org/2026.acl-long.1.pdf",
+        },
         "size": 18_400_000,
     },
     {

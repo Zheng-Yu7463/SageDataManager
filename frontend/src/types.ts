@@ -12,6 +12,27 @@ export interface UploadDirectoryOption {
   label: string
 }
 
+export interface PaperMetadata extends Record<string, unknown> {
+  venue: string
+  year: number
+  track: string
+  authors: string[]
+  source_id: string
+  source_url: string
+  publication_url?: string
+  pdf_url: string
+  abstract?: string
+  doi?: string
+  published_at?: string
+  citation_key?: string
+  entry_type?: 'article' | 'inproceedings' | 'misc' | 'proceedings'
+  booktitle?: string
+  pages?: string
+  publisher?: string
+  month?: string
+  volume?: string
+}
+
 export interface AssetSummary {
   id: string
   type: AssetType
@@ -31,11 +52,39 @@ export interface AssetSummary {
   updated_at: string
 }
 
+export function isPaperMetadata(details: Record<string, unknown>): details is PaperMetadata {
+  return typeof details.venue === 'string'
+    && typeof details.year === 'number'
+    && typeof details.track === 'string'
+    && Array.isArray(details.authors)
+    && details.authors.every((author) => typeof author === 'string')
+    && typeof details.source_id === 'string'
+    && typeof details.source_url === 'string'
+    && (details.publication_url === undefined || typeof details.publication_url === 'string')
+    && typeof details.pdf_url === 'string'
+}
+
+export interface PaperCitation {
+  citation_key: string
+  filename: string
+  bibtex: string
+}
+
+export interface PaperCitationExport {
+  count: number
+  filename: string
+  bibtex: string
+}
+
 export interface AssetListResponse {
   items: AssetSummary[]
   total: number
   page: number
   page_size: number
+  paper_facets: {
+    venues: string[]
+    years: number[]
+  } | null
 }
 
 export interface AssetCreateInput {
@@ -227,3 +276,15 @@ export interface AccountUpdateInput {
 export interface RegistrationStatus {
   enabled: boolean
 }
+
+export interface InstanceBranding {
+  product_name: string
+  product_subtitle: string
+  organization_name: string
+  slogan: string
+  slogan_secondary: string
+  primary_color: string
+  logo_url: string | null
+}
+
+export type InstanceBrandingInput = Omit<InstanceBranding, 'logo_url'>

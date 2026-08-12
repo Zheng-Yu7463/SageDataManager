@@ -6,6 +6,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { getAssets } from '@/api/client'
 import { assetMeta } from '@/catalogue'
 import AssetIcon from '@/components/AssetIcon.vue'
+import { useBranding } from '@/composables/useBranding'
 import type { AssetListResponse } from '@/types'
 
 const route = useRoute()
@@ -14,6 +15,7 @@ const query = ref('')
 const data = ref<AssetListResponse | null>(null)
 const loading = ref(false)
 const error = ref('')
+const { pageEyebrow } = useBranding()
 let controller: AbortController | undefined
 
 const resultLabel = computed(() => `${data.value?.total ?? 0} 项跨类型资产`)
@@ -60,7 +62,7 @@ onBeforeUnmount(() => controller?.abort())
   <div class="page search-page">
     <header class="page-heading">
       <div>
-        <p class="eyebrow">SAGE DISCOVERY</p>
+        <p class="eyebrow">{{ pageEyebrow('DISCOVERY') }}</p>
         <h1>统一检索</h1>
         <p>一次搜索实验室登记的论文、数据集、文献、项目与模型。</p>
       </div>
@@ -78,7 +80,7 @@ onBeforeUnmount(() => controller?.abort())
       <span v-if="loading" class="tiny-spinner"></span>
     </div>
 
-    <div v-if="error" class="state-panel state-panel--error state-panel--inline"><strong>检索失败</strong><p>{{ error }}</p></div>
+    <div v-if="error" class="state-panel state-panel--error state-panel--inline" role="alert"><strong>检索失败</strong><p>{{ error }}</p></div>
     <div v-else-if="!query" class="empty-catalogue">
       <span><Search :size="30" /></span><h2>从一个研究主题开始</h2><p>例如：气候科学、Transformer、多模态。</p>
     </div>
@@ -89,7 +91,7 @@ onBeforeUnmount(() => controller?.abort())
       <RouterLink
         v-for="asset in data?.items"
         :key="asset.id"
-        :to="{ name: 'asset-detail', params: { assetId: asset.id } }"
+        :to="{ name: 'asset-detail', params: { assetId: asset.id }, query: { returnTo: route.fullPath } }"
         class="search-result"
       >
         <span class="catalogue-card-icon" :style="{ color: assetMeta[asset.type].color, background: assetMeta[asset.type].softColor }">
@@ -105,4 +107,3 @@ onBeforeUnmount(() => controller?.abort())
     </section>
   </div>
 </template>
-

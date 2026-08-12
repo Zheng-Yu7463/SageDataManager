@@ -17,8 +17,10 @@ from app.domain.schemas import (
     AssetVersionSummary,
     BatchAssetImportRequest,
     FileSummary,
+    PaperCatalogueFacets,
     RelatedAssetSummary,
     UploadDirectoryOption,
+    normalized_asset_details,
 )
 from app.services.upload_directories import UPLOAD_DIRECTORY_OPTIONS
 
@@ -47,6 +49,48 @@ class BatchAssetImportError(Exception):
     def __init__(self, message: str):
         self.message = message
         super().__init__(message)
+
+
+class AssetMetadataError(Exception):
+    def __init__(self, message: str):
+        self.message = message
+        super().__init__(message)
+
+
+def _normalized_title(title: str) -> str:
+    return "".join(character.lower() for character in title if character.isalnum())
+
+
+def _paper_identity(details: dict, title: str) -> tuple[str, str, str]:
+    doi = str(details.get("doi", "")).removeprefix("https://doi.org/").strip().lower()
+    source_id = str(details.get("source_id", "")).strip().lower()
+    authors = details.get("authors") or []
+    first_author = str(authors[0]).strip().lower() if authors else ""
+    return doi, source_id, f"{_normalized_title(title)}::{first_author}"
+
+
+def _papers_are_duplicates(
+    first: tuple[str, str, str], second: tuple[str, str, str]
+) -> bool:
+    return bool(
+        (first[0] and first[0] == second[0])
+        or (first[1] and first[1] == second[1])
+        or first[2] == second[2]
+    )
+
+
+def _find_duplicate_paper(
+    session: Session, *, title: str, details: dict, exclude_asset_id: UUID | None = None
+) -> Asset | None:
+    identity = _paper_identity(details, title)
+    statement = select(Asset).where(Asset.type == AssetType.PAPER)
+    if exclude_asset_id:
+        statement = statement.where(Asset.id != exclude_asset_id)
+    for asset in session.scalars(statement):
+        candidate = _paper_identity(asset.details, asset.title)
+        if _papers_are_duplicates(identity, candidate):
+            return asset
+    return None
 
 
 def asset_summary(asset: Asset) -> AssetSummary:
@@ -88,6 +132,10 @@ def create_asset(
 ) -> AssetSummary:
     if session.scalar(select(Asset.id).where(Asset.slug == payload.slug)):
         raise AssetSlugConflictError
+    if payload.type == AssetType.PAPER and _find_duplicate_paper(
+        session, title=payload.title, details=payload.details
+    ):
+        raise AssetMetadataError("该论文已经收录，请按官方来源标识更新现有记录。")
 
     owner = actor
     if payload.owner_email:
@@ -140,6 +188,19 @@ def import_assets(
     existing = set(session.scalars(select(Asset.slug).where(Asset.slug.in_(slugs))).all())
     if existing:
         raise BatchAssetImportError(f"以下 slug 已存在：{', '.join(sorted(existing))}")
+    paper_identities = [
+        _paper_identity(item.details, item.title)
+        for item in payload.assets
+        if item.type == AssetType.PAPER
+    ]
+    for index, identity in enumerate(paper_identities):
+        if any(_papers_are_duplicates(identity, other) for other in paper_identities[:index]):
+            raise BatchAssetImportError("导入内容中含有重复论文。")
+    for item in payload.assets:
+        if item.type == AssetType.PAPER and _find_duplicate_paper(
+            session, title=item.title, details=item.details
+        ):
+            raise BatchAssetImportError(f"论文已收录：{item.title}")
     return [create_asset(session, item, actor=actor) for item in payload.assets]
 
 
@@ -158,8 +219,24 @@ def update_asset(
     )
     if not asset:
         raise AssetNotFoundError
+    next_title = payload.title.strip() if payload.title is not None else asset.title
+    try:
+        next_details = (
+            normalized_asset_details(asset.type, payload.details)
+            if payload.details is not None
+            else asset.details
+        )
+    except ValueError as error:
+        raise AssetMetadataError("论文元数据不完整或格式无效。") from error
+    if asset.type == AssetType.PAPER and _find_duplicate_paper(
+        session,
+        title=next_title,
+        details=next_details,
+        exclude_asset_id=asset.id,
+    ):
+        raise AssetMetadataError("该论文已经收录，请检查 DOI 或官方来源标识。")
     if payload.title is not None:
-        asset.title = payload.title.strip()
+        asset.title = next_title
     if payload.summary is not None:
         asset.summary = payload.summary.strip()
     if payload.status is not None:
@@ -169,7 +246,7 @@ def update_asset(
     if payload.tags is not None:
         asset.tags = _tags(session, payload.tags)
     if payload.details is not None:
-        asset.details = payload.details
+        asset.details = next_details
     session.add(
         Activity(
             asset=asset, actor=actor, action="updated_metadata", description="更新了资产基础信息"
@@ -263,28 +340,19 @@ def list_assets(
     status: str | None,
     visibility: Visibility | None,
     has_files: bool | None,
+    venue: str | None,
+    year: int | None,
     page_size: int,
 ) -> tuple[list[AssetSummary], int]:
-    filters = [Asset.archived_at.is_(None)]
-    if asset_type:
-        filters.append(Asset.type == asset_type)
-    if status and status.strip():
-        filters.append(Asset.status == status.strip())
-    if visibility:
-        filters.append(Asset.visibility == visibility)
-    if has_files is True:
-        filters.append(Asset.files.any())
-    elif has_files is False:
-        filters.append(~Asset.files.any())
-    if query:
-        pattern = f"%{query.strip()}%"
-        filters.append(
-            or_(
-                Asset.title.ilike(pattern),
-                Asset.summary.ilike(pattern),
-                Asset.tags.any(Tag.name.ilike(pattern)),
-            )
-        )
+    filters = _asset_filters(
+        asset_type=asset_type,
+        query=query,
+        status=status,
+        visibility=visibility,
+        has_files=has_files,
+        venue=venue,
+        year=year,
+    )
 
     total = session.scalar(select(func.count()).select_from(Asset).where(*filters)) or 0
     statement = (
@@ -301,6 +369,96 @@ def list_assets(
         .limit(page_size)
     )
     return [asset_summary(item) for item in session.scalars(statement).all()], total
+
+
+def _asset_filters(
+    *,
+    asset_type: AssetType | None,
+    query: str | None,
+    status: str | None,
+    visibility: Visibility | None,
+    has_files: bool | None,
+    venue: str | None,
+    year: int | None,
+) -> list:
+    filters = [Asset.archived_at.is_(None)]
+    if asset_type:
+        filters.append(Asset.type == asset_type)
+    if status and status.strip():
+        filters.append(Asset.status == status.strip())
+    if visibility:
+        filters.append(Asset.visibility == visibility)
+    if has_files is True:
+        filters.append(Asset.files.any())
+    elif has_files is False:
+        filters.append(~Asset.files.any())
+    if venue and venue.strip():
+        filters.extend(
+            [Asset.type == AssetType.PAPER, Asset.details["venue"].as_string() == venue.strip()]
+        )
+    if year is not None:
+        filters.extend([Asset.type == AssetType.PAPER, Asset.details["year"].as_integer() == year])
+    if query:
+        pattern = f"%{query.strip()}%"
+        filters.append(
+            or_(
+                Asset.title.ilike(pattern),
+                Asset.summary.ilike(pattern),
+                Asset.tags.any(Tag.name.ilike(pattern)),
+            )
+        )
+
+    return filters
+
+
+def list_papers_for_citation_export(
+    session: Session,
+    *,
+    query: str | None,
+    status: str | None,
+    visibility: Visibility | None,
+    has_files: bool | None,
+    venue: str | None,
+    year: int | None,
+) -> list[AssetSummary]:
+    filters = _asset_filters(
+        asset_type=AssetType.PAPER,
+        query=query,
+        status=status,
+        visibility=visibility,
+        has_files=has_files,
+        venue=venue,
+        year=year,
+    )
+    statement = (
+        select(Asset)
+        .where(*filters)
+        .options(
+            selectinload(Asset.owner),
+            selectinload(Asset.tags),
+            selectinload(Asset.versions),
+            selectinload(Asset.files),
+        )
+        .order_by(Asset.details["year"].as_integer().desc(), Asset.title)
+    )
+    return [asset_summary(item) for item in session.scalars(statement).all()]
+
+
+def list_paper_catalogue_facets(session: Session) -> PaperCatalogueFacets:
+    statement = select(Asset.details).where(
+        Asset.type == AssetType.PAPER,
+        Asset.archived_at.is_(None),
+    )
+    details = session.scalars(statement).all()
+    venues = sorted(
+        {str(item["venue"]).strip() for item in details if str(item.get("venue", "")).strip()},
+        key=str.casefold,
+    )
+    years = sorted(
+        {int(item["year"]) for item in details if isinstance(item.get("year"), int)},
+        reverse=True,
+    )
+    return PaperCatalogueFacets(venues=venues, years=years)
 
 
 def list_archived_assets(session: Session) -> list[AssetSummary]:

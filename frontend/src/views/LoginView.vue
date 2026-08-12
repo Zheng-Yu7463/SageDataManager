@@ -3,6 +3,7 @@ import { KeyRound, LogIn, ShieldCheck } from '@lucide/vue'
 import { ref } from 'vue'
 
 import { loginAccount } from '@/api/client'
+import { useBranding } from '@/composables/useBranding'
 import type { AccountLoginResponse } from '@/types'
 
 const emit = defineEmits<{ authenticated: [account: AccountLoginResponse] }>()
@@ -10,6 +11,7 @@ const username = ref('')
 const password = ref('')
 const submitting = ref(false)
 const error = ref('')
+const { branding, brandTitle } = useBranding()
 
 async function login() {
   if (!username.value || !password.value) return
@@ -29,8 +31,9 @@ async function login() {
 <template>
   <main class="login-page">
     <section class="login-card">
-      <div class="login-mark"><i></i><i></i><i></i></div>
-      <p class="eyebrow">SAGE RESEARCH ARCHIVE</p>
+      <img v-if="branding.logo_url" class="login-logo" :src="branding.logo_url" alt="" />
+      <div v-else class="login-mark"><i></i><i></i><i></i></div>
+      <p class="eyebrow">{{ brandTitle }}</p>
       <h1>管理员登录</h1>
       <p class="login-intro">请输入管理员账号和密码。账号名也将用于生成 SCP 上传命令。</p>
       <form @submit.prevent="login">
@@ -45,5 +48,5 @@ async function login() {
 </template>
 
 <style scoped>
-.login-page { display: grid; min-height: 100vh; padding: 24px; place-items: center; background: radial-gradient(circle at 75% 18%, rgba(202, 222, 204, .62), transparent 28rem), #f2f4ee; }.login-card { width: min(100%, 420px); padding: 37px; background: rgba(253,254,251,.96); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 22px 50px rgba(24, 37, 29, .14); }.login-mark { position: relative; width: 33px; height: 41px; margin-bottom: 22px; }.login-mark i { position: absolute; bottom: 5px; left: 15px; width: 1px; height: 29px; background: var(--sage); transform-origin: bottom; }.login-mark i::after { position: absolute; top: 2px; left: 0; width: 12px; height: 7px; content: ""; background: #8cac82; border-radius: 10px 1px 10px 1px; transform: rotate(-26deg); transform-origin: left bottom; }.login-mark i:nth-child(1) { height: 23px; transform: rotate(-33deg); }.login-mark i:nth-child(3) { height: 24px; transform: rotate(35deg); }.login-card h1 { margin: 5px 0 8px; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 29px; font-weight: 500; }.login-intro { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.65; }.login-card form { display: grid; margin-top: 25px; gap: 15px; }.login-card label { display: grid; color: #526056; font-size: 12px; font-weight: 700; gap: 6px; }.login-card > form > label > input, .password-field { width: 100%; height: 42px; padding: 0 10px; color: var(--ink); font: inherit; font-size: 13px; background: #fff; border: 1px solid var(--line); border-radius: 5px; outline-color: var(--sage); }.password-field { display: flex; align-items: center; gap: 8px; }.password-field svg { color: #78877d; }.password-field input { width: 100%; min-width: 0; border: 0; outline: 0; }.login-submit { width: 100%; justify-content: center; margin-top: 2px; }.login-error { margin: -3px 0 0; color: #a6633b; font-size: 12px; }.login-note { display: flex; margin: 24px 0 0; color: #7c887f; font-size: 11px; line-height: 1.55; gap: 6px; }.login-note svg { flex: 0 0 auto; color: var(--sage); }
+.login-page { display: grid; min-height: 100vh; padding: 24px; place-items: center; background: #f2f4ee; }.login-card { width: min(100%, 420px); padding: 37px; background: rgba(253,254,251,.96); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 22px 50px rgba(24, 37, 29, .12); }.login-logo { display: block; width: 42px; height: 42px; margin-bottom: 20px; object-fit: contain; }.login-mark { position: relative; width: 33px; height: 41px; margin-bottom: 22px; }.login-mark i { position: absolute; bottom: 5px; left: 15px; width: 1px; height: 29px; background: var(--sage); transform-origin: bottom; }.login-mark i::after { position: absolute; top: 2px; left: 0; width: 12px; height: 7px; content: ""; background: color-mix(in srgb, var(--sage) 60%, white); border-radius: 10px 1px 10px 1px; transform: rotate(-26deg); transform-origin: left bottom; }.login-mark i:nth-child(1) { height: 23px; transform: rotate(-33deg); }.login-mark i:nth-child(3) { height: 24px; transform: rotate(35deg); }.login-card h1 { margin: 5px 0 8px; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 29px; font-weight: 500; }.login-intro { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.65; }.login-card form { display: grid; margin-top: 25px; gap: 15px; }.login-card label { display: grid; color: #526056; font-size: 12px; font-weight: 700; gap: 6px; }.login-card > form > label > input, .password-field { width: 100%; height: 42px; padding: 0 10px; color: var(--ink); font: inherit; font-size: 13px; background: #fff; border: 1px solid var(--line); border-radius: 5px; outline-color: var(--sage); }.password-field { display: flex; align-items: center; gap: 8px; }.password-field svg { color: #78877d; }.password-field input { width: 100%; min-width: 0; border: 0; outline: 0; }.login-submit { width: 100%; justify-content: center; margin-top: 2px; }.login-error { margin: -3px 0 0; color: #a6633b; font-size: 12px; }.login-note { display: flex; margin: 24px 0 0; color: #7c887f; font-size: 11px; line-height: 1.55; gap: 6px; }.login-note svg { flex: 0 0 auto; color: var(--sage); }
 </style>

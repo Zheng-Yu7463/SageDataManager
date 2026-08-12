@@ -17,9 +17,13 @@ import type {
   AssetListResponse,
   FileAccessMode,
   FileAccessTicket,
+  InstanceBranding,
+  InstanceBrandingInput,
   AssetType,
   DashboardSummary,
   FileClaimResult,
+  PaperCitation,
+  PaperCitationExport,
   UploadCommandInput,
   UploadCommandResult,
   ScanRunSummary,
@@ -72,7 +76,7 @@ export function getActivities(page = 1, action?: string) {
 
 export function getAssets(
   assetType: AssetType | undefined,
-  options: { query?: string; status?: string; visibility?: string; hasFiles?: boolean; page?: number; pageSize?: number },
+  options: { query?: string; status?: string; visibility?: string; hasFiles?: boolean; venue?: string; year?: number; page?: number; pageSize?: number },
   signal?: AbortSignal,
 ) {
   const params = new URLSearchParams({
@@ -84,11 +88,35 @@ export function getAssets(
   if (options.status) params.set('status', options.status)
   if (options.visibility) params.set('visibility', options.visibility)
   if (options.hasFiles !== undefined) params.set('has_files', String(options.hasFiles))
+  if (options.venue) params.set('venue', options.venue)
+  if (options.year !== undefined) params.set('year', String(options.year))
   return request<AssetListResponse>(`/api/assets?${params}`, signal)
 }
 
 export function getAsset(assetId: string, signal?: AbortSignal) {
   return request<AssetDetail>(`/api/assets/${assetId}`, signal)
+}
+
+export function getPaperCitation(assetId: string, signal?: AbortSignal) {
+  return request<PaperCitation>(`/api/assets/${assetId}/citation/bibtex`, signal)
+}
+
+export function exportPaperCitations(options: {
+  query?: string
+  status?: string
+  visibility?: string
+  hasFiles?: boolean
+  venue?: string
+  year?: number
+}) {
+  const params = new URLSearchParams()
+  if (options.query) params.set('query', options.query)
+  if (options.status) params.set('status', options.status)
+  if (options.visibility) params.set('visibility', options.visibility)
+  if (options.hasFiles !== undefined) params.set('has_files', String(options.hasFiles))
+  if (options.venue) params.set('venue', options.venue)
+  if (options.year !== undefined) params.set('year', String(options.year))
+  return request<PaperCitationExport>(`/api/assets/citations/bibtex?${params}`)
 }
 
 export function createAsset(input: AssetCreateInput) {
@@ -174,4 +202,34 @@ export function createAdminAccount(input: AccountCreateInput) {
 
 export function updateAdminAccount(username: string, input: AccountUpdateInput) {
   return request<AccountSummary>(`/api/auth/admin-accounts/${username}`, undefined, 'PATCH', input)
+}
+
+export function getInstanceBranding(signal?: AbortSignal) {
+  return request<InstanceBranding>('/api/settings/branding', signal)
+}
+
+export function updateInstanceBranding(input: InstanceBrandingInput) {
+  return request<InstanceBranding>('/api/settings/branding', undefined, 'PATCH', input)
+}
+
+export async function uploadInstanceLogo(file: File) {
+  const sessionToken = window.localStorage.getItem('sage-session-token')
+  const response = await fetch('/api/settings/branding/logo', {
+    method: 'PUT',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': file.type,
+      ...(sessionToken ? { 'X-Sage-Session': sessionToken } : {}),
+    },
+    body: file,
+  })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null) as { detail?: string } | null
+    throw new ApiError(payload?.detail ?? `请求失败（${response.status}）`, response.status)
+  }
+  return response.json() as Promise<InstanceBranding>
+}
+
+export function removeInstanceLogo() {
+  return request<InstanceBranding>('/api/settings/branding/logo', undefined, 'DELETE')
 }
