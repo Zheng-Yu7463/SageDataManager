@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import stat
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from os import stat_result
@@ -47,11 +49,27 @@ class FileAccessGrantInvalidError(FileAccessError):
     pass
 
 
-@dataclass(frozen=True)
-class ProtectedFileDelivery:
-    path: Path
+@dataclass
+class OpenedFileDelivery:
+    descriptor: int
+    file_name: str
+    stat: stat_result
     content_disposition: str
     media_type: str
+
+    def close(self) -> None:
+        if self.descriptor < 0:
+            return
+        descriptor = self.descriptor
+        self.descriptor = -1
+        os.close(descriptor)
+
+    def take_descriptor(self) -> int:
+        if self.descriptor < 0:
+            raise RuntimeError("File delivery descriptor has already been released.")
+        descriptor = self.descriptor
+        self.descriptor = -1
+        return descriptor
 
 
 def can_preview(mime_type: str | None) -> bool:
@@ -78,6 +96,53 @@ def _file_record(session: Session, file_id: UUID) -> FileRecord:
     if record.health_status != HealthStatus.HEALTHY:
         raise FileUnavailableError
     return record
+
+
+def _open_indexed_file(storage_root: Path, relative_path: PurePosixPath) -> tuple[int, stat_result]:
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    file_flags = os.O_RDONLY | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        directory_flags |= os.O_CLOEXEC
+        file_flags |= os.O_CLOEXEC
+
+    try:
+        trusted_root = storage_root.resolve(strict=True)
+        parent_descriptor = os.open(trusted_root, directory_flags)
+    except OSError:
+        raise FileUnavailableError from None
+
+    try:
+        for directory_name in relative_path.parts[:-1]:
+            try:
+                child_descriptor = os.open(
+                    directory_name,
+                    directory_flags,
+                    dir_fd=parent_descriptor,
+                )
+            except OSError:
+                raise FileUnavailableError from None
+            os.close(parent_descriptor)
+            parent_descriptor = child_descriptor
+
+        try:
+            descriptor = os.open(
+                relative_path.parts[-1],
+                file_flags,
+                dir_fd=parent_descriptor,
+            )
+        except OSError:
+            raise FileUnavailableError from None
+        try:
+            current = os.fstat(descriptor)
+        except OSError:
+            os.close(descriptor)
+            raise FileUnavailableError from None
+        if not stat.S_ISREG(current.st_mode):
+            os.close(descriptor)
+            raise FileUnavailableError
+        return descriptor, current
+    finally:
+        os.close(parent_descriptor)
 
 
 def verify_file_access(session: Session, file_id: UUID, mode: str) -> None:
@@ -139,7 +204,7 @@ def authorize_file_access_grant(
     return actor, grant.mode, first_access is not None
 
 
-def prepare_file_delivery(
+def open_file_delivery(
     session: Session,
     storage_root: Path,
     file_id: UUID,
@@ -147,7 +212,7 @@ def prepare_file_delivery(
     *,
     actor: User,
     audit_access: bool = True,
-) -> ProtectedFileDelivery:
+) -> OpenedFileDelivery:
     record = _file_record(session, file_id)
     if mode == "preview" and not can_preview(record.mime_type):
         raise FilePreviewUnavailableError
@@ -159,41 +224,35 @@ def prepare_file_delivery(
         or any(part in {".", ".."} for part in relative_path.parts)
     ):
         raise FileUnavailableError
+    descriptor, current = _open_indexed_file(storage_root, relative_path)
     try:
-        root = storage_root.resolve(strict=True)
-        resolved_path = root.joinpath(*relative_path.parts).resolve(strict=True)
-        resolved_path.relative_to(root)
-    except (OSError, ValueError):
-        raise FileUnavailableError from None
-    if not resolved_path.is_file():
-        raise FileUnavailableError
-    try:
-        current = resolved_path.stat()
-    except OSError:
-        raise FileUnavailableError from None
-    if not _matches_indexed_snapshot(record, current):
-        raise FileUnavailableError
-
-    if audit_access:
-        action = (
-            ActivityAction.PREVIEWED_FILE
-            if mode == "preview"
-            else ActivityAction.DOWNLOADED_FILE
-        )
-        action_label = "预览" if mode == "preview" else "下载"
-        asset = session.get(Asset, record.asset_id)
-        if not asset:
+        if not _matches_indexed_snapshot(record, current):
             raise FileUnavailableError
-        record_activity(
-            session,
-            asset=asset,
-            actor=actor,
-            action=action,
-            description=f"{action_label}了文件 {record.file_name}",
-        )
+        if audit_access:
+            action = (
+                ActivityAction.PREVIEWED_FILE
+                if mode == "preview"
+                else ActivityAction.DOWNLOADED_FILE
+            )
+            action_label = "预览" if mode == "preview" else "下载"
+            asset = session.get(Asset, record.asset_id)
+            if not asset:
+                raise FileUnavailableError
+            record_activity(
+                session,
+                asset=asset,
+                actor=actor,
+                action=action,
+                description=f"{action_label}了文件 {record.file_name}",
+            )
+    except Exception:
+        os.close(descriptor)
+        raise
     disposition = "inline" if mode == "preview" else "attachment"
-    return ProtectedFileDelivery(
-        path=resolved_path,
+    return OpenedFileDelivery(
+        descriptor=descriptor,
+        file_name=record.file_name,
+        stat=current,
         content_disposition=disposition,
         media_type=record.mime_type or "application/octet-stream",
     )

@@ -9,6 +9,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+from app.api.routes import files as file_routes
 from app.core.config import settings
 from app.db.base import Base
 from app.db.session import get_session
@@ -19,7 +20,7 @@ from app.services.archive import scan_storage
 from app.services.file_access import (
     FilePreviewUnavailableError,
     FileUnavailableError,
-    prepare_file_delivery,
+    open_file_delivery,
     verify_file_access,
 )
 from app.services.security import (
@@ -81,12 +82,18 @@ def test_prepare_delivery_resolves_file_and_audits_access(tmp_path: Path) -> Non
     session = make_session()
     actor, record = create_file_record(session, tmp_path)
 
-    delivery = prepare_file_delivery(session, tmp_path, record.id, "download", actor=actor)
+    delivery = open_file_delivery(session, tmp_path, record.id, "download", actor=actor)
     session.commit()
 
-    assert delivery.path == tmp_path / "dataset/soil-samples/notes.txt"
-    assert delivery.content_disposition == "attachment"
-    assert session.scalar(select(Activity.action)) == "downloaded_file"
+    try:
+        assert os.pread(delivery.descriptor, delivery.stat.st_size, 0) == (
+            b"controlled archive content"
+        )
+        assert delivery.file_name == "notes.txt"
+        assert delivery.content_disposition == "attachment"
+        assert session.scalar(select(Activity.action)) == "downloaded_file"
+    finally:
+        delivery.close()
 
 
 def test_preview_rejects_unsupported_file_type(tmp_path: Path) -> None:
@@ -107,7 +114,21 @@ def test_delivery_rejects_symlink_that_escapes_storage_root(tmp_path: Path) -> N
     target.symlink_to(outside)
 
     with pytest.raises(FileUnavailableError):
-        prepare_file_delivery(session, tmp_path, record.id, "download", actor=actor)
+        open_file_delivery(session, tmp_path, record.id, "download", actor=actor)
+
+
+def test_delivery_rejects_an_intermediate_directory_symlink(tmp_path: Path) -> None:
+    session = make_session()
+    actor, record = create_file_record(session, tmp_path)
+    dataset_directory = tmp_path / "dataset"
+    real_directory = tmp_path / "real-dataset"
+    dataset_directory.rename(real_directory)
+    dataset_directory.symlink_to(real_directory, target_is_directory=True)
+
+    with pytest.raises(FileUnavailableError):
+        open_file_delivery(session, tmp_path, record.id, "download", actor=actor)
+
+    assert session.scalars(select(Activity)).all() == []
 
 
 @pytest.mark.parametrize("change", ["size", "modified-time"])
@@ -126,7 +147,7 @@ def test_delivery_rejects_a_file_changed_since_indexing_without_auditing(
         os.utime(destination, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
 
     with pytest.raises(FileUnavailableError):
-        prepare_file_delivery(session, tmp_path, record.id, "download", actor=actor)
+        open_file_delivery(session, tmp_path, record.id, "download", actor=actor)
 
     assert session.scalars(select(Activity)).all() == []
 
@@ -138,13 +159,47 @@ def test_rescan_refreshes_the_snapshot_and_restores_delivery(tmp_path: Path) -> 
     destination.write_bytes(b"updated archive content")
 
     with pytest.raises(FileUnavailableError):
-        prepare_file_delivery(session, tmp_path, record.id, "download", actor=actor)
+        open_file_delivery(session, tmp_path, record.id, "download", actor=actor)
 
     scan_storage(session, tmp_path)
-    delivery = prepare_file_delivery(session, tmp_path, record.id, "download", actor=actor)
+    delivery = open_file_delivery(session, tmp_path, record.id, "download", actor=actor)
 
-    assert delivery.path == destination
-    assert session.scalar(select(Activity.action)) == "downloaded_file"
+    try:
+        assert os.pread(delivery.descriptor, delivery.stat.st_size, 0) == (
+            b"updated archive content"
+        )
+        assert session.scalar(select(Activity.action)) == "downloaded_file"
+    finally:
+        delivery.close()
+
+
+def test_delivery_keeps_the_validated_file_open_when_path_is_replaced(tmp_path: Path) -> None:
+    session = make_session()
+    actor, record = create_file_record(session, tmp_path)
+    destination = tmp_path / record.relative_path
+    delivery = open_file_delivery(session, tmp_path, record.id, "download", actor=actor)
+
+    destination.rename(destination.with_suffix(".original"))
+    destination.write_bytes(b"replacement archive content")
+
+    try:
+        assert os.pread(delivery.descriptor, delivery.stat.st_size, 0) == (
+            b"controlled archive content"
+        )
+    finally:
+        delivery.close()
+
+
+def test_delivery_close_releases_the_validated_file_descriptor(tmp_path: Path) -> None:
+    session = make_session()
+    actor, record = create_file_record(session, tmp_path)
+    delivery = open_file_delivery(session, tmp_path, record.id, "download", actor=actor)
+    descriptor = delivery.descriptor
+
+    delivery.close()
+
+    with pytest.raises(OSError):
+        os.fstat(descriptor)
 
 
 def test_file_access_token_contains_only_the_grant_identity() -> None:
@@ -204,6 +259,96 @@ def test_file_content_endpoint_streams_original_pdf_bytes(
         grant = session.scalar(select(FileAccessGrant))
         assert grant is not None
         assert grant.first_accessed_at is not None
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
+def test_file_content_endpoint_streams_the_open_file_after_path_replacement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = make_session()
+    original_content = b"validated file content"
+    replacement_content = b"replacement file bytes"
+    actor, record = create_file_record(session, tmp_path, content=original_content)
+    session.commit()
+    destination = tmp_path / record.relative_path
+    original_commit = session.commit
+    commit_count = 0
+
+    def commit_and_replace_path() -> None:
+        nonlocal commit_count
+        commit_count += 1
+        original_commit()
+        if commit_count == 2:
+            destination.rename(destination.with_suffix(".original"))
+            destination.write_bytes(replacement_content)
+
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    monkeypatch.setattr(settings, "auth_session_secret", "test-session-secret")
+    monkeypatch.setattr(session, "commit", commit_and_replace_path)
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        client = TestClient(app)
+        ticket_response = client.post(
+            f"/api/files/{record.id}/tickets",
+            json={"mode": "download"},
+            headers={"X-Sage-Session": create_session_token(actor.username or "")},
+        )
+
+        response = client.get(ticket_response.json()["content_url"])
+
+        assert response.status_code == 200
+        assert response.content == original_content
+        assert response.headers["content-length"] == str(len(original_content))
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
+def test_file_content_endpoint_closes_the_open_file_when_commit_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = make_session()
+    actor, record = create_file_record(session, tmp_path)
+    session.commit()
+    original_open_delivery = file_routes.open_file_delivery
+    original_commit = session.commit
+    opened_descriptor: int | None = None
+    commit_count = 0
+
+    def capture_opened_descriptor(*args, **kwargs):
+        nonlocal opened_descriptor
+        delivery = original_open_delivery(*args, **kwargs)
+        opened_descriptor = delivery.descriptor
+        return delivery
+
+    def fail_content_commit() -> None:
+        nonlocal commit_count
+        commit_count += 1
+        if commit_count == 2:
+            raise RuntimeError("commit failed")
+        original_commit()
+
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    monkeypatch.setattr(settings, "auth_session_secret", "test-session-secret")
+    monkeypatch.setattr(file_routes, "open_file_delivery", capture_opened_descriptor)
+    monkeypatch.setattr(session, "commit", fail_content_commit)
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        client = TestClient(app)
+        ticket_response = client.post(
+            f"/api/files/{record.id}/tickets",
+            json={"mode": "download"},
+            headers={"X-Sage-Session": create_session_token(actor.username or "")},
+        )
+
+        with pytest.raises(RuntimeError, match="commit failed"):
+            client.get(ticket_response.json()["content_url"])
+
+        assert opened_descriptor is not None
+        with pytest.raises(OSError):
+            os.fstat(opened_descriptor)
     finally:
         app.dependency_overrides.clear()
         session.close()
