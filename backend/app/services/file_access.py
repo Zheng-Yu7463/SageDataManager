@@ -11,7 +11,8 @@ from sqlalchemy.orm import Session
 
 from app.domain.activity import ActivityAction
 from app.domain.enums import HealthStatus
-from app.domain.models import Activity, Asset, FileRecord, User
+from app.domain.models import Asset, FileRecord, User
+from app.services.activities import record_activity
 
 PREVIEW_MIME_TYPES = {
     "application/json",
@@ -121,13 +122,15 @@ def prepare_file_delivery(
         else ActivityAction.DOWNLOADED_FILE
     )
     action_label = "预览" if mode == "preview" else "下载"
-    session.add(
-        Activity(
-            asset_id=record.asset_id,
-            actor=actor,
-            action=action,
-            description=f"{action_label}了文件 {record.file_name}",
-        )
+    asset = session.get(Asset, record.asset_id)
+    if not asset:
+        raise FileUnavailableError
+    record_activity(
+        session,
+        asset=asset,
+        actor=actor,
+        action=action,
+        description=f"{action_label}了文件 {record.file_name}",
     )
     disposition = "inline" if mode == "preview" else "attachment"
     return ProtectedFileDelivery(

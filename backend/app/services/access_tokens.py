@@ -11,12 +11,13 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.domain.activity import ActivityAction
-from app.domain.models import Activity, PersonalAccessToken, User
+from app.domain.models import PersonalAccessToken, User
 from app.domain.schemas import (
     AccessTokenCreatedResponse,
     AccessTokenCreateRequest,
     AccessTokenSummary,
 )
+from app.services.activities import record_activity
 
 
 class AccessTokenNotFoundError(Exception):
@@ -72,12 +73,11 @@ def create_access_token(
         expires_at=datetime.now(UTC) + timedelta(days=payload.expires_in_days),
     )
     session.add(token)
-    session.add(
-        Activity(
-            actor=user,
-            action=ActivityAction.CREATED_ACCESS_TOKEN,
-            description=f"创建了 AI 访问令牌「{payload.name}」",
-        )
+    record_activity(
+        session,
+        actor=user,
+        action=ActivityAction.CREATED_ACCESS_TOKEN,
+        description=f"创建了 AI 访问令牌「{payload.name}」",
     )
     session.flush()
     return AccessTokenCreatedResponse(**access_token_summary(token).model_dump(), token=plaintext)
@@ -103,12 +103,11 @@ def revoke_access_token(session: Session, user: User, token_id: UUID) -> AccessT
         raise AccessTokenNotFoundError
     if token.revoked_at is None:
         token.revoked_at = datetime.now(UTC)
-        session.add(
-            Activity(
-                actor=user,
-                action=ActivityAction.REVOKED_ACCESS_TOKEN,
-                description=f"撤销了 AI 访问令牌「{token.name}」",
-            )
+        record_activity(
+            session,
+            actor=user,
+            action=ActivityAction.REVOKED_ACCESS_TOKEN,
+            description=f"撤销了 AI 访问令牌「{token.name}」",
         )
     session.flush()
     return access_token_summary(token)

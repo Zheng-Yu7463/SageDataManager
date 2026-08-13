@@ -7,6 +7,7 @@ from app.domain.activity import ActivityAction
 from app.domain.enums import AssetType, HealthStatus, Visibility
 from app.domain.models import Activity, Asset, AssetRelation, AssetVersion, FileRecord, Tag, User
 from app.services.accounts import ensure_fixed_accounts
+from app.services.activities import record_activity
 
 ASSETS = [
     {
@@ -123,18 +124,17 @@ def main() -> None:
             session.add(asset)
             session.flush()
             asset_index[record["type"]] = asset
-            session.add(
-                Activity(
-                    asset=asset,
-                    actor=owner,
-                    action=(
-                        ActivityAction.ARCHIVED
-                        if index > 1
-                        else ActivityAction.UPDATED_METADATA
-                    ),
-                    description="更新了归档元数据" if index else "提交了最终论文版本",
-                    created_at=updated_at,
-                )
+            record_activity(
+                session,
+                asset=asset,
+                actor=owner,
+                action=(
+                    ActivityAction.ARCHIVED
+                    if index > 1
+                    else ActivityAction.UPDATED_METADATA
+                ),
+                description="更新了归档元数据" if index else "提交了最终论文版本",
+                created_at=updated_at,
             )
 
         session.add_all(

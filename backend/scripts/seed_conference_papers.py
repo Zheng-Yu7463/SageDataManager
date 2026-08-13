@@ -22,6 +22,7 @@ from app.domain.enums import AssetType, Visibility
 from app.domain.models import Activity, Asset, AssetVersion, FileRecord, Tag
 from app.domain.schemas import PublicationMetadata
 from app.services.accounts import ensure_fixed_accounts
+from app.services.activities import record_activity
 from app.services.paper_identity import normalize_identity_text, resolve_publication
 
 DEFAULT_ICLR_POSTER_IDS = (
@@ -779,14 +780,13 @@ def upsert_metadata(
                     )
                 )
             if not activity_exists:
-                session.add(
-                    Activity(
-                        asset=asset,
-                        actor=owner,
-                        action=ActivityAction.IMPORTED_PUBLICATION,
-                        description=f"从 {publication.metadata.venue} 官方来源同步文献元数据",
-                        created_at=datetime.now(UTC),
-                    )
+                record_activity(
+                    session,
+                    asset=asset,
+                    actor=owner,
+                    action=ActivityAction.IMPORTED_PUBLICATION,
+                    description=f"从 {publication.metadata.venue} 官方来源同步文献元数据",
+                    created_at=datetime.now(UTC),
                 )
     return MetadataSyncResult(created=created, updated=updated, skipped=skipped)
 

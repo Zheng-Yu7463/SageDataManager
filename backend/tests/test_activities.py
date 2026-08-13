@@ -5,8 +5,12 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.base import Base
 from app.domain.enums import AssetType, Visibility
-from app.domain.models import Activity, Asset, User
-from app.services.activities import activity_summary, recent_activity_summaries
+from app.domain.models import Asset, User
+from app.services.activities import (
+    activity_summary,
+    recent_activity_summaries,
+    record_activity,
+)
 
 
 def make_session() -> Session:
@@ -30,7 +34,8 @@ def test_recent_activity_summaries_collapse_equivalent_events() -> None:
     session.flush()
     started_at = datetime(2026, 8, 14, 1, 0, tzinfo=UTC)
     repeated = [
-        Activity(
+        record_activity(
+            session,
             asset=asset,
             actor=actor,
             action="prepared_upload",
@@ -39,7 +44,8 @@ def test_recent_activity_summaries_collapse_equivalent_events() -> None:
         )
         for index in range(3)
     ]
-    distinct = Activity(
+    distinct = record_activity(
+        session,
         asset=asset,
         actor=actor,
         action="downloaded_file",
@@ -83,13 +89,12 @@ def test_recent_activity_summaries_do_not_mix_assets() -> None:
     session.add_all([first, second])
     session.flush()
     for asset in (first, second):
-        session.add(
-            Activity(
-                asset=asset,
-                actor=actor,
-                action="updated_metadata",
-                description="更新了资产元数据",
-            )
+        record_activity(
+            session,
+            asset=asset,
+            actor=actor,
+            action="updated_metadata",
+            description="更新了资产元数据",
         )
     session.commit()
 
@@ -102,10 +107,49 @@ def test_recent_activity_summaries_do_not_mix_assets() -> None:
 
 def test_raw_activity_summary_represents_one_audit_record() -> None:
     session = make_session()
-    activity = Activity(action="updated_branding", description="更新了品牌设置")
-    session.add(activity)
+    activity = record_activity(
+        session, action="updated_branding", description="更新了品牌设置"
+    )
     session.flush()
 
     summary = activity_summary(activity)
 
     assert summary.occurrence_count == 1
+    assert summary.actor_name == "系统"
+    assert summary.asset_title is None
+    assert summary.asset_type is None
+
+
+def test_activity_display_values_are_immutable_snapshots() -> None:
+    session = make_session()
+    actor = User(username="researcher", name="Original Name", email="snapshot@sage.lab")
+    asset = Asset(
+        type=AssetType.PAPER,
+        slug="immutable-activity",
+        title="Original Title",
+        status="published",
+        visibility=Visibility.LAB,
+        owner=actor,
+    )
+    session.add(asset)
+    session.flush()
+    activity = record_activity(
+        session,
+        asset=asset,
+        actor=actor,
+        action="created",
+        description="登记了资产",
+    )
+    session.commit()
+
+    actor.name = "Renamed User"
+    asset.title = "Renamed Asset"
+    asset.type = AssetType.LITERATURE
+    session.commit()
+
+    raw_summary = activity_summary(activity)
+    recent_summary = recent_activity_summaries(session, limit=5, asset_id=asset.id)[0]
+    for summary in (raw_summary, recent_summary):
+        assert summary.actor_name == "Original Name"
+        assert summary.asset_title == "Original Title"
+        assert summary.asset_type == AssetType.PAPER

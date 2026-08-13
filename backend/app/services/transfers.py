@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.domain.activity import ActivityAction
 from app.domain.enums import HealthStatus
-from app.domain.models import Activity, Asset, FileRecord, User
+from app.domain.models import Asset, FileRecord, User
 from app.domain.schemas import (
     AgentUploadCreateResponse,
     AgentUploadedFileResponse,
@@ -22,6 +22,7 @@ from app.domain.schemas import (
     UploadCommandResponse,
     UploadFinalizeResponse,
 )
+from app.services.activities import record_activity
 from app.services.security import create_upload_token, read_upload_token
 from app.services.storage import UPLOAD_PARTS_DIRECTORY, UPLOAD_STAGING_DIRECTORY, file_kind
 from app.services.upload_directories import upload_directory_names
@@ -119,13 +120,12 @@ def generate_upload_command(
         upload_id, asset.id, subdirectory.as_posix(), ssh_user.strip()
     )
     if actor:
-        session.add(
-            Activity(
-                asset=asset,
-                actor=actor,
-                action=ActivityAction.PREPARED_UPLOAD,
-                description=f"为 {archive_relative_path} 生成了上传指令",
-            )
+        record_activity(
+            session,
+            asset=asset,
+            actor=actor,
+            action=ActivityAction.PREPARED_UPLOAD,
+            description=f"为 {archive_relative_path} 生成了上传指令",
         )
     return UploadCommandResponse(
         upload_id=upload_id,
@@ -158,14 +158,13 @@ def create_agent_upload(
     upload_token, expires_at = create_upload_token(
         upload_id, asset.id, subdirectory.as_posix(), actor.username or ""
     )
-    session.add(
-        Activity(
-            asset=asset,
-            actor=actor,
-            credential_name=credential_name,
-            action=ActivityAction.PREPARED_UPLOAD,
-            description=f"为 {archive_relative_path} 创建了 AI 上传任务",
-        )
+    record_activity(
+        session,
+        asset=asset,
+        actor=actor,
+        credential_name=credential_name,
+        action=ActivityAction.PREPARED_UPLOAD,
+        description=f"为 {archive_relative_path} 创建了 AI 上传任务",
     )
     session.flush()
     return AgentUploadCreateResponse(
@@ -418,17 +417,16 @@ def finalize_upload(
                     modified_at=datetime.fromtimestamp(stat.st_mtime, UTC),
                 )
             )
-        session.add(
-            Activity(
-                asset=asset,
-                actor=actor,
-                credential_name=credential_name,
-                action=ActivityAction.COMPLETED_UPLOAD,
-                description=(
-                    f"向 {asset.type.value}/{asset.slug}/{subdirectory.as_posix()} "
-                    f"入库了 {len(destinations)} 个文件"
-                ),
-            )
+        record_activity(
+            session,
+            asset=asset,
+            actor=actor,
+            credential_name=credential_name,
+            action=ActivityAction.COMPLETED_UPLOAD,
+            description=(
+                f"向 {asset.type.value}/{asset.slug}/{subdirectory.as_posix()} "
+                f"入库了 {len(destinations)} 个文件"
+            ),
         )
         session.flush()
         _remove_empty_staging_directories(staging_directory, staging_root)

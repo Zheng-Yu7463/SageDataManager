@@ -93,7 +93,6 @@ def activities(
     rows = session.scalars(
         select(Activity)
         .where(*filters)
-        .options(selectinload(Activity.asset), selectinload(Activity.actor))
         .order_by(Activity.created_at.desc(), Activity.id.asc())
         .offset((page - 1) * page_size)
         .limit(page_size)

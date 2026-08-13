@@ -7,8 +7,9 @@ from app.core.config import settings
 from app.db.base import Base
 from app.db.session import get_session
 from app.domain.activity import ActivityAction
-from app.domain.models import Activity, User
+from app.domain.models import User
 from app.main import app
+from app.services.activities import record_activity
 from app.services.security import create_session_token
 
 
@@ -25,12 +26,8 @@ def test_activity_log_requires_admin_and_paginates(monkeypatch) -> None:
     actor = User(username="zhengyu", name="郑宇", email="zhengyu@sage.lab", role="admin")
     session.add(actor)
     session.flush()
-    session.add_all(
-        [
-            Activity(actor=actor, action="created", description="登记了资产 A"),
-            Activity(actor=actor, action="archived", description="归档了资产 B"),
-        ]
-    )
+    record_activity(session, actor=actor, action="created", description="登记了资产 A")
+    record_activity(session, actor=actor, action="archived", description="归档了资产 B")
     session.commit()
     monkeypatch.setattr(settings, "auth_session_secret", "test-session-secret")
     app.dependency_overrides[get_session] = lambda: session
@@ -61,13 +58,9 @@ def test_activity_facets_include_actual_actions_and_unknown_history(monkeypatch)
     actor = User(username="zhengyu", name="郑宇", email="zhengyu@sage.lab", role="admin")
     session.add(actor)
     session.flush()
-    session.add_all(
-        [
-            Activity(actor=actor, action=action, description=action.value)
-            for action in ActivityAction
-        ]
-        + [Activity(actor=actor, action="legacy_event", description="旧事件")]
-    )
+    for action in ActivityAction:
+        record_activity(session, actor=actor, action=action, description=action.value)
+    record_activity(session, actor=actor, action="legacy_event", description="旧事件")
     session.commit()
     monkeypatch.setattr(settings, "auth_session_secret", "test-session-secret")
     app.dependency_overrides[get_session] = lambda: session

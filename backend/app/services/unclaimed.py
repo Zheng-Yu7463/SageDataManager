@@ -12,8 +12,9 @@ from sqlalchemy.orm import Session
 from app.db.constraints import violates_constraint
 from app.domain.activity import ActivityAction
 from app.domain.enums import HealthStatus
-from app.domain.models import Activity, Asset, FileRecord, UnclaimedFile, User
+from app.domain.models import Asset, FileRecord, UnclaimedFile, User
 from app.domain.schemas import FileClaimResult, FileSummary, UnclaimedFileSummary
+from app.services.activities import record_activity
 from app.services.storage import file_kind, is_internal_storage_path
 
 
@@ -134,13 +135,12 @@ def claim_unclaimed_file(
     record.claimed_asset_id = asset.id
     record.claimed_at = datetime.now(UTC)
     if actor:
-        session.add(
-            Activity(
-                asset=asset,
-                actor=actor,
-                action=ActivityAction.CLAIMED_FILE,
-                description=f"认领了文件 {record.file_name}",
-            )
+        record_activity(
+            session,
+            asset=asset,
+            actor=actor,
+            action=ActivityAction.CLAIMED_FILE,
+            description=f"认领了文件 {record.file_name}",
         )
 
     try:

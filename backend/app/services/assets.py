@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.db.constraints import violates_constraint
 from app.domain.activity import ActivityAction
 from app.domain.enums import AssetType, Visibility
-from app.domain.models import Activity, Asset, AssetRelation, AssetVersion, FileRecord, Tag, User
+from app.domain.models import Asset, AssetRelation, AssetVersion, FileRecord, Tag, User
 from app.domain.schemas import (
     AssetChoiceSummary,
     AssetCreateRequest,
@@ -26,7 +26,7 @@ from app.domain.schemas import (
     UploadDirectoryOption,
     normalized_asset_details,
 )
-from app.services.activities import recent_activity_summaries
+from app.services.activities import recent_activity_summaries, record_activity
 from app.services.paper_identity import (
     PublicationIdentityConflictError,
     publication_identities_match,
@@ -157,14 +157,13 @@ def create_asset(
         asset.versions.append(AssetVersion(version=payload.version.strip(), is_current=True))
     session.add(asset)
     session.flush()
-    session.add(
-        Activity(
-            asset=asset,
-            actor=actor or owner,
-            credential_name=credential_name,
-            action=ActivityAction.CREATED,
-            description=f"登记了{asset.title}",
-        )
+    record_activity(
+        session,
+        asset=asset,
+        actor=actor or owner,
+        credential_name=credential_name,
+        action=ActivityAction.CREATED,
+        description=f"登记了{asset.title}",
     )
     session.flush()
     return asset_summary(asset)
@@ -254,14 +253,13 @@ def update_asset(
         asset.tags = _tags(session, payload.tags)
     if payload.details is not None:
         asset.details = next_details
-    session.add(
-        Activity(
-            asset=asset,
-            actor=actor,
-            credential_name=credential_name,
-            action=ActivityAction.UPDATED_METADATA,
-            description="更新了资产基础信息",
-        )
+    record_activity(
+        session,
+        asset=asset,
+        actor=actor,
+        credential_name=credential_name,
+        action=ActivityAction.UPDATED_METADATA,
+        description="更新了资产基础信息",
     )
     session.flush()
     return asset_summary(asset)
@@ -298,13 +296,12 @@ def add_asset_version(
     asset.versions.append(version)
     session.flush()
     current_label = "（设为当前版本）" if payload.make_current else ""
-    session.add(
-        Activity(
-            asset=asset,
-            actor=actor,
-            action=ActivityAction.ADDED_VERSION,
-            description=f"登记了版本 {version_name}{current_label}",
-        )
+    record_activity(
+        session,
+        asset=asset,
+        actor=actor,
+        action=ActivityAction.ADDED_VERSION,
+        description=f"登记了版本 {version_name}{current_label}",
     )
     return AssetVersionSummary.model_validate(version)
 
@@ -323,13 +320,12 @@ def archive_asset(session: Session, asset_id: UUID, *, actor: User) -> AssetSumm
     if not asset:
         raise AssetNotFoundError
     asset.archived_at = datetime.now(UTC)
-    session.add(
-        Activity(
-            asset=asset,
-            actor=actor,
-            action=ActivityAction.ARCHIVED,
-            description="归档了该资产",
-        )
+    record_activity(
+        session,
+        asset=asset,
+        actor=actor,
+        action=ActivityAction.ARCHIVED,
+        description="归档了该资产",
     )
     session.flush()
     return asset_summary(asset)
@@ -349,13 +345,12 @@ def restore_asset(session: Session, asset_id: UUID, *, actor: User) -> AssetSumm
     if not asset:
         raise AssetNotFoundError
     asset.archived_at = None
-    session.add(
-        Activity(
-            asset=asset,
-            actor=actor,
-            action=ActivityAction.RESTORED,
-            description="恢复了该资产",
-        )
+    record_activity(
+        session,
+        asset=asset,
+        actor=actor,
+        action=ActivityAction.RESTORED,
+        description="恢复了该资产",
     )
     session.flush()
     return asset_summary(asset)
@@ -657,13 +652,12 @@ def add_asset_relation(
         if violates_constraint(error, ASSET_RELATION_UNIQUE_CONSTRAINT):
             raise AssetRelationError("相同的关联已存在。") from error
         raise
-    session.add(
-        Activity(
-            asset=source,
-            actor=actor,
-            action=ActivityAction.LINKED_ASSET,
-            description=f"关联了资产「{target.title}」：{relation_type}",
-        )
+    record_activity(
+        session,
+        asset=source,
+        actor=actor,
+        action=ActivityAction.LINKED_ASSET,
+        description=f"关联了资产「{target.title}」：{relation_type}",
     )
     return RelatedAssetSummary(
         relation_id=relation.id,
@@ -695,15 +689,17 @@ def remove_asset_relation(
         else relation.source_asset_id
     )
     target = session.get(Asset, other_asset_id)
+    source = session.get(Asset, asset_id)
+    if not source:
+        raise AssetRelationError("当前资产不存在或已归档。")
     description = f"移除了与资产「{target.title if target else '已删除资产'}」的关联"
     session.delete(relation)
-    session.add(
-        Activity(
-            asset_id=asset_id,
-            actor=actor,
-            action=ActivityAction.UNLINKED_ASSET,
-            description=description,
-        )
+    record_activity(
+        session,
+        asset=source,
+        actor=actor,
+        action=ActivityAction.UNLINKED_ASSET,
+        description=description,
     )
 
 
