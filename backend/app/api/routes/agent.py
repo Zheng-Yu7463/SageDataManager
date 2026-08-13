@@ -17,18 +17,23 @@ from app.domain.schemas import (
     AgentUploadCreateResponse,
     AgentUploadedFileResponse,
     AssetCreateRequest,
+    AssetDetail,
     AssetListResponse,
     AssetSummary,
+    AssetUpdateRequest,
     PublicationCitationResponse,
     UploadFinalizeRequest,
     UploadFinalizeResponse,
 )
+from app.services.access_tokens import record_access_token_use
 from app.services.assets import (
     AssetMetadataError,
+    AssetNotFoundError,
     AssetSlugConflictError,
     create_asset,
     get_asset,
     list_assets,
+    update_asset,
 )
 from app.services.citations import PublicationCitationError, build_publication_citation
 from app.services.transfers import (
@@ -54,8 +59,10 @@ def scoped(scope: str):
 
 @router.get("/me")
 def agent_identity(
+    session: SessionDependency,
     principal: Annotated[AgentPrincipal, Depends(require_agent)],
 ) -> AgentIdentityResponse:
+    record_access_token_use(session, principal.token)
     return AgentIdentityResponse(
         username=principal.user.username or "",
         account_name=principal.user.name,
@@ -110,6 +117,46 @@ def agent_create_asset(
     except AssetMetadataError as error:
         session.rollback()
         raise HTTPException(status_code=409, detail=error.message) from None
+    except Exception:
+        session.rollback()
+        raise
+
+
+@router.get("/assets/{asset_id}")
+def agent_asset(
+    asset_id: UUID,
+    session: SessionDependency,
+    _: Annotated[AgentPrincipal, scoped("assets:read")],
+) -> AssetDetail:
+    result = get_asset(session, asset_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="资产不存在或已归档。")
+    return result
+
+
+@router.patch("/assets/{asset_id}")
+def agent_update_asset(
+    asset_id: UUID,
+    payload: AssetUpdateRequest,
+    session: SessionDependency,
+    principal: Annotated[AgentPrincipal, scoped("metadata:write")],
+) -> AssetSummary:
+    try:
+        result = update_asset(
+            session,
+            asset_id,
+            payload,
+            actor=principal.user,
+            credential_name=principal.token.name,
+        )
+        session.commit()
+        return result
+    except AssetNotFoundError:
+        session.rollback()
+        raise HTTPException(status_code=404, detail="资产不存在或已归档。") from None
+    except AssetMetadataError as error:
+        session.rollback()
+        raise HTTPException(status_code=422, detail=error.message) from None
     except Exception:
         session.rollback()
         raise

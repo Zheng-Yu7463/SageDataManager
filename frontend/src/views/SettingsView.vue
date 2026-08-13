@@ -31,7 +31,10 @@ const tokenForm = ref({
   scopes: ['assets:read', 'metadata:write', 'files:upload', 'citations:export'] as AgentScope[],
 })
 const revokeTarget = ref<AccessTokenSummary | null>(null)
+const revokeDialog = ref<HTMLElement | null>(null)
 const revoking = ref(false)
+const revokeError = ref('')
+const tokenHistoryOpen = ref(false)
 const brandingSaving = ref(false)
 const logoUpdating = ref(false)
 const brandingMessage = ref('')
@@ -49,8 +52,16 @@ const brandingForm = ref<InstanceBrandingInput>({
 
 useOverlayFocus(createOpen, createDialog, closeCreate)
 useOverlayFocus(tokenDialogOpen, tokenDialog, closeTokenDialog)
+const revokeDialogOpen = computed(() => revokeTarget.value !== null)
+useOverlayFocus(revokeDialogOpen, revokeDialog, closeRevokeDialog)
 
 const activeCount = computed(() => accounts.value.filter((account) => account.is_active).length)
+const activeTokens = computed(() => accessTokens.value.filter((token) => tokenStatus(token) === 'active'))
+const historicalTokens = computed(() => accessTokens.value.filter((token) => tokenStatus(token) !== 'active'))
+
+function withoutPlaintextToken({ token: _token, ...summary }: AccessTokenCreated): AccessTokenSummary {
+  return summary
+}
 
 async function load() {
   loading.value = true
@@ -88,9 +99,14 @@ function openTokenDialog() {
 }
 
 function closeTokenDialog() {
-  if (tokenCreating.value) return
+  if (tokenCreating.value || createdToken.value) return
   tokenDialogOpen.value = false
   createdToken.value = null
+}
+
+function acknowledgeCreatedToken() {
+  createdToken.value = null
+  tokenDialogOpen.value = false
 }
 
 function toggleScope(scope: AgentScope) {
@@ -110,7 +126,7 @@ async function submitToken() {
       expires_in_days: tokenForm.value.expiresInDays,
     })
     createdToken.value = token
-    accessTokens.value = [token, ...accessTokens.value]
+    accessTokens.value = [withoutPlaintextToken(token), ...accessTokens.value]
   } catch (reason) {
     tokenError.value = reason instanceof Error ? reason.message : '无法创建访问令牌'
   } finally {
@@ -131,20 +147,36 @@ async function copyCreatedToken() {
 async function confirmRevokeToken() {
   if (!revokeTarget.value) return
   revoking.value = true
-  tokenError.value = ''
+  revokeError.value = ''
   try {
     const revoked = await revokeAccessToken(revokeTarget.value.id)
     accessTokens.value = accessTokens.value.map((token) => token.id === revoked.id ? revoked : token)
     revokeTarget.value = null
   } catch (reason) {
-    tokenError.value = reason instanceof Error ? reason.message : '无法撤销访问令牌'
+    revokeError.value = reason instanceof Error ? reason.message : '无法撤销访问令牌'
   } finally {
     revoking.value = false
   }
 }
 
+function openRevokeDialog(token: AccessTokenSummary) {
+  revokeError.value = ''
+  revokeTarget.value = token
+}
+
+function closeRevokeDialog() {
+  if (revoking.value) return
+  revokeTarget.value = null
+  revokeError.value = ''
+}
+
+function tokenStatus(token: AccessTokenSummary): 'active' | 'expired' | 'revoked' {
+  if (token.revoked_at) return 'revoked'
+  return new Date(token.expires_at).getTime() <= Date.now() ? 'expired' : 'active'
+}
+
 function formatTokenDate(value: string | null) {
-  if (!value) return '从未使用'
+  if (!value) return ''
   return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
 }
 
@@ -299,13 +331,13 @@ onMounted(load)
             <ExternalLink :size="15" />Agent 说明
           </a>
           <button class="button button--primary" type="button" @click="openTokenDialog">
-            <KeyRound :size="15" />创建令牌
+            <KeyRound :size="15" />新建令牌
           </button>
         </div>
       </header>
       <p v-if="tokenError && !tokenDialogOpen" class="agent-access-error settings-error" role="alert">{{ tokenError }}</p>
-      <div v-if="accessTokens.length" class="token-list">
-        <article v-for="token in accessTokens" :key="token.id" class="token-row" :class="{ 'token-row--revoked': token.revoked_at }">
+      <div v-if="activeTokens.length" class="token-list">
+        <article v-for="token in activeTokens" :key="token.id" class="token-row">
           <span class="token-key-icon"><KeyRound :size="16" /></span>
           <div class="token-identity">
             <strong>{{ token.name }}</strong>
@@ -316,17 +348,30 @@ onMounted(load)
           </div>
           <div class="token-dates">
             <small>到期 {{ formatTokenDate(token.expires_at) }}</small>
-            <small>使用 {{ formatTokenDate(token.last_used_at) }}</small>
+            <small>{{ token.last_used_at ? `最近使用 ${formatTokenDate(token.last_used_at)}` : '尚未使用' }}</small>
           </div>
-          <span v-if="token.revoked_at" class="token-revoked">已撤销</span>
-          <button v-else class="token-revoke" type="button" aria-label="撤销令牌" title="撤销令牌" @click="revokeTarget = token">
+          <button class="token-revoke" type="button" aria-label="撤销令牌" title="撤销令牌" @click="openRevokeDialog(token)">
             <Trash2 :size="16" />
           </button>
         </article>
       </div>
-      <div v-else class="token-empty">
+      <div v-else class="token-empty" :class="{ 'token-empty--compact': historicalTokens.length }">
         <KeyRound :size="23" />
-        <div><strong>还没有 AI 访问令牌</strong><p>创建后，AI 可按授权范围调用专用接口。</p></div>
+        <div><strong>没有有效的 AI 访问令牌</strong><p>创建后，AI 可按授权范围调用专用接口。</p></div>
+      </div>
+      <div v-if="historicalTokens.length" class="token-history">
+        <button type="button" :aria-expanded="tokenHistoryOpen" @click="tokenHistoryOpen = !tokenHistoryOpen">
+          <span>历史令牌</span><small>{{ historicalTokens.length }} 个已失效</small>
+        </button>
+        <div v-if="tokenHistoryOpen" class="token-list token-list--history">
+          <article v-for="token in historicalTokens" :key="token.id" class="token-row token-row--inactive">
+            <span class="token-key-icon"><KeyRound :size="16" /></span>
+            <div class="token-identity"><strong>{{ token.name }}</strong><code>{{ token.token_prefix }}…</code></div>
+            <div class="token-scopes" aria-label="令牌权限"><span v-for="scope in token.scopes" :key="scope">{{ scopeOptions.find((option) => option.value === scope)?.label || scope }}</span></div>
+            <div class="token-dates"><small>到期 {{ formatTokenDate(token.expires_at) }}</small><small v-if="token.revoked_at">撤销 {{ formatTokenDate(token.revoked_at) }}</small></div>
+            <span class="token-revoked">{{ tokenStatus(token) === 'revoked' ? '已撤销' : '已过期' }}</span>
+          </article>
+        </div>
       </div>
     </section>
 
@@ -369,7 +414,7 @@ onMounted(load)
 
     <div v-if="tokenDialogOpen" class="settings-backdrop" @click.self="closeTokenDialog">
       <section ref="tokenDialog" class="settings-dialog token-dialog" role="dialog" aria-modal="true" aria-labelledby="create-token-title" tabindex="-1">
-        <button class="settings-close" type="button" :disabled="tokenCreating" aria-label="关闭" @click="closeTokenDialog"><X :size="18" /></button>
+        <button v-if="!createdToken" class="settings-close" type="button" :disabled="tokenCreating" aria-label="关闭" @click="closeTokenDialog"><X :size="18" /></button>
         <template v-if="createdToken">
           <p class="eyebrow">TOKEN CREATED</p>
           <h2 id="create-token-title">令牌已创建</h2>
@@ -384,7 +429,7 @@ onMounted(load)
             </button>
           </div>
           <p v-if="tokenError" class="settings-error" role="alert">{{ tokenError }}</p>
-          <footer><button class="button button--primary" type="button" @click="closeTokenDialog">我已保存</button></footer>
+          <footer><button class="button button--primary" type="button" @click="acknowledgeCreatedToken">我已安全保存</button></footer>
         </template>
         <form v-else class="token-create-form" @submit.prevent="submitToken">
           <p class="eyebrow">PERSONAL ACCESS TOKEN</p>
@@ -410,12 +455,13 @@ onMounted(load)
       </section>
     </div>
 
-    <div v-if="revokeTarget" class="settings-backdrop" @click.self="revokeTarget = null">
-      <section class="settings-dialog revoke-dialog" role="alertdialog" aria-modal="true" aria-labelledby="revoke-token-title">
+    <div v-if="revokeTarget" class="settings-backdrop" @click.self="closeRevokeDialog">
+      <section ref="revokeDialog" class="settings-dialog revoke-dialog" role="alertdialog" aria-modal="true" aria-labelledby="revoke-token-title" tabindex="-1">
         <span class="revoke-dialog-icon"><CircleAlert :size="20" /></span>
         <h2 id="revoke-token-title">撤销“{{ revokeTarget.name }}”</h2>
         <p>撤销立即生效，使用此令牌的 AI 客户端将无法继续访问。该操作不可恢复。</p>
-        <footer><button class="button button--outline" type="button" :disabled="revoking" @click="revokeTarget = null">取消</button><button class="button button--danger" type="button" :disabled="revoking" @click="confirmRevokeToken"><Trash2 :size="16" />{{ revoking ? '正在撤销' : '确认撤销' }}</button></footer>
+        <p v-if="revokeError" class="settings-error" role="alert">{{ revokeError }}</p>
+        <footer><button class="button button--outline" type="button" :disabled="revoking" @click="closeRevokeDialog">取消</button><button class="button button--danger" type="button" :disabled="revoking" @click="confirmRevokeToken"><Trash2 :size="16" />{{ revoking ? '正在撤销' : '确认撤销' }}</button></footer>
       </section>
     </div>
   </div>
@@ -432,7 +478,7 @@ onMounted(load)
 .token-list { display: grid; }
 .token-row { display: grid; min-height: 78px; padding: 12px 20px; align-items: center; grid-template-columns: 34px minmax(150px,.8fr) minmax(230px,1.4fr) minmax(160px,.8fr) 34px; gap: 12px; border-bottom: 1px solid #edf0eb; }
 .token-row:last-child { border-bottom: 0; }
-.token-row--revoked { opacity: .58; }
+.token-row--inactive { opacity: .65; }
 .token-key-icon { display: grid; width: 32px; height: 32px; color: var(--sage); place-items: center; background: var(--sage-soft); border-radius: 5px; }
 .token-identity, .token-dates { display: grid; min-width: 0; gap: 4px; }
 .token-identity strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
@@ -446,6 +492,13 @@ onMounted(load)
 .token-empty { display: flex; min-height: 96px; padding: 20px; align-items: center; justify-content: center; color: #819087; gap: 11px; }
 .token-empty strong { display: block; color: #526056; font-size: 12px; }
 .token-empty p { margin: 4px 0 0; font-size: 10px; }
+.token-empty--compact { min-height: 76px; }
+.token-history { border-top: 1px solid var(--line); }
+.token-history > button { display: flex; width: 100%; min-height: 43px; padding: 0 20px; align-items: center; justify-content: space-between; color: #526056; background: #f7f9f5; border: 0; cursor: pointer; }
+.token-history > button:hover { background: #f0f4ef; }
+.token-history > button span { font-size: 11px; font-weight: 700; }
+.token-history > button small { color: #7c887f; font-size: 9px; }
+.token-list--history { border-top: 1px solid var(--line); }
 .token-dialog { width: min(100%, 590px); max-height: calc(100vh - 40px); overflow-y: auto; }
 .token-create-form { display: grid; gap: 12px; }
 .token-dialog select { width: 100%; padding: 9px 10px; color: var(--ink); font: inherit; font-size: 12px; background: #fff; border: 1px solid var(--line); border-radius: 5px; outline-color: var(--sage); }

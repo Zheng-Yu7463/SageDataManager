@@ -125,6 +125,57 @@ test('品牌设置保存后立即更新全站标识', async ({ page }) => {
   await expect(page).toHaveTitle('系统设置 · Atlas')
 })
 
+test('AI 访问令牌保护一次性明文并归档失效记录', async ({ page }) => {
+  await signIn(page)
+  const createdToken = {
+    id: '33333333-3333-3333-3333-333333333333',
+    name: '自动化验收',
+    token_prefix: 'sdm_pat_audit12345678',
+    token: 'sdm_pat_audit12345678_one_time_secret',
+    scopes: ['assets:read', 'metadata:write'],
+    created_at: '2026-08-13T12:00:00Z',
+    expires_at: '2026-11-11T12:00:00Z',
+    last_used_at: null,
+    revoked_at: null,
+  }
+  await page.route('**/api/auth/access-tokens', async (route) => {
+    if (route.request().method() === 'POST') {
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify(createdToken) })
+      return
+    }
+    await route.fulfill({ contentType: 'application/json', body: '[]' })
+  })
+  await page.route(`**/api/auth/access-tokens/${createdToken.id}`, async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ ...createdToken, token: undefined, revoked_at: '2026-08-13T12:05:00Z' }),
+    })
+  })
+
+  await page.goto('/settings')
+  await page.getByRole('button', { name: '新建令牌' }).click()
+  const createDialog = page.getByRole('dialog', { name: '创建 AI 访问令牌' })
+  await createDialog.getByLabel('令牌名称').fill(createdToken.name)
+  await createDialog.getByRole('button', { name: '创建令牌' }).click()
+
+  const createdDialog = page.getByRole('dialog', { name: '令牌已创建' })
+  await expect(createdDialog).toContainText(createdToken.token)
+  await page.keyboard.press('Escape')
+  await expect(createdDialog).toBeVisible()
+  await expect(createdDialog.getByRole('button', { name: '关闭' })).toHaveCount(0)
+
+  await createdDialog.getByRole('button', { name: '我已安全保存' }).click()
+  await expect(page.getByText(createdToken.token, { exact: true })).toHaveCount(0)
+  await page.getByRole('button', { name: '撤销令牌' }).click()
+  await page.getByRole('alertdialog').getByRole('button', { name: '确认撤销' }).click()
+
+  const history = page.getByRole('button', { name: /历史令牌/ })
+  await expect(history).toHaveAttribute('aria-expanded', 'false')
+  await history.click()
+  await expect(page.locator('.token-list--history')).toContainText('自动化验收')
+  await expect(page.locator('.token-list--history')).toContainText('已撤销')
+})
+
 test('目录筛选与视图状态可通过 URL 恢复', async ({ page }) => {
   await signIn(page)
   await page.getByRole('link', { name: '文献 Literature', exact: true }).click()

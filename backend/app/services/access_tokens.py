@@ -133,6 +133,9 @@ def authenticate_access_token(
         or not hmac.compare_digest(token.secret_hash, _token_secret_hash(secret))
     ):
         return None
-    token.last_used_at = now
-    session.flush()
     return token
+
+
+def record_access_token_use(session: Session, token: PersonalAccessToken) -> None:
+    token.last_used_at = datetime.now(UTC)
+    session.commit()

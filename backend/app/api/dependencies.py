@@ -2,15 +2,21 @@ from dataclasses import dataclass
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
 from app.db.session import get_session
 from app.domain.models import PersonalAccessToken, User
-from app.services.access_tokens import AccessTokenConfigurationError, authenticate_access_token
+from app.services.access_tokens import (
+    AccessTokenConfigurationError,
+    authenticate_access_token,
+    record_access_token_use,
+)
 from app.services.accounts import get_active_account
 from app.services.security import read_session_token
 
 SessionDependency = Annotated[Session, Depends(get_session)]
+agent_bearer = HTTPBearer(auto_error=False)
 
 
 def require_admin(
@@ -38,26 +44,28 @@ class AgentPrincipal:
 
 def require_agent(
     session: SessionDependency,
-    authorization: Annotated[str | None, Header()] = None,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(agent_bearer)],
 ) -> AgentPrincipal:
-    scheme, _, plaintext = (authorization or "").partition(" ")
-    if scheme.lower() != "bearer" or not plaintext:
+    if not credentials or credentials.scheme.lower() != "bearer":
         raise HTTPException(status_code=401, detail="请使用 Bearer 访问令牌。")
     try:
-        token = authenticate_access_token(session, plaintext)
+        token = authenticate_access_token(session, credentials.credentials)
     except AccessTokenConfigurationError as error:
         session.rollback()
         raise HTTPException(status_code=503, detail=str(error)) from None
     if not token:
         raise HTTPException(status_code=401, detail="访问令牌无效、已过期或已撤销。")
-    session.commit()
     return AgentPrincipal(user=token.user, token=token)
 
 
 def require_agent_scope(scope: str):
-    def dependency(principal: Annotated[AgentPrincipal, Depends(require_agent)]) -> AgentPrincipal:
+    def dependency(
+        session: SessionDependency,
+        principal: Annotated[AgentPrincipal, Depends(require_agent)],
+    ) -> AgentPrincipal:
         if scope not in principal.token.scopes:
             raise HTTPException(status_code=403, detail=f"访问令牌缺少权限：{scope}")
+        record_access_token_use(session, principal.token)
         return principal
 
     return dependency

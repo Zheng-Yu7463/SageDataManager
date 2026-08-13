@@ -202,7 +202,12 @@ def import_assets(
 
 
 def update_asset(
-    session: Session, asset_id: UUID, payload: AssetUpdateRequest, *, actor: User
+    session: Session,
+    asset_id: UUID,
+    payload: AssetUpdateRequest,
+    *,
+    actor: User,
+    credential_name: str | None = None,
 ) -> AssetSummary:
     asset = session.scalar(
         select(Asset)
@@ -253,6 +258,7 @@ def update_asset(
         Activity(
             asset=asset,
             actor=actor,
+            credential_name=credential_name,
             action=ActivityAction.UPDATED_METADATA,
             description="更新了资产基础信息",
         )

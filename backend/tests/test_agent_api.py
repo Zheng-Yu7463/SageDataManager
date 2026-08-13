@@ -81,6 +81,9 @@ def test_agent_discovery_is_public_and_contains_no_secret() -> None:
     assert "Authorization: Bearer" in instructions.text
     assert "sdm_pat_<public-id>_<secret>" in instructions.text
     assert discovery.json()["openapi"] == "/api/openapi.json"
+    openapi = client.get("/api/openapi.json").json()
+    get_assets = openapi["paths"]["/api/agent/assets"]["get"]
+    assert get_assets["security"] == [{"HTTPBearer": []}]
 
 
 def test_personal_tokens_are_shown_once_hashed_and_revocable(monkeypatch) -> None:
@@ -220,6 +223,32 @@ def test_agent_endpoints_enforce_individual_scopes(tmp_path: Path, monkeypatch) 
         session.close()
 
 
+def test_missing_scope_does_not_mark_a_token_as_used(tmp_path: Path, monkeypatch) -> None:
+    session = make_session()
+    user, _ = create_user_and_asset(session)
+    monkeypatch.setattr(settings, "auth_session_secret", "agent-test-secret")
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    plaintext = create_token(session, user, ["assets:read"])
+    token = session.scalar(select(PersonalAccessToken))
+    assert token is not None
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        denied = TestClient(app).post(
+            "/api/agent/uploads",
+            headers=bearer(plaintext),
+            json={
+                "asset_id": "00000000-0000-0000-0000-000000000001",
+                "target_subdirectory": "original",
+            },
+        )
+        assert denied.status_code == 403
+        session.refresh(token)
+        assert token.last_used_at is None
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
 def test_agent_metadata_creation_records_the_credential_name(monkeypatch) -> None:
     session = make_session()
     user, _ = create_user_and_asset(session)
@@ -257,6 +286,60 @@ def test_agent_metadata_creation_records_the_credential_name(monkeypatch) -> Non
         ).one()
         assert activity.credential_name == "metadata-curator"
         assert activity.actor_id == user.id
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
+def test_agent_can_read_and_update_existing_metadata_with_audit_identity(monkeypatch) -> None:
+    session = make_session()
+    user, asset = create_user_and_asset(session)
+    monkeypatch.setattr(settings, "auth_session_secret", "agent-test-secret")
+    plaintext = create_token(
+        session,
+        user,
+        ["assets:read", "metadata:write"],
+        name="metadata-updater",
+    )
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        client = TestClient(app)
+        detail = client.get(f"/api/agent/assets/{asset.id}", headers=bearer(plaintext))
+        assert detail.status_code == 200
+        assert detail.json()["slug"] == asset.slug
+
+        updated = client.patch(
+            f"/api/agent/assets/{asset.id}",
+            headers=bearer(plaintext),
+            json={"summary": "Updated by an authorized metadata agent."},
+        )
+        assert updated.status_code == 200
+        assert updated.json()["summary"] == "Updated by an authorized metadata agent."
+        activity = session.scalars(
+            select(Activity).where(Activity.action == "updated_metadata")
+        ).one()
+        assert activity.credential_name == "metadata-updater"
+        assert activity.actor_id == user.id
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
+def test_read_only_agent_cannot_update_existing_metadata(monkeypatch) -> None:
+    session = make_session()
+    user, asset = create_user_and_asset(session)
+    monkeypatch.setattr(settings, "auth_session_secret", "agent-test-secret")
+    plaintext = create_token(session, user, ["assets:read"])
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        response = TestClient(app).patch(
+            f"/api/agent/assets/{asset.id}",
+            headers=bearer(plaintext),
+            json={"summary": "This update must be rejected."},
+        )
+        assert response.status_code == 403
+        session.refresh(asset)
+        assert asset.summary == "Agent API integration fixture"
     finally:
         app.dependency_overrides.clear()
         session.close()

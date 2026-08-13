@@ -46,13 +46,17 @@ Never place a token in this document, source code, URLs, logs, or asset metadata
 ## Required workflow
 
 1. Search before creating: `GET /api/agent/assets?query=...`.
-2. Create metadata only when no matching asset exists: `POST /api/agent/assets`.
-3. Create an isolated upload task: `POST /api/agent/uploads`.
-4. Upload each file with `PUT` to the returned `file_upload_url_template`.
+2. Read the matching record: `GET /api/agent/assets/{asset_id}`.
+3. Update stale metadata in place: `PATCH /api/agent/assets/{asset_id}`.
+   The `details` field replaces the complete object; read it first and preserve
+   fields that are not changing.
+4. Create metadata only when no matching asset exists: `POST /api/agent/assets`.
+5. Create an isolated upload task: `POST /api/agent/uploads`.
+6. Upload each file with `PUT` to the returned `file_upload_url_template`.
    Send the upload token in `X-Sage-Upload-Token`.
-5. Finalize after every upload succeeds. `POST` to `finalize_url`
+7. Finalize after every upload succeeds. `POST` to `finalize_url`
    with `{"upload_token":"..."}`.
-6. On `409`, do not overwrite or retry under a different name without user direction.
+8. On `409`, do not overwrite or retry under a different name without user direction.
 
 ## Catalogue policy
 
