@@ -240,6 +240,107 @@ test('目录筛选浮层支持键盘和外部关闭', async ({ page }) => {
   expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth)
 })
 
+test('连续搜索只显示最新请求的状态和结果', async ({ page }) => {
+  await signIn(page)
+  let releaseLatestSearch: (() => void) | undefined
+  const latestSearchReleased = new Promise<void>((resolve) => { releaseLatestSearch = resolve })
+  let markLatestSearchStarted: (() => void) | undefined
+  const latestSearchStarted = new Promise<void>((resolve) => { markLatestSearchStarted = resolve })
+  await page.route('**/api/assets?*', async (route) => {
+    const query = new URL(route.request().url()).searchParams.get('query')
+    if (query === 'latest') {
+      markLatestSearchStarted?.()
+      await latestSearchReleased
+    }
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: query === 'latest' ? [{
+          id: '55555555-5555-5555-5555-555555555555',
+          type: 'project',
+          slug: 'latest-result',
+          title: '最新搜索结果',
+          summary: '只允许当前请求更新页面',
+          status: 'active',
+          visibility: 'lab',
+          owner: { id: '66666666-6666-6666-6666-666666666666', name: '测试用户', avatar_url: null },
+          details: {},
+          tags: [],
+          current_version: null,
+          total_size: 0,
+          file_count: 0,
+          upload_directories: [],
+          default_upload_directory: 'documents',
+          updated_at: '2026-08-13T06:00:00Z',
+        }] : [],
+        total: query === 'latest' ? 1 : 0,
+        page: 1,
+        page_size: 20,
+        publication_facets: null,
+      }),
+    })
+  })
+
+  await page.goto('/search?q=initial')
+  await expect(page.getByText('没有匹配的资产')).toBeVisible()
+  await page.getByPlaceholder('输入标题、摘要或关键词').fill('latest')
+  await expect(page.locator('.search-summary')).toContainText('与“initial”相关')
+  await page.getByRole('button', { name: '检索目录' }).click()
+  await latestSearchStarted
+  await expect(page.locator('.search-summary .tiny-spinner')).toBeVisible()
+  await expect(page.getByText('没有匹配的资产')).toBeHidden()
+
+  releaseLatestSearch?.()
+  await expect(page.getByText('最新搜索结果')).toBeVisible()
+  await expect(page.locator('.search-summary .tiny-spinner')).toBeHidden()
+})
+
+test('搜索页归一化非法和越界页码', async ({ page }) => {
+  await signIn(page)
+  await page.route('**/api/assets?*', async (route) => {
+    const url = new URL(route.request().url())
+    const requestedPage = Number(url.searchParams.get('page'))
+    const item = requestedPage === 2 ? [{
+      id: '77777777-7777-7777-7777-777777777777',
+      type: 'dataset',
+      slug: 'last-page-result',
+      title: '最后一页结果',
+      summary: '用于验证页码归一化',
+      status: 'active',
+      visibility: 'lab',
+      owner: { id: '88888888-8888-8888-8888-888888888888', name: '测试用户', avatar_url: null },
+      details: {},
+      tags: [],
+      current_version: null,
+      total_size: 0,
+      file_count: 0,
+      upload_directories: [],
+      default_upload_directory: 'raw',
+      updated_at: '2026-08-13T06:00:00Z',
+    }] : []
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ items: item, total: 21, page: requestedPage, page_size: 20, publication_facets: null }),
+    })
+  })
+
+  await page.goto('/search?q=paged&page=0')
+  await expect(page).toHaveURL(/q=paged(?!.*page=0)/)
+  await page.goto('/search?q=paged&page=999')
+  await expect(page).toHaveURL(/q=paged&page=2/)
+  await expect(page.getByText('最后一页结果')).toBeVisible()
+})
+
+test('批量导入文件选择器支持页面声明的三种格式', async ({ page }) => {
+  await signIn(page)
+  await page.goto('/import-assets')
+  const acceptedTypes = await page.locator('.import-file-picker input').getAttribute('accept')
+
+  expect(acceptedTypes).toContain('.json')
+  expect(acceptedTypes).toContain('.csv')
+  expect(acceptedTypes).toContain('.yaml')
+})
+
 test('待认领文件必须搜索并明确选择目标资产', async ({ page }) => {
   await signIn(page)
   await page.route('**/api/archive/unclaimed', async (route) => {

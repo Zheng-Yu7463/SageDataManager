@@ -12,7 +12,8 @@ import type { AssetListResponse, AssetSummary } from '@/types'
 
 const route = useRoute()
 const router = useRouter()
-const query = ref('')
+const inputQuery = ref('')
+const activeQuery = ref('')
 const data = ref<AssetListResponse | null>(null)
 const loading = ref(false)
 const error = ref('')
@@ -35,44 +36,65 @@ function resultContext(asset: AssetSummary) {
 
 async function load(nextQuery: string, nextPage: number) {
   controller?.abort()
-  query.value = nextQuery
+  activeQuery.value = nextQuery
+  inputQuery.value = nextQuery
   page.value = nextPage
   if (!nextQuery) {
+    controller = undefined
     data.value = null
+    error.value = ''
+    loading.value = false
     return
   }
-  controller = new AbortController()
+  const requestController = new AbortController()
+  controller = requestController
   loading.value = true
   error.value = ''
+  data.value = null
   try {
-    data.value = await getAssets(undefined, { query: nextQuery, page: nextPage, pageSize }, controller.signal)
+    const result = await getAssets(undefined, { query: nextQuery, page: nextPage, pageSize }, requestController.signal)
+    if (controller !== requestController) return
+    const lastPage = Math.max(1, Math.ceil(result.total / pageSize))
+    if (nextPage > lastPage) {
+      await router.replace({
+        name: 'search',
+        query: lastPage > 1 ? { q: nextQuery, page: String(lastPage) } : { q: nextQuery },
+      })
+      return
+    }
+    data.value = result
   } catch (reason) {
+    if (controller !== requestController) return
     if (reason instanceof DOMException && reason.name === 'AbortError') return
     error.value = reason instanceof Error ? reason.message : '搜索失败'
   } finally {
-    loading.value = false
+    if (controller === requestController) loading.value = false
   }
 }
 
 function submit() {
-  const value = query.value.trim()
+  const value = inputQuery.value.trim()
   router.push({ name: 'search', query: value ? { q: value } : {} })
 }
 
 function clear() {
-  query.value = ''
+  inputQuery.value = ''
   router.push({ name: 'search' })
 }
 
 function goToPage(nextPage: number) {
-  router.push({ name: 'search', query: { q: query.value, page: String(nextPage) } })
+  router.push({ name: 'search', query: { q: activeQuery.value, page: String(nextPage) } })
 }
 
 watch(
   () => [route.query.q, route.query.page],
   ([queryValue, pageValue]) => {
-    const nextPage = typeof pageValue === 'string' && /^\d+$/.test(pageValue) ? Number(pageValue) : 1
-    return load(typeof queryValue === 'string' ? queryValue.trim() : '', nextPage)
+    const nextQuery = typeof queryValue === 'string' ? queryValue.trim() : ''
+    const parsedPage = typeof pageValue === 'string' && /^\d+$/.test(pageValue) ? Number(pageValue) : 1
+    if (pageValue !== undefined && parsedPage < 1) {
+      return router.replace({ name: 'search', query: nextQuery ? { q: nextQuery } : {} })
+    }
+    return load(nextQuery, parsedPage)
   },
   { immediate: true },
 )
@@ -91,18 +113,18 @@ onBeforeUnmount(() => controller?.abort())
 
     <form class="discovery-search" @submit.prevent="submit">
       <Search :size="22" />
-      <input v-model="query" autofocus placeholder="输入标题、摘要或关键词" />
-      <button v-if="query" type="button" aria-label="清空搜索" @click="clear"><X :size="18" /></button>
+      <input v-model="inputQuery" autofocus placeholder="输入标题、摘要或关键词" />
+      <button v-if="inputQuery" type="button" aria-label="清空搜索" @click="clear"><X :size="18" /></button>
       <button class="button button--primary">检索目录</button>
     </form>
 
-    <div v-if="query" class="catalogue-summary search-summary">
-      <p><strong>{{ resultLabel }}</strong> 与“{{ query }}”相关</p>
+    <div v-if="activeQuery" class="catalogue-summary search-summary">
+      <p><strong>{{ resultLabel }}</strong> 与“{{ activeQuery }}”相关</p>
       <span v-if="loading" class="tiny-spinner"></span>
     </div>
 
     <div v-if="error" class="state-panel state-panel--error state-panel--inline" role="alert"><strong>检索失败</strong><p>{{ error }}</p></div>
-    <div v-else-if="!query" class="empty-catalogue">
+    <div v-else-if="!activeQuery" class="empty-catalogue">
       <span><Search :size="30" /></span><h2>从一个研究主题开始</h2><p>例如：气候科学、Transformer、多模态。</p>
     </div>
     <div v-else-if="!loading && data?.items.length === 0" class="empty-catalogue">

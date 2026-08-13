@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -211,6 +212,32 @@ def test_scan_keeps_one_healthy_record_for_a_claimed_path(tmp_path: Path) -> Non
     assert records[0].health_status == HealthStatus.HEALTHY
     assert result.files_indexed == 1
     assert result.files_missing == 0
+
+
+def test_scan_keeps_archived_asset_files_indexed_and_claimed(tmp_path: Path) -> None:
+    storage_root = tmp_path / "archive"
+    source = storage_root / "project" / "field-notes" / "documents" / "notes.txt"
+    source.parent.mkdir(parents=True)
+    source.write_text("archived research notes")
+    session = make_session()
+    asset = create_asset(session)
+
+    initial_scan = scan_storage(session, storage_root)
+    session.commit()
+    asset.archived_at = datetime.now(UTC)
+    session.commit()
+    archived_scan = scan_storage(session, storage_root)
+    session.commit()
+
+    record = session.scalar(select(FileRecord))
+    assert initial_scan.files_indexed == 1
+    assert archived_scan.files_indexed == 1
+    assert archived_scan.files_missing == 0
+    assert archived_scan.files_unclaimed == 0
+    assert record is not None
+    assert record.asset_id == asset.id
+    assert record.health_status == HealthStatus.HEALTHY
+    assert list_unclaimed_files(session) == []
 
 
 def test_claim_route_maps_path_ownership_conflict_to_409(

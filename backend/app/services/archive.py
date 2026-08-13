@@ -46,9 +46,9 @@ def scan_storage(session: Session, storage_root: Path) -> ScanRunSummary:
         session.flush()
         raise StorageScanError
 
-    active_assets = session.scalars(select(Asset).where(Asset.archived_at.is_(None))).all()
-    assets = {(asset.type.value, asset.slug): asset for asset in active_assets}
-    assets_by_id = {asset.id: asset for asset in active_assets}
+    registered_assets = session.scalars(select(Asset)).all()
+    assets = {(asset.type.value, asset.slug): asset for asset in registered_assets}
+    assets_by_id = {asset.id: asset for asset in registered_assets}
     claimed_assets = {
         record.relative_path: record.claimed_asset_id
         for record in session.scalars(

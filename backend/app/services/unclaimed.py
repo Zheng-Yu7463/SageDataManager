@@ -46,8 +46,7 @@ def locked_unclaimed_file_statement(unclaimed_file_id: UUID):
 
 def sync_unclaimed_files(session: Session, storage_root: Path) -> None:
     assets = {
-        (asset.type.value, asset.slug)
-        for asset in session.scalars(select(Asset).where(Asset.archived_at.is_(None))).all()
+        (asset.type.value, asset.slug) for asset in session.scalars(select(Asset)).all()
     }
     existing = {
         record.relative_path: record for record in session.scalars(select(UnclaimedFile)).all()
