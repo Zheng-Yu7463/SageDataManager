@@ -168,8 +168,8 @@ onMounted(load)
             <label>组织名称<input v-model="brandingForm.organization_name" required maxlength="120" placeholder="例如：SAGE Lab" /></label>
           </div>
           <div class="branding-fields branding-fields--slogans">
-            <label>主标语<input v-model="brandingForm.slogan" required maxlength="160" placeholder="例如：数据 · 知识 · 传承" /></label>
-            <label>辅助标语<input v-model="brandingForm.slogan_secondary" required maxlength="160" placeholder="例如：Science · Archive · Growth" /></label>
+            <label>主标语<input v-model="brandingForm.slogan" required maxlength="160" placeholder="例如：科学 · 归档 · 成长 · 演进" /></label>
+            <label>辅助标语<input v-model="brandingForm.slogan_secondary" required maxlength="160" placeholder="例如：Science · Archive · Growth · Evolution" /></label>
           </div>
           <div class="branding-controls">
             <label class="color-field">品牌主色<span><input v-model="brandingForm.primary_color" type="color" /><input v-model="brandingForm.primary_color" required maxlength="7" pattern="#[0-9A-Fa-f]{6}" aria-label="品牌主色色值" /></span></label>

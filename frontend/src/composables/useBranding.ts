@@ -7,8 +7,8 @@ const defaultBranding: InstanceBranding = {
   product_name: 'SAGE',
   product_subtitle: 'RESEARCH ARCHIVE',
   organization_name: 'SAGE Lab',
-  slogan: '数据 · 知识 · 传承',
-  slogan_secondary: 'Science · Archive · Growth',
+  slogan: '科学 · 归档 · 成长 · 演进',
+  slogan_secondary: 'Science · Archive · Growth · Evolution',
   primary_color: '#2E7351',
   logo_url: null,
 }
