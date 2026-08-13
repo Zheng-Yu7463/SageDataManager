@@ -8,9 +8,9 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.base import Base
 from app.domain.enums import AssetType, Visibility
-from app.domain.models import Asset, User
-from app.domain.schemas import PaperMetadata
-from app.services.paper_identity import PaperIdentityConflictError, normalize_identity_text
+from app.domain.models import Asset, FileRecord, User
+from app.domain.schemas import PublicationMetadata
+from app.services.paper_identity import PublicationIdentityConflictError, normalize_identity_text
 from scripts import seed_conference_papers
 
 
@@ -222,7 +222,7 @@ def test_download_papers_skips_an_existing_valid_pdf(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
     paper = conference_paper()
-    destination = tmp_path / "paper" / paper.slug / "manuscript" / "paper.pdf"
+    destination = tmp_path / "literature" / paper.slug / "original" / "paper.pdf"
     destination.parent.mkdir(parents=True)
     destination.write_bytes(b"%PDF existing")
     monkeypatch.setattr(seed_conference_papers, "validate_pdf", lambda path: None)
@@ -239,6 +239,84 @@ def test_download_papers_skips_an_existing_valid_pdf(
     assert result.failures == ()
 
 
+def test_migrate_publications_moves_pdf_and_updates_file_record(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    session = make_session()
+    publication = conference_paper()
+    asset = existing_paper(session, publication)
+    source = seed_conference_papers.legacy_paper_pdf_path(tmp_path, publication)
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"%PDF fixture")
+    session.add(
+        FileRecord(
+            asset_id=asset.id,
+            relative_path=source.relative_to(tmp_path).as_posix(),
+            file_name="paper.pdf",
+            file_kind="document",
+            file_size=12,
+        )
+    )
+    session.commit()
+    monkeypatch.setattr(seed_conference_papers, "validate_pdf", lambda path: None)
+    monkeypatch.setattr(seed_conference_papers, "SessionLocal", sessionmaker(bind=session.bind))
+
+    result = seed_conference_papers.migrate_publications([publication], tmp_path)
+
+    destination = seed_conference_papers.publication_pdf_path(tmp_path, publication)
+    assert result.updated == 1
+    assert destination.is_file()
+    assert not source.exists()
+    with Session(session.bind) as verification:
+        migrated = verification.get(Asset, asset.id)
+        assert migrated is not None
+        assert migrated.type == AssetType.LITERATURE
+        assert migrated.files[0].relative_path == destination.relative_to(tmp_path).as_posix()
+
+
+def test_migrate_publications_restores_pdf_when_database_update_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    publication = conference_paper()
+    source = seed_conference_papers.legacy_paper_pdf_path(tmp_path, publication)
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"%PDF fixture")
+    monkeypatch.setattr(seed_conference_papers, "validate_pdf", lambda path: None)
+    monkeypatch.setattr(
+        seed_conference_papers,
+        "upsert_metadata",
+        lambda publications, relocations: (_ for _ in ()).throw(RuntimeError("database failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="database failed"):
+        seed_conference_papers.migrate_publications([publication], tmp_path)
+
+    destination = seed_conference_papers.publication_pdf_path(tmp_path, publication)
+    assert source.is_file()
+    assert not destination.exists()
+
+
+def test_migrate_publications_removes_empty_legacy_directory_without_pdf(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    publication = conference_paper()
+    legacy_directory = seed_conference_papers.legacy_paper_pdf_path(
+        tmp_path, publication
+    ).parent
+    legacy_directory.mkdir(parents=True)
+    monkeypatch.setattr(
+        seed_conference_papers,
+        "upsert_metadata",
+        lambda publications, relocations: seed_conference_papers.MetadataSyncResult(
+            created=0, updated=1, skipped=0
+        ),
+    )
+
+    seed_conference_papers.migrate_publications([publication], tmp_path)
+
+    assert not legacy_directory.exists()
+
+
 def make_session() -> Session:
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)
@@ -252,12 +330,12 @@ def conference_paper(
     first_author: str = "Abele Mălan",
     source_id: str = "Official.2026.1",
     doi: str | None = "10.1000/canonical",
-) -> seed_conference_papers.ConferencePaper:
-    return seed_conference_papers.ConferencePaper(
+) -> seed_conference_papers.PublicationRecord:
+    return seed_conference_papers.PublicationRecord(
         slug=slug,
         title=title,
         summary="Official abstract.",
-        metadata=PaperMetadata(
+        metadata=PublicationMetadata(
             venue="ACL",
             year=2026,
             track="Main Conference",
@@ -271,7 +349,7 @@ def conference_paper(
     )
 
 
-def existing_paper(session: Session, paper: seed_conference_papers.ConferencePaper) -> Asset:
+def existing_paper(session: Session, paper: seed_conference_papers.PublicationRecord) -> Asset:
     owner = User(username="zhengyu", name="zhengyu", email="zhengyu@sage.lab")
     asset = Asset(
         type=AssetType.PAPER,
@@ -322,7 +400,7 @@ def existing_paper(session: Session, paper: seed_conference_papers.ConferencePap
 )
 def test_upsert_updates_one_canonical_paper_without_creating_duplicates(
     monkeypatch: pytest.MonkeyPatch,
-    incoming: seed_conference_papers.ConferencePaper,
+    incoming: seed_conference_papers.PublicationRecord,
 ) -> None:
     session = make_session()
     original = existing_paper(session, conference_paper())
@@ -332,10 +410,12 @@ def test_upsert_updates_one_canonical_paper_without_creating_duplicates(
     second_result = seed_conference_papers.upsert_metadata([incoming])
 
     with Session(session.bind) as verification:
-        papers = verification.scalars(select(Asset).where(Asset.type == AssetType.PAPER)).all()
-        assert len(papers) == 1
-        assert papers[0].id == original.id
-        assert papers[0].details["source_id"] == incoming.metadata.source_id
+        publications = verification.scalars(
+            select(Asset).where(Asset.type == AssetType.LITERATURE)
+        ).all()
+        assert len(publications) == 1
+        assert publications[0].id == original.id
+        assert publications[0].details["source_id"] == incoming.metadata.source_id
         assert first_result.updated == 1
         assert second_result.skipped == 1
 
@@ -398,7 +478,7 @@ def test_upsert_rolls_back_when_identifiers_point_to_different_papers(
         doi=second.metadata.doi,
     )
 
-    with pytest.raises(PaperIdentityConflictError, match="指向了不同"):
+    with pytest.raises(PublicationIdentityConflictError, match="指向了不同"):
         seed_conference_papers.upsert_metadata(
             [
                 conference_paper(

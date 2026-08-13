@@ -3,13 +3,13 @@ import { Archive, ArrowDownToLine, ArrowLeft, Check, CheckCircle2, ChevronDown, 
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import { addAssetRelation, addAssetVersion, archiveAsset, getAsset, getAssets, getFileAccessTicket, getPaperCitation, removeAssetRelation, updateAsset } from '@/api/client'
+import { addAssetRelation, addAssetVersion, archiveAsset, getAsset, getAssets, getFileAccessTicket, getPublicationCitation, removeAssetRelation, updateAsset } from '@/api/client'
 import AssetIcon from '@/components/AssetIcon.vue'
 import { assetMeta } from '@/catalogue'
 import { useOverlayFocus } from '@/composables/useOverlayFocus'
 import { useBranding } from '@/composables/useBranding'
-import { isPaperMetadata } from '@/types'
-import type { AssetDetail, AssetSummary, FileAccessMode, FileSummary, PaperCitation, PaperMetadata, RelatedAssetSummary, Visibility } from '@/types'
+import { isPublicationMetadata } from '@/types'
+import type { AssetDetail, AssetSummary, FileAccessMode, FileSummary, PublicationCitation, PublicationMetadata, RelatedAssetSummary, Visibility } from '@/types'
 import { copyText, downloadTextFile } from '@/utils/textFiles'
 
 const route = useRoute()
@@ -39,8 +39,8 @@ const relationType = ref('related_to')
 const relationSaving = ref(false)
 const relationError = ref('')
 const meta = computed(() => (data.value ? assetMeta[data.value.type] : null))
-const paper = computed<PaperMetadata | null>(() => data.value && data.value.type === 'paper' && isPaperMetadata(data.value.details) ? data.value.details : null)
-const citation = ref<PaperCitation | null>(null)
+const publication = computed<PublicationMetadata | null>(() => data.value && ['paper', 'literature'].includes(data.value.type) && isPublicationMetadata(data.value.details) ? data.value.details : null)
+const citation = ref<PublicationCitation | null>(null)
 const citationLoading = ref(false)
 const citationCopied = ref(false)
 const citationError = ref('')
@@ -154,10 +154,10 @@ async function load() {
     setPageTitle(next.title)
     citation.value = null
     citationError.value = ''
-    if (next.type === 'paper') {
+    if (['paper', 'literature'].includes(next.type) && isPublicationMetadata(next.details)) {
       citationLoading.value = true
       try {
-        citation.value = await getPaperCitation(next.id, controller.signal)
+        citation.value = await getPublicationCitation(next.id, controller.signal)
       } catch (reason) {
         if (!(reason instanceof DOMException && reason.name === 'AbortError')) {
           citationError.value = reason instanceof Error ? reason.message : '无法读取 BibTeX'
@@ -401,7 +401,7 @@ onBeforeUnmount(() => {
         <div>
           <p class="eyebrow">{{ pageEyebrow(`ARCHIVE · ${meta.english.toUpperCase()}`) }}</p>
           <h1>{{ data.title }}</h1>
-          <p v-if="paper" class="paper-byline-detail">{{ paper.authors.join('、') }}</p>
+          <p v-if="publication" class="publication-byline-detail">{{ publication.authors.join('、') }}</p>
           <p v-else>{{ data.summary }}</p>
           <div class="tag-list"><span v-for="tag in data.tags" :key="tag">{{ tag }}</span></div>
         </div>
@@ -416,35 +416,35 @@ onBeforeUnmount(() => {
             <div><dt>负责人</dt><dd><span class="mini-avatar">{{ data.owner.name.slice(0, 1) }}</span>{{ data.owner.name }}</dd></div>
             <div><dt>当前版本</dt><dd>{{ data.current_version ?? '—' }}</dd></div>
             <div><dt>已索引容量</dt><dd>{{ formatBytes(data.total_size) }}</dd></div>
-            <template v-if="paper">
-              <div><dt>收录会议</dt><dd>{{ paper.venue }} {{ paper.year }}</dd></div>
-              <div><dt>会议类别</dt><dd>{{ paper.track }}</dd></div>
-              <div class="detail-fact-wide"><dt>作者</dt><dd>{{ paper.authors.join('、') }}</dd></div>
-              <div v-if="paper.doi"><dt>DOI</dt><dd>{{ paper.doi }}</dd></div>
-              <div class="detail-fact-links"><dt>官方来源</dt><dd><a :href="paper.source_url" target="_blank" rel="noreferrer"><Link2 :size="14" />会议页面</a><a v-if="paper.publication_url" :href="paper.publication_url" target="_blank" rel="noreferrer"><Link2 :size="14" />论文页面</a><a :href="paper.pdf_url" target="_blank" rel="noreferrer"><FileText :size="14" />正式 PDF</a></dd></div>
+            <template v-if="publication">
+              <div><dt>发表来源</dt><dd>{{ publication.venue }} {{ publication.year }}</dd></div>
+              <div><dt>文献类别</dt><dd>{{ publication.track }}</dd></div>
+              <div class="detail-fact-wide"><dt>作者</dt><dd>{{ publication.authors.join('、') }}</dd></div>
+              <div v-if="publication.doi"><dt>DOI</dt><dd>{{ publication.doi }}</dd></div>
+              <div class="detail-fact-links"><dt>官方来源</dt><dd><a :href="publication.source_url" target="_blank" rel="noreferrer"><Link2 :size="14" />来源页面</a><a v-if="publication.publication_url" :href="publication.publication_url" target="_blank" rel="noreferrer"><Link2 :size="14" />出版页面</a><a :href="publication.pdf_url" target="_blank" rel="noreferrer"><FileText :size="14" />正式 PDF</a></dd></div>
             </template>
             <div v-else v-for="([key, value]) in genericDetails" :key="key"><dt>{{ key.replaceAll('_', ' ') }}</dt><dd>{{ displayValue(value) }}</dd></div>
           </dl>
         </article>
 
-        <article v-if="paper" class="panel detail-paper">
-          <header class="panel-heading"><div><span class="section-number">02</span><div><h2>论文内容</h2><p>Abstract & citation</p></div></div></header>
-          <div class="paper-content-grid">
-            <section class="paper-abstract" aria-labelledby="paper-abstract-title"><span>ABSTRACT</span><h3 id="paper-abstract-title">摘要</h3><p>{{ paper.abstract || '暂未收录摘要。' }}</p></section>
-            <section class="paper-citation" aria-labelledby="paper-citation-title">
+        <article v-if="publication" class="panel detail-publication">
+          <header class="panel-heading"><div><span class="section-number">02</span><div><h2>{{ data.type === 'paper' ? '论文内容' : '文献内容' }}</h2><p>Abstract & citation</p></div></div></header>
+          <div class="publication-content-grid">
+            <section class="publication-abstract" aria-labelledby="publication-abstract-title"><span>ABSTRACT</span><h3 id="publication-abstract-title">摘要</h3><p>{{ publication.abstract || '暂未收录摘要。' }}</p></section>
+            <section class="publication-citation" aria-labelledby="publication-citation-title">
               <header>
-                <div><span>BIBTEX CITATION</span><h3 id="paper-citation-title">论文引用</h3></div>
-                <div v-if="citation" class="paper-citation-actions"><button class="button button--outline" type="button" @click="copyCitation"><Check v-if="citationCopied" :size="15" /><Copy v-else :size="15" />{{ citationCopied ? '已复制' : '复制' }}</button><button class="button button--outline" type="button" @click="downloadCitation"><ArrowDownToLine :size="15" />下载 .bib</button></div>
+                <div><span>BIBTEX CITATION</span><h3 id="publication-citation-title">出版物引用</h3></div>
+                <div v-if="citation" class="publication-citation-actions"><button class="button button--outline" type="button" @click="copyCitation"><Check v-if="citationCopied" :size="15" /><Copy v-else :size="15" />{{ citationCopied ? '已复制' : '复制' }}</button><button class="button button--outline" type="button" @click="downloadCitation"><ArrowDownToLine :size="15" />下载 .bib</button></div>
               </header>
-              <div v-if="citationLoading" class="paper-citation-loading" role="status" aria-live="polite"><span class="tiny-spinner"></span>正在生成引用…</div>
+              <div v-if="citationLoading" class="publication-citation-loading" role="status" aria-live="polite"><span class="tiny-spinner"></span>正在生成引用…</div>
               <pre v-else-if="citation"><code>{{ citation.bibtex }}</code></pre>
-              <p v-if="citationError" class="paper-citation-error" role="alert">{{ citationError }}</p>
+              <p v-if="citationError" class="publication-citation-error" role="alert">{{ citationError }}</p>
             </section>
           </div>
         </article>
 
         <article class="panel detail-files">
-          <header class="panel-heading"><div><span class="section-number">{{ paper ? '03' : '02' }}</span><div><h2>文件浏览</h2><p>Repository browser</p></div></div><span class="data-note">{{ data.files.length }} files</span></header>
+          <header class="panel-heading"><div><span class="section-number">{{ publication ? '03' : '02' }}</span><div><h2>文件浏览</h2><p>Repository browser</p></div></div><span class="data-note">{{ data.files.length }} files</span></header>
           <div v-if="data.files.length" class="repository-browser">
             <div class="repository-toolbar"><span>受控归档 · {{ data.files.length }} 个文件 · {{ formatBytes(data.total_size) }}</span><small>相对路径仅在当前资产内展示</small></div>
             <div class="repository-head"><span>文件</span><span>类型</span><span>状态</span><span>大小</span><span>操作</span></div>
@@ -463,7 +463,7 @@ onBeforeUnmount(() => {
         </article>
 
         <article class="panel detail-versions">
-          <header class="panel-heading"><div><span class="section-number">{{ paper ? '04' : '03' }}</span><div><h2>版本沿革</h2><p>Version history</p></div></div><button class="section-action" @click="openVersion"><Plus :size="14" />新增版本</button></header>
+          <header class="panel-heading"><div><span class="section-number">{{ publication ? '04' : '03' }}</span><div><h2>版本沿革</h2><p>Version history</p></div></div><button class="section-action" @click="openVersion"><Plus :size="14" />新增版本</button></header>
           <div class="detail-section-body">
             <ol v-if="data.versions.length" class="detail-timeline">
               <li v-for="version in data.versions" :key="version.id"><CheckCircle2 :size="17" /><div><strong>{{ version.version }} <small v-if="version.is_current">当前版本</small></strong><p>{{ version.release_notes || '未附版本说明' }}</p></div><time>{{ formatDate(version.created_at) }}</time></li>
@@ -473,7 +473,7 @@ onBeforeUnmount(() => {
         </article>
 
         <article class="panel detail-related">
-          <header class="panel-heading"><div><span class="section-number">{{ paper ? '05' : '04' }}</span><div><h2>关联资产</h2><p>Research context</p></div></div><button class="section-action" @click="openRelation"><Plus :size="14" />添加关联</button></header>
+          <header class="panel-heading"><div><span class="section-number">{{ publication ? '05' : '04' }}</span><div><h2>关联资产</h2><p>Research context</p></div></div><button class="section-action" @click="openRelation"><Plus :size="14" />添加关联</button></header>
           <div class="detail-section-body">
             <div v-if="data.related_assets.length" class="detail-list">
               <div v-for="asset in data.related_assets" :key="asset.relation_id" class="detail-list-row detail-related-row"><RouterLink :to="{ name: 'asset-detail', params: { assetId: asset.id } }" class="detail-link"><GitBranch :size="18" /><span><strong>{{ asset.title }}</strong><small>{{ asset.relation_type }} · {{ assetMeta[asset.type].label }}</small></span></RouterLink><button class="relation-remove" :disabled="removingRelationId === asset.relation_id" :title="`解除与 ${asset.title} 的关联`" @click="removeRelation(asset)"><Trash2 :size="14" /></button></div>
@@ -483,7 +483,7 @@ onBeforeUnmount(() => {
         </article>
 
         <article class="panel detail-activity">
-          <header class="panel-heading"><div><span class="section-number">{{ paper ? '06' : '05' }}</span><div><h2>归档活动</h2><p>Catalogue history</p></div></div></header>
+          <header class="panel-heading"><div><span class="section-number">{{ publication ? '06' : '05' }}</span><div><h2>归档活动</h2><p>Catalogue history</p></div></div></header>
           <div class="detail-section-body">
             <ol v-if="data.recent_activities.length" class="detail-timeline">
               <li v-for="activity in data.recent_activities" :key="activity.id"><History :size="17" /><div><strong>{{ activity.action_label }}</strong><p>{{ activity.actor_name ?? '系统' }} · {{ activity.description }}</p></div><time>{{ formatDate(activity.created_at) }}</time></li>
@@ -541,16 +541,16 @@ onBeforeUnmount(() => {
 .detail-back:hover, .detail-link:hover { color: var(--asset-accent); }
 .detail-heading { display: grid; margin-bottom: 24px; grid-template-columns: 42px minmax(0, 1fr) 132px; align-items: start; justify-content: initial; gap: 16px; } .detail-heading .heading-icon { margin-top: 7px; } .detail-heading > div:nth-child(2) { min-width: 0; }
 .detail-heading > div:nth-child(2) > p:not(.eyebrow) { display: -webkit-box; max-width: 940px; overflow: hidden; line-height: 1.6; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
-.detail-heading .paper-byline-detail { color: #5f6f64; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 12px; }
+.detail-heading .publication-byline-detail { color: #5f6f64; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 12px; }
 .detail-heading .tag-list { margin-top: 12px; }
 .detail-status { display: grid; padding: 7px 0; align-items: start; justify-items: end; gap: 8px; text-align: right; }
 .detail-status small, .detail-list-row small, .detail-timeline p, .detail-empty, .detail-privacy { color: #7c887f; font-size: 11px; }
 .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
 .version-current { display: flex !important; align-items: center; gap: 8px !important; font-weight: 500 !important; }.version-current input { width: auto !important; accent-color: var(--sage); }
-.detail-overview, .detail-paper { grid-column: 1 / -1; } .detail-overview .panel-heading { min-height: 62px; padding-top: 14px; padding-bottom: 14px; }
-.paper-content-grid { display: grid; grid-template-columns: minmax(0, 1.08fr) minmax(360px, .92fr); }
-.paper-abstract, .paper-citation { min-width: 0; padding: 20px; }
-.paper-citation { border-left: 1px solid var(--line); }.paper-citation > header { display: flex; min-height: 36px; align-items: flex-end; justify-content: space-between; gap: 16px; }.paper-abstract > span, .paper-citation header span { color: #7d8981; font-size: 9px; font-weight: 800; letter-spacing: 0; }.paper-abstract h3, .paper-citation h3 { margin: 3px 0 0; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 18px; font-weight: 500; }.paper-abstract p { margin: 13px 0 0; color: #526158; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 12px; line-height: 1.75; }.paper-citation-actions { display: flex; gap: 7px; }.paper-citation-actions .button { min-height: 32px; padding: 0 10px; }.paper-citation pre { max-height: 300px; margin: 13px 0 0; padding: 14px 16px; overflow: auto; color: #dfeade; background: #17221b; border-radius: 6px; font-size: 11px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }.paper-citation-loading { display: flex; min-height: 74px; align-items: center; color: var(--muted); gap: 8px; font-size: 11px; }.paper-citation-error { margin: 10px 0 0; color: #a6633b; font-size: 11px; }
+.detail-overview, .detail-publication { grid-column: 1 / -1; } .detail-overview .panel-heading { min-height: 62px; padding-top: 14px; padding-bottom: 14px; }
+.publication-content-grid { display: grid; grid-template-columns: minmax(0, 1.08fr) minmax(360px, .92fr); }
+.publication-abstract, .publication-citation { min-width: 0; padding: 20px; }
+.publication-citation { border-left: 1px solid var(--line); }.publication-citation > header { display: flex; min-height: 36px; align-items: flex-end; justify-content: space-between; gap: 16px; }.publication-abstract > span, .publication-citation header span { color: #7d8981; font-size: 9px; font-weight: 800; letter-spacing: 0; }.publication-abstract h3, .publication-citation h3 { margin: 3px 0 0; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 18px; font-weight: 500; }.publication-abstract p { margin: 13px 0 0; color: #526158; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 12px; line-height: 1.75; }.publication-citation-actions { display: flex; gap: 7px; }.publication-citation-actions .button { min-height: 32px; padding: 0 10px; }.publication-citation pre { max-height: 300px; margin: 13px 0 0; padding: 14px 16px; overflow: auto; color: #dfeade; background: #17221b; border-radius: 6px; font-size: 11px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }.publication-citation-loading { display: flex; min-height: 74px; align-items: center; color: var(--muted); gap: 8px; font-size: 11px; }.publication-citation-error { margin: 10px 0 0; color: #a6633b; font-size: 11px; }
 .detail-facts { display: grid; margin: 0; padding: 18px 20px 20px; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px 24px; }
 .detail-facts dt { margin-bottom: 7px; color: #849188; font-size: 10px; text-transform: capitalize; }
 .detail-facts dd { display: flex; margin: 0; align-items: center; gap: 6px; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
@@ -587,7 +587,7 @@ onBeforeUnmount(() => {
 .section-action, .relation-remove { display: inline-flex; min-height: 30px; padding: 0 2px; align-items: center; gap: 4px; color: #63746a; background: transparent; border: 0; cursor: pointer; font-size: 10px; }.section-action:hover, .relation-remove:hover:not(:disabled) { color: var(--asset-accent); }.detail-related-row { grid-template-columns: minmax(0, 1fr) auto; }.detail-related-row .detail-link { display: grid; min-width: 0; align-items: center; gap: 10px; }.relation-remove { width: 30px; height: 30px; justify-content: center; color: #a6633b; border: 1px solid #eddcd1; border-radius: 5px; }.relation-remove:disabled { opacity: .45; cursor: wait; }.relation-help { display: flex; margin: 0; align-items: center; gap: 6px; color: #6b7a70; font-size: 12px; line-height: 1.5; }.relation-help svg { color: var(--sage); }
 .preview-overlay { position: fixed; z-index: 40; inset: 0; display: grid; padding: 26px; place-items: center; background: rgba(18, 29, 22, .52); }.preview-dialog { display: grid; width: min(100%, 1040px); height: min(84vh, 780px); grid-template-rows: auto minmax(0, 1fr); padding: 18px; background: #fff; border-radius: 8px; box-shadow: 0 25px 70px rgba(0,0,0,.28); }.preview-dialog header { display: flex; margin-bottom: 13px; align-items: flex-start; justify-content: space-between; gap: 12px; }.preview-dialog h2 { margin: 3px 0 0; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 17px; font-weight: 500; }.preview-dialog iframe { width: 100%; height: 100%; border: 1px solid var(--line); border-radius: 5px; background: #f8faf7; }
 .detail-controls { display: flex; margin-top: 5px; justify-content: flex-end; gap: 6px; }.detail-controls .button { min-height: 29px; padding: 0 8px; font-size: 10px; }.detail-archive { color: #9a5b3c; background: #fff7f1; border: 1px solid #edd3c2; }.edit-dialog { display: grid; width: min(100%, 620px); max-height: 86vh; padding: 22px; overflow-y: auto; background: #fff; border-radius: 8px; box-shadow: 0 25px 70px rgba(0,0,0,.28); gap: 12px; }.edit-dialog header { display: flex; margin-bottom: 3px; align-items: flex-start; justify-content: space-between; gap: 12px; }.edit-dialog h2 { margin: 3px 0 0; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 19px; font-weight: 500; }.edit-dialog header button { display: grid; width: 29px; height: 29px; padding: 0; place-items: center; background: #f4f6f1; border: 1px solid var(--line); border-radius: 5px; cursor: pointer; }.edit-dialog label { display: grid; color: #526056; font-size: 12px; font-weight: 700; gap: 6px; }.edit-dialog input, .edit-dialog textarea, .edit-dialog select { width: 100%; padding: 9px 10px; color: var(--ink); font: inherit; font-size: 13px; background: #fff; border: 1px solid var(--line); border-radius: 5px; outline-color: var(--sage); }.edit-dialog textarea { resize: vertical; }.edit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }.edit-dialog footer { display: flex; justify-content: flex-end; gap: 8px; }.edit-error { margin: 0; color: #a6633b; font-size: 12px; }
-@media (max-width: 1040px) { .paper-content-grid { grid-template-columns: 1fr; }.paper-citation { border-top: 1px solid var(--line); border-left: 0; }.detail-facts { grid-template-columns: repeat(3, minmax(0, 1fr)); }.detail-fact-wide { grid-column: span 2; } }
-@media (max-width: 760px) { .detail-grid { grid-template-columns: 1fr; }.detail-heading { grid-template-columns: 34px minmax(0, 1fr); gap: 10px; }.detail-heading .heading-icon { margin-top: 5px; }.detail-heading h1 { font-size: 27px; line-height: 1.13; }.detail-heading > div:nth-child(2) > p:not(.eyebrow) { -webkit-line-clamp: 3; }.detail-status { grid-column: 1 / -1; display: flex; padding: 0 0 0 44px; align-items: center; justify-content: flex-start; flex-wrap: wrap; text-align: left; }.detail-controls { width: 100%; margin-top: 0; justify-content: flex-start; }.detail-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }.detail-fact-wide, .detail-fact-links { grid-column: 1 / -1; }.detail-section-body { min-height: 0; padding: 15px 14px 16px; }.detail-list-row { grid-template-columns: 23px minmax(0, 1fr) auto; }.detail-timeline li { grid-template-columns: 22px minmax(0, 1fr); }.detail-timeline time { grid-column: 2; margin-top: -8px; }.repository-toolbar { padding: 9px 12px; align-items: flex-start; flex-direction: column; gap: 3px; }.repository-head { display: none; }.repository-row { grid-template-columns: minmax(0, 1fr) auto auto; }.repository-kind, .repository-row time { display: none; }.repository-row .repository-name { min-width: 0; }.repository-row .file-actions { grid-column: auto; margin-right: 10px; }.detail-list-row time { display: none; }.preview-overlay { padding: 12px; }.preview-dialog { height: 88vh; padding: 13px; }.edit-grid { grid-template-columns: 1fr; }.paper-citation > header { align-items: flex-start; flex-direction: column; }.paper-citation-actions { width: 100%; }.paper-citation-actions .button { flex: 1; } }
-@media (max-width: 460px) { .detail-facts { grid-template-columns: 1fr; }.detail-fact-wide, .detail-fact-links { grid-column: auto; }.paper-abstract, .paper-citation { padding: 16px; }.paper-citation pre { font-size: 10px; }.repository-row { grid-template-columns: minmax(0, 1fr) auto; }.repository-row em { display: none; }.repository-row .file-actions { margin-right: 8px; } }
+@media (max-width: 1040px) { .publication-content-grid { grid-template-columns: 1fr; }.publication-citation { border-top: 1px solid var(--line); border-left: 0; }.detail-facts { grid-template-columns: repeat(3, minmax(0, 1fr)); }.detail-fact-wide { grid-column: span 2; } }
+@media (max-width: 760px) { .detail-grid { grid-template-columns: 1fr; }.detail-heading { grid-template-columns: 34px minmax(0, 1fr); gap: 10px; }.detail-heading .heading-icon { margin-top: 5px; }.detail-heading h1 { font-size: 27px; line-height: 1.13; }.detail-heading > div:nth-child(2) > p:not(.eyebrow) { -webkit-line-clamp: 3; }.detail-status { grid-column: 1 / -1; display: flex; padding: 0 0 0 44px; align-items: center; justify-content: flex-start; flex-wrap: wrap; text-align: left; }.detail-controls { width: 100%; margin-top: 0; justify-content: flex-start; }.detail-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }.detail-fact-wide, .detail-fact-links { grid-column: 1 / -1; }.detail-section-body { min-height: 0; padding: 15px 14px 16px; }.detail-list-row { grid-template-columns: 23px minmax(0, 1fr) auto; }.detail-timeline li { grid-template-columns: 22px minmax(0, 1fr); }.detail-timeline time { grid-column: 2; margin-top: -8px; }.repository-toolbar { padding: 9px 12px; align-items: flex-start; flex-direction: column; gap: 3px; }.repository-head { display: none; }.repository-row { grid-template-columns: minmax(0, 1fr) auto auto; }.repository-kind, .repository-row time { display: none; }.repository-row .repository-name { min-width: 0; }.repository-row .file-actions { grid-column: auto; margin-right: 10px; }.detail-list-row time { display: none; }.preview-overlay { padding: 12px; }.preview-dialog { height: 88vh; padding: 13px; }.edit-grid { grid-template-columns: 1fr; }.publication-citation > header { align-items: flex-start; flex-direction: column; }.publication-citation-actions { width: 100%; }.publication-citation-actions .button { flex: 1; } }
+@media (max-width: 460px) { .detail-facts { grid-template-columns: 1fr; }.detail-fact-wide, .detail-fact-links { grid-column: auto; }.publication-abstract, .publication-citation { padding: 16px; }.publication-citation pre { font-size: 10px; }.repository-row { grid-template-columns: minmax(0, 1fr) auto; }.repository-row em { display: none; }.repository-row .file-actions { margin-right: 8px; } }
 </style>

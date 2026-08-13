@@ -64,7 +64,7 @@ class AssetSummary(BaseModel):
     updated_at: datetime
 
 
-class PaperCatalogueFacets(BaseModel):
+class PublicationCatalogueFacets(BaseModel):
     venues: list[str] = Field(default_factory=list)
     years: list[int] = Field(default_factory=list)
 
@@ -74,7 +74,7 @@ class AssetListResponse(BaseModel):
     total: int
     page: int
     page_size: int
-    paper_facets: PaperCatalogueFacets | None = None
+    publication_facets: PublicationCatalogueFacets | None = None
 
 
 class AssetChoiceSummary(BaseModel):
@@ -189,7 +189,7 @@ class FileClaimResult(BaseModel):
     file: FileSummary
 
 
-class PaperMetadata(BaseModel):
+class PublicationMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     venue: str = Field(min_length=2, max_length=80)
@@ -223,7 +223,7 @@ class PaperMetadata(BaseModel):
     def strip_required_text(cls, value: str) -> str:
         normalized = value.strip()
         if len(normalized) < 2:
-            raise ValueError("论文元数据字段不能为空。")
+            raise ValueError("出版物元数据字段不能为空。")
         return normalized
 
     @field_validator("authors")
@@ -231,7 +231,7 @@ class PaperMetadata(BaseModel):
     def normalize_authors(cls, authors: list[str]) -> list[str]:
         normalized = [author.strip() for author in authors if author.strip()]
         if not normalized:
-            raise ValueError("论文至少需要一位作者。")
+            raise ValueError("出版物至少需要一位作者。")
         return normalized
 
     @field_validator("doi")
@@ -259,22 +259,24 @@ class PaperMetadata(BaseModel):
         return value.strip() or None
 
 
-class PaperCitationResponse(BaseModel):
+class PublicationCitationResponse(BaseModel):
     citation_key: str
     filename: str
     bibtex: str
 
 
-class PaperCitationExportResponse(BaseModel):
+class PublicationCitationExportResponse(BaseModel):
     count: int
     filename: str
     bibtex: str
 
 
 def normalized_asset_details(asset_type: AssetType, details: dict[str, Any]) -> dict[str, Any]:
-    if asset_type != AssetType.PAPER:
+    if asset_type == AssetType.LITERATURE and not details.get("source_id"):
         return details
-    return PaperMetadata.model_validate(details).model_dump(mode="json", exclude_none=True)
+    if asset_type not in {AssetType.PAPER, AssetType.LITERATURE}:
+        return details
+    return PublicationMetadata.model_validate(details).model_dump(mode="json", exclude_none=True)
 
 
 class AssetCreateRequest(BaseModel):

@@ -12,7 +12,7 @@ export interface UploadDirectoryOption {
   label: string
 }
 
-export interface PaperMetadata extends Record<string, unknown> {
+export interface PublicationMetadata extends Record<string, unknown> {
   venue: string
   year: number
   track: string
@@ -54,7 +54,9 @@ export interface AssetSummary {
   updated_at: string
 }
 
-export function isPaperMetadata(details: Record<string, unknown>): details is PaperMetadata {
+export function isPublicationMetadata(
+  details: Record<string, unknown>,
+): details is PublicationMetadata {
   return typeof details.venue === 'string'
     && typeof details.year === 'number'
     && typeof details.track === 'string'
@@ -66,13 +68,13 @@ export function isPaperMetadata(details: Record<string, unknown>): details is Pa
     && typeof details.pdf_url === 'string'
 }
 
-export interface PaperCitation {
+export interface PublicationCitation {
   citation_key: string
   filename: string
   bibtex: string
 }
 
-export interface PaperCitationExport {
+export interface PublicationCitationExport {
   count: number
   filename: string
   bibtex: string
@@ -83,7 +85,7 @@ export interface AssetListResponse {
   total: number
   page: number
   page_size: number
-  paper_facets: {
+  publication_facets: {
     venues: string[]
     years: number[]
   } | null

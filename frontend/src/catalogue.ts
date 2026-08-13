@@ -7,7 +7,7 @@ export const assetMeta: Record<
   paper: {
     label: '论文',
     english: 'Papers',
-    description: '实验室原创论文与投稿历程',
+    description: '实验室自产论文、投稿版本与发表成果',
     color: '#327353',
     softColor: '#e4f0e7',
   },
@@ -21,7 +21,7 @@ export const assetMeta: Record<
   literature: {
     label: '文献',
     english: 'Literature',
-    description: '共享参考文献与批注资料',
+    description: '外部学术文献、正式原文与阅读资料',
     color: '#b47c1d',
     softColor: '#f8eedc',
   },
@@ -42,4 +42,3 @@ export const assetMeta: Record<
 }
 
 export const assetTypes = Object.keys(assetMeta) as AssetType[]
-

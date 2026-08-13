@@ -107,9 +107,9 @@ SAGE_UPLOAD_DESTINATION_ROOT=/home/zhengyu/SageDataManager/sample-archive
 | 项目 | `documentation` | `code`、`data`、`outputs` |
 | 模型 | `weights` | `checkpoints`、`configs`、`evaluation` |
 
-### 会议论文测试数据
+### 外部文献测试数据
 
-下面的命令会从 ICLR Proceedings 和 ACL Anthology 同步 2026 年各 10 篇论文元数据，并将正式 PDF 下载到 Git 忽略的 `sample-archive/real-fixtures/`：
+`Papers / 论文` 只管理实验室自产论文、投稿版本与发表成果；`Literature / 文献` 管理外部论文、预印本、期刊文章及其阅读资料。下面的命令会从 ICLR Proceedings 和 ACL Anthology 同步 2026 年各 10 篇外部文献元数据到 Literature，并将正式 PDF 下载到 Git 忽略的 `sample-archive/real-fixtures/literature/`：
 
 ```bash
 cd backend
@@ -120,7 +120,7 @@ python -m scripts.seed_conference_papers \
   --download-pdf
 ```
 
-ICLR 条目先由虚拟会议页确认收录，再以规范化题名和首位作者匹配 Proceedings 正式版本；ACL 条目直接以 Anthology 页面为准。脚本按 DOI、官方来源标识和标题加第一作者维护同一篇论文，重复运行会更新现有记录。每份下载内容都必须通过 PDF 文件头和 `pdfinfo` 页数校验后才会进入归档；单个来源下载失败不会阻止其他论文元数据写入，命令结束时会汇总失败项。
+ICLR 条目先由虚拟会议页确认收录，再以规范化题名和首位作者匹配 Proceedings 正式版本；ACL 条目直接以 Anthology 页面为准。脚本按 DOI、官方来源标识和标题加第一作者维护同一篇出版物，重复运行会更新现有记录。每份下载内容都必须通过 PDF 文件头和 `pdfinfo` 页数校验后才会进入归档；单个来源下载失败不会阻止其他文献元数据写入，命令结束时会汇总失败项。
 
 `--venue`、`--year` 和 `--limit` 可按需调整。ICLR 非 2026 年同步需要用一个或多个 `--iclr-poster-id` 明确指定会议官网 poster ID；脚本不会猜测收录列表。仅更新元数据时使用 `--no-download-pdf`。
 
@@ -135,9 +135,16 @@ python -m scripts.seed_conference_papers \
   --download-pdf
 ```
 
-arXiv 使用官方 Atom API，bioRxiv 使用官方 API，PLOS ONE 使用 Crossref 官方元数据与出版社 PDF。脚本会验证已存在的 PDF 并跳过重复下载；官方来源临时限流时保留论文元数据并明确报告失败文件，归档扫描后这些论文显示为“暂无数据”。
+arXiv 使用官方 Atom API，bioRxiv 使用官方 API，PLOS ONE 使用 Crossref 官方元数据与出版社 PDF。脚本会验证已存在的 PDF 并跳过重复下载；官方来源临时限流时保留文献元数据并明确报告失败文件，归档扫描后这些文献显示为“暂无数据”。
 
-论文目录支持按当前筛选结果批量导出 BibTeX；论文卡片可直接复制单篇 BibTeX，详情页可查看、复制并下载 `.bib`。引用统一由结构化论文元数据生成。同步脚本会尽量从官方来源保存引用键、论文集或期刊名称、页码和出版社；历史会议论文缺少可选字段时使用稳定引用键与会议论文集名称回退。
+Papers 和 Literature 分别按当前目录及筛选结果批量导出 BibTeX，两个目录不会混合计数。结构化出版物卡片可直接复制单篇 BibTeX，详情页可查看、复制并下载 `.bib`。同步脚本会尽量从官方来源保存引用键、论文集或期刊名称、页码和出版社；缺少可选字段时使用稳定引用键与会议论文集名称回退。
+
+从旧版本升级且已经将官方来源论文放入 Papers 时，可执行一次本地迁移；该模式只迁移带“官方收录”活动记录的资产，不会移动实验室自行登记的论文：
+
+```bash
+cd backend
+python -m scripts.seed_conference_papers --migrate-existing --no-download-pdf
+```
 
 ### 管理员账号
 

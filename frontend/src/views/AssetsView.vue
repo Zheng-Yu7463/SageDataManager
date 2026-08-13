@@ -23,13 +23,26 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import AssetIcon from '@/components/AssetIcon.vue'
-import { createAsset, exportPaperCitations, getAssets, getPaperCitation, getUploadCommand } from '@/api/client'
+import {
+  createAsset,
+  exportPublicationCitations,
+  getAssets,
+  getPublicationCitation,
+  getUploadCommand,
+} from '@/api/client'
 import { assetMeta } from '@/catalogue'
 import { useOverlayFocus } from '@/composables/useOverlayFocus'
 import { useDismissiblePopover } from '@/composables/useDismissiblePopover'
 import { useBranding } from '@/composables/useBranding'
-import { isPaperMetadata } from '@/types'
-import type { AssetListResponse, AssetSummary, AssetType, PaperMetadata, UploadCommandResult, Visibility } from '@/types'
+import { isPublicationMetadata } from '@/types'
+import type {
+  AssetListResponse,
+  AssetSummary,
+  AssetType,
+  PublicationMetadata,
+  UploadCommandResult,
+  Visibility,
+} from '@/types'
 import { copyText, downloadTextFile } from '@/utils/textFiles'
 
 const route = useRoute()
@@ -54,6 +67,7 @@ const view = ref<'list' | 'grid'>('list')
 let controller: AbortController | undefined
 
 const assetType = computed(() => route.meta.assetType as AssetType)
+const publicationCatalogue = computed(() => ['paper', 'literature'].includes(assetType.value))
 const registrationOpen = ref(false)
 const registrationDialog = ref<HTMLElement | null>(null)
 const creating = ref(false)
@@ -151,8 +165,8 @@ function readCatalogueState() {
     status: queryValue('status'),
     visibility: ['lab', 'project', 'restricted'].includes(queryValue('visibility')) ? queryValue('visibility') : '',
     hasFiles: ['present', 'missing'].includes(queryValue('files')) ? queryValue('files') : '',
-    venue: assetType.value === 'paper' ? queryValue('venue') : '',
-    year: assetType.value === 'paper' && /^\d{4}$/.test(queryValue('year')) ? queryValue('year') : '',
+    venue: publicationCatalogue.value ? queryValue('venue') : '',
+    year: publicationCatalogue.value && /^\d{4}$/.test(queryValue('year')) ? queryValue('year') : '',
   }
   page.value = Number.isInteger(nextPage) && nextPage > 0 ? nextPage : 1
   view.value = queryValue('view') === 'grid' ? 'grid' : 'list'
@@ -164,8 +178,8 @@ function catalogueQuery() {
   if (filters.value.status) next.status = filters.value.status
   if (filters.value.visibility) next.visibility = filters.value.visibility
   if (filters.value.hasFiles) next.files = filters.value.hasFiles
-  if (assetType.value === 'paper' && filters.value.venue) next.venue = filters.value.venue
-  if (assetType.value === 'paper' && filters.value.year) next.year = filters.value.year
+  if (publicationCatalogue.value && filters.value.venue) next.venue = filters.value.venue
+  if (publicationCatalogue.value && filters.value.year) next.year = filters.value.year
   if (page.value > 1) next.page = String(page.value)
   if (view.value === 'grid') next.view = 'grid'
   return next
@@ -189,8 +203,8 @@ async function load() {
         status: filters.value.status,
         visibility: filters.value.visibility,
         hasFiles: filters.value.hasFiles === '' ? undefined : filters.value.hasFiles === 'present',
-        venue: assetType.value === 'paper' ? filters.value.venue : undefined,
-        year: assetType.value === 'paper' && filters.value.year ? Number(filters.value.year) : undefined,
+        venue: publicationCatalogue.value ? filters.value.venue : undefined,
+        year: publicationCatalogue.value && filters.value.year ? Number(filters.value.year) : undefined,
         page: page.value,
         pageSize: 20,
       },
@@ -251,16 +265,18 @@ function formatDate(value: string) {
 }
 
 function detailText(details: Record<string, unknown>) {
-  if (isPaperMetadata(details)) return `${details.venue} ${details.year} · ${details.track}`
+  if (isPublicationMetadata(details)) return `${details.venue} ${details.year} · ${details.track}`
   const entries = Object.entries(details).filter(([, value]) => typeof value !== 'object').slice(0, 2)
   return entries.map(([key, value]) => `${key.replace('_', ' ')} · ${value}`).join('  /  ')
 }
 
-function paperMetadata(asset: AssetSummary): PaperMetadata | null {
-  return asset.type === 'paper' && isPaperMetadata(asset.details) ? asset.details : null
+function publicationMetadata(asset: AssetSummary): PublicationMetadata | null {
+  return ['paper', 'literature'].includes(asset.type) && isPublicationMetadata(asset.details)
+    ? asset.details
+    : null
 }
 
-function authorText(metadata: PaperMetadata) {
+function authorText(metadata: PublicationMetadata) {
   const visible = metadata.authors.slice(0, 3).join('、')
   return metadata.authors.length > 3 ? `${visible} 等 ${metadata.authors.length} 位作者` : visible
 }
@@ -382,11 +398,11 @@ async function copyUploadCommand() {
   }
 }
 
-async function copyPaperCitation(asset: AssetSummary) {
+async function copyPublicationCitation(asset: AssetSummary) {
   citationActionId.value = asset.id
   citationError.value = ''
   try {
-    const citation = await getPaperCitation(asset.id)
+    const citation = await getPublicationCitation(asset.id)
     await copyText(citation.bibtex)
     citationCopiedId.value = asset.id
     window.setTimeout(() => {
@@ -403,7 +419,8 @@ async function downloadFilteredCitations() {
   exportingCitations.value = true
   citationError.value = ''
   try {
-    const result = await exportPaperCitations({
+    const result = await exportPublicationCitations({
+      assetType: assetType.value as 'paper' | 'literature',
       query: query.value.trim(),
       status: filters.value.status,
       visibility: filters.value.visibility,
@@ -450,7 +467,7 @@ onBeforeUnmount(() => controller?.abort())
         <p>{{ meta.description }}。所有内容均来自实验室受控存储根。</p>
       </div>
       <div class="assets-heading-actions">
-        <button v-if="assetType === 'paper'" class="button button--outline" :disabled="exportingCitations || !data?.total" @click="downloadFilteredCitations"><Download :size="16" />{{ exportingCitations ? '正在导出' : '导出 BibTeX' }}</button>
+        <button v-if="publicationCatalogue" class="button button--outline" :disabled="exportingCitations || !data?.total" @click="downloadFilteredCitations"><Download :size="16" />{{ exportingCitations ? '正在导出' : '导出 BibTeX' }}</button>
         <button class="button button--primary" @click="openRegistration"><Plus :size="16" />登记{{ meta.label }}</button>
       </div>
     </header>
@@ -491,21 +508,21 @@ onBeforeUnmount(() => controller?.abort())
               <option value="active">active</option>
               <option value="available">available</option>
               <option value="collected">collected</option>
-              <option v-if="assetType === 'paper'" value="published">published</option>
+              <option v-if="publicationCatalogue" value="published">published</option>
             </select>
           </label>
-          <label v-if="assetType === 'paper'">
+          <label v-if="publicationCatalogue">
             发表来源
             <select v-model="filters.venue" @change="applyFilters">
               <option value="">全部来源</option>
-              <option v-for="venue in data?.paper_facets?.venues" :key="venue" :value="venue">{{ venue }}</option>
+              <option v-for="venue in data?.publication_facets?.venues" :key="venue" :value="venue">{{ venue }}</option>
             </select>
           </label>
-          <label v-if="assetType === 'paper'">
+          <label v-if="publicationCatalogue">
             发表年份
             <select v-model="filters.year" @change="applyFilters">
               <option value="">全部年份</option>
-              <option v-for="year in data?.paper_facets?.years" :key="year" :value="String(year)">{{ year }}</option>
+              <option v-for="year in data?.publication_facets?.years" :key="year" :value="String(year)">{{ year }}</option>
             </select>
           </label>
           <label>
@@ -563,7 +580,7 @@ onBeforeUnmount(() => controller?.abort())
             <span class="status-badge">{{ asset.status }}</span>
           </div>
           <p>{{ asset.summary }}</p>
-          <div v-if="paperMetadata(asset)" class="paper-byline">{{ authorText(paperMetadata(asset)!) }}</div>
+          <div v-if="publicationMetadata(asset)" class="publication-byline">{{ authorText(publicationMetadata(asset)!) }}</div>
           <div class="tag-list"><span v-for="tag in asset.tags" :key="tag">{{ tag }}</span></div>
           <div class="catalogue-card-meta">
             <span>
@@ -575,15 +592,15 @@ onBeforeUnmount(() => controller?.abort())
           </div>
         </div>
         <dl class="catalogue-facts">
-          <div><dt>{{ paperMetadata(asset) ? '发表来源' : '当前版本' }}</dt><dd>{{ paperMetadata(asset) ? `${paperMetadata(asset)!.venue} ${paperMetadata(asset)!.year}` : asset.current_version ?? '—' }}</dd></div>
+          <div><dt>{{ publicationMetadata(asset) ? '发表来源' : '当前版本' }}</dt><dd>{{ publicationMetadata(asset) ? `${publicationMetadata(asset)!.venue} ${publicationMetadata(asset)!.year}` : asset.current_version ?? '—' }}</dd></div>
           <div><dt>文件规模</dt><dd>{{ formatBytes(asset.total_size) }}</dd></div>
           <div><dt>数据状态</dt><dd><span class="data-status" :class="{ 'data-status--present': asset.file_count > 0 }"><Database :size="13" />{{ asset.file_count > 0 ? `已有数据 · ${asset.file_count} 个文件` : '暂无数据' }}</span></dd></div>
           <div><dt>负责人</dt><dd><span class="mini-avatar">{{ asset.owner.name.slice(0, 1) }}</span>{{ asset.owner.name }}</dd></div>
           <div><dt>更新日期</dt><dd>{{ formatDate(asset.updated_at) }}</dd></div>
         </dl>
         <div class="catalogue-actions">
-          <a v-if="paperMetadata(asset)" :href="paperMetadata(asset)!.source_url" target="_blank" rel="noreferrer"><ExternalLink :size="17" /><span>官方页面</span></a>
-          <button v-if="paperMetadata(asset)" title="复制这篇论文的 BibTeX 引用" :disabled="citationActionId === asset.id" @click="copyPaperCitation(asset)"><Check v-if="citationCopiedId === asset.id" :size="17" /><Copy v-else :size="17" /><span>{{ citationCopiedId === asset.id ? '已复制' : 'BibTeX' }}</span></button>
+          <a v-if="publicationMetadata(asset)" :href="publicationMetadata(asset)!.source_url" target="_blank" rel="noreferrer"><ExternalLink :size="17" /><span>官方页面</span></a>
+          <button v-if="publicationMetadata(asset)" title="复制这篇出版物的 BibTeX 引用" :disabled="citationActionId === asset.id" @click="copyPublicationCitation(asset)"><Check v-if="citationCopiedId === asset.id" :size="17" /><Copy v-else :size="17" /><span>{{ citationCopiedId === asset.id ? '已复制' : 'BibTeX' }}</span></button>
           <button title="获取此资产的 SCP 上传指令" @click="openUpload(asset)"><FolderUp :size="18" /><span>上传指令</span></button>
           <RouterLink class="action-primary" :to="{ name: 'asset-detail', params: { assetId: asset.id }, query: { returnTo: route.fullPath } }">查看详情 <ArrowRight :size="16" /></RouterLink>
         </div>
@@ -606,7 +623,7 @@ onBeforeUnmount(() => controller?.abort())
         <label>资产标识（slug）<input v-model="registration.slug" required pattern="[a-z0-9]+(-[a-z0-9]+)*" minlength="3" maxlength="160" placeholder="例如：soil-samples-2026" /></label>
         <label>摘要<textarea v-model="registration.summary" maxlength="5000" rows="3" placeholder="简要说明研究内容、范围或用途"></textarea></label>
         <div class="registration-grid">
-          <label>状态<select v-model="registration.status"><option value="draft">draft</option><option value="active">active</option><option value="available">available</option><option value="collected">collected</option><option v-if="assetType === 'paper'" value="published">published</option></select></label>
+          <label>状态<select v-model="registration.status"><option value="draft">draft</option><option value="active">active</option><option value="available">available</option><option value="collected">collected</option><option v-if="publicationCatalogue" value="published">published</option></select></label>
           <label>可见范围<select v-model="registration.visibility"><option value="lab">全实验室</option><option value="project">项目成员</option><option value="restricted">受限</option></select></label>
         </div>
         <template v-if="assetType === 'paper'">

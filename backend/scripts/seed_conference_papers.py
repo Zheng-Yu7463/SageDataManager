@@ -19,10 +19,10 @@ from sqlalchemy import select
 from app.db.session import SessionLocal
 from app.domain.activity import ActivityAction
 from app.domain.enums import AssetType, Visibility
-from app.domain.models import Activity, Asset, AssetVersion, Tag
-from app.domain.schemas import PaperMetadata
+from app.domain.models import Activity, Asset, AssetVersion, FileRecord, Tag
+from app.domain.schemas import PublicationMetadata
 from app.services.accounts import ensure_fixed_accounts
-from app.services.paper_identity import normalize_identity_text, resolve_paper
+from app.services.paper_identity import normalize_identity_text, resolve_publication
 
 DEFAULT_ICLR_POSTER_IDS = (
     "10006831",
@@ -52,11 +52,21 @@ VENUE_LABELS = {
 
 
 @dataclass(frozen=True)
-class ConferencePaper:
+class PublicationRecord:
     slug: str
     title: str
     summary: str
-    metadata: PaperMetadata
+    metadata: PublicationMetadata
+
+
+@dataclass(frozen=True)
+class RelocatedPdf:
+    slug: str
+    source: Path
+    destination: Path
+    source_relative_path: str
+    destination_relative_path: str
+    moved: bool
 
 
 @dataclass(frozen=True)
@@ -248,7 +258,7 @@ def citation_pages(parser: PaperPageParser) -> str | None:
     return first_page
 
 
-def parse_iclr_paper(poster_id: str, year: int = 2026) -> ConferencePaper:
+def parse_iclr_paper(poster_id: str, year: int = 2026) -> PublicationRecord:
     source_url = f"https://iclr.cc/virtual/{year}/poster/{poster_id}"
     page = fetch(source_url).decode("utf-8")
     parser = PaperPageParser()
@@ -264,7 +274,7 @@ def parse_iclr_paper(poster_id: str, year: int = 2026) -> ConferencePaper:
     publication_authors = [
         citation_author_name(author) for author in publication_parser.meta["citation_author"]
     ]
-    metadata = PaperMetadata(
+    metadata = PublicationMetadata(
         venue="ICLR",
         year=year,
         track="Conference Poster",
@@ -280,18 +290,18 @@ def parse_iclr_paper(poster_id: str, year: int = 2026) -> ConferencePaper:
         or f"Proceedings of the International Conference on Learning Representations {year}",
         publisher=first_meta(publication_parser, "citation_publisher"),
     )
-    return ConferencePaper(
+    return PublicationRecord(
         slug=f"iclr-{year}-{poster_id}", title=title, summary=parser.abstract, metadata=metadata
     )
 
 
-def parse_acl_paper(anthology_id: str) -> ConferencePaper:
+def parse_acl_paper(anthology_id: str) -> PublicationRecord:
     source_url = f"https://aclanthology.org/{anthology_id}/"
     parser = PaperPageParser()
     parser.feed(fetch(source_url).decode("utf-8"))
     title = parser.meta["citation_title"][0]
     year = int(anthology_id.split(".", 1)[0])
-    metadata = PaperMetadata(
+    metadata = PublicationMetadata(
         venue="ACL",
         year=year,
         track="Main Conference - Long Papers",
@@ -312,15 +322,15 @@ def parse_acl_paper(anthology_id: str) -> ConferencePaper:
         publisher=first_meta(parser, "citation_publisher")
         or "Association for Computational Linguistics",
     )
-    return ConferencePaper(
+    return PublicationRecord(
         slug=anthology_id.replace(".", "-"), title=title, summary=parser.abstract, metadata=metadata
     )
 
 
-def parse_arxiv_feed(payload: bytes, limit: int) -> list[ConferencePaper]:
+def parse_arxiv_feed(payload: bytes, limit: int) -> list[PublicationRecord]:
     root = ET.fromstring(payload)
     namespace = {"atom": "http://www.w3.org/2005/Atom"}
-    papers: list[ConferencePaper] = []
+    papers: list[PublicationRecord] = []
     for entry in root.findall("atom:entry", namespace)[:limit]:
         source_url = (entry.findtext("atom:id", default="", namespaces=namespace)).strip()
         source_id = source_url.rsplit("/", 1)[-1]
@@ -344,11 +354,11 @@ def parse_arxiv_feed(payload: bytes, limit: int) -> list[ConferencePaper]:
             raise ValueError("arXiv 官方响应缺少必要论文元数据。")
         year = int(published_at[:4])
         papers.append(
-            ConferencePaper(
+            PublicationRecord(
                 slug=f"arxiv-{canonical_id.replace('.', '-')}",
                 title=title,
                 summary=summary,
-                metadata=PaperMetadata(
+                metadata=PublicationMetadata(
                     venue="arXiv",
                     year=year,
                     track="Computer Science Preprint",
@@ -369,7 +379,7 @@ def parse_arxiv_feed(payload: bytes, limit: int) -> list[ConferencePaper]:
     return papers
 
 
-def collect_arxiv_papers(year: int, limit: int) -> list[ConferencePaper]:
+def collect_arxiv_papers(year: int, limit: int) -> list[PublicationRecord]:
     query = urlencode(
         {
             "search_query": f"cat:cs.AI AND submittedDate:[{year}01010000 TO {year}12312359]",
@@ -387,9 +397,9 @@ def biorxiv_author_name(value: str) -> str:
     return f"{given.strip()} {family.strip()}" if separator else value.strip()
 
 
-def parse_biorxiv_response(payload: bytes, limit: int) -> list[ConferencePaper]:
+def parse_biorxiv_response(payload: bytes, limit: int) -> list[PublicationRecord]:
     collection = json.loads(payload)["collection"]
-    papers: list[ConferencePaper] = []
+    papers: list[PublicationRecord] = []
     seen_dois: set[str] = set()
     for item in collection:
         doi = str(item["doi"]).lower()
@@ -408,11 +418,11 @@ def parse_biorxiv_response(payload: bytes, limit: int) -> list[ConferencePaper]:
         suffix = doi.split("/", 1)[1]
         source_url = f"https://www.biorxiv.org/content/{doi}v{item['version']}"
         papers.append(
-            ConferencePaper(
+            PublicationRecord(
                 slug=f"biorxiv-{re.sub(r'[^a-z0-9]+', '-', suffix.lower()).strip('-')}",
                 title=title,
                 summary=summary,
-                metadata=PaperMetadata(
+                metadata=PublicationMetadata(
                     venue="bioRxiv",
                     year=year,
                     track=str(item["category"]).title(),
@@ -436,7 +446,7 @@ def parse_biorxiv_response(payload: bytes, limit: int) -> list[ConferencePaper]:
     return papers
 
 
-def collect_biorxiv_papers(year: int, limit: int) -> list[ConferencePaper]:
+def collect_biorxiv_papers(year: int, limit: int) -> list[PublicationRecord]:
     end = min(date.today(), date(year, 12, 31))
     start = max(date(year, 1, 1), end - timedelta(days=45))
     url = f"{BIORXIV_API_ROOT}/{start.isoformat()}/{end.isoformat()}/0/json"
@@ -456,9 +466,9 @@ def crossref_authors(item: dict[str, object]) -> list[str]:
     ]
 
 
-def parse_plos_response(payload: bytes, limit: int) -> list[ConferencePaper]:
+def parse_plos_response(payload: bytes, limit: int) -> list[PublicationRecord]:
     items = json.loads(payload)["message"]["items"]
-    papers: list[ConferencePaper] = []
+    papers: list[PublicationRecord] = []
     for item in items[:limit]:
         title_values = item.get("title")
         journals = item.get("container-title")
@@ -478,11 +488,11 @@ def parse_plos_response(payload: bytes, limit: int) -> list[ConferencePaper]:
         source_url = f"https://journals.plos.org/plosone/article?id={doi}"
         suffix = doi.split("/", 1)[1]
         papers.append(
-            ConferencePaper(
+            PublicationRecord(
                 slug=f"plos-{re.sub(r'[^a-z0-9]+', '-', suffix.lower()).strip('-')}",
                 title=title,
                 summary=summary,
-                metadata=PaperMetadata(
+                metadata=PublicationMetadata(
                     venue="PLOS ONE",
                     year=year,
                     track="Research Article",
@@ -512,7 +522,7 @@ def parse_plos_response(payload: bytes, limit: int) -> list[ConferencePaper]:
     return papers
 
 
-def collect_plos_papers(year: int, limit: int) -> list[ConferencePaper]:
+def collect_plos_papers(year: int, limit: int) -> list[PublicationRecord]:
     end = min(date.today(), date(year, 12, 31))
     start = max(date(year, 1, 1), end - timedelta(days=45))
     query = urlencode(
@@ -541,8 +551,8 @@ def collect_papers(
     year: int = 2026,
     limit: int = 10,
     iclr_poster_ids: tuple[str, ...] | None = None,
-) -> list[ConferencePaper]:
-    papers: list[ConferencePaper] = []
+) -> list[PublicationRecord]:
+    papers: list[PublicationRecord] = []
     if "ICLR" in venues:
         poster_ids = iclr_poster_ids
         if poster_ids is None:
@@ -573,12 +583,85 @@ def validate_pdf(path: Path) -> None:
         raise ValueError(f"PDF 结构校验失败：{path}")
 
 
-def download_papers(papers: list[ConferencePaper], archive_root: Path) -> PdfDownloadResult:
+def publication_pdf_path(archive_root: Path, publication: PublicationRecord) -> Path:
+    return archive_root / "literature" / publication.slug / "original" / "paper.pdf"
+
+
+def legacy_paper_pdf_path(archive_root: Path, publication: PublicationRecord) -> Path:
+    return archive_root / "paper" / publication.slug / "manuscript" / "paper.pdf"
+
+
+def relocate_existing_pdfs(
+    publications: list[PublicationRecord], archive_root: Path
+) -> dict[str, RelocatedPdf]:
+    relocations: dict[str, RelocatedPdf] = {}
+    for publication in publications:
+        source = legacy_paper_pdf_path(archive_root, publication)
+        destination = publication_pdf_path(archive_root, publication)
+        if source.is_file() and destination.is_file():
+            raise ValueError(f"旧归档与文献归档同时存在 PDF：{publication.slug}")
+        if destination.is_file():
+            validate_pdf(destination)
+            moved = False
+        elif source.is_file():
+            validate_pdf(source)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            source.replace(destination)
+            moved = True
+        else:
+            continue
+        relocations[publication.slug] = RelocatedPdf(
+            slug=publication.slug,
+            source=source,
+            destination=destination,
+            source_relative_path=source.relative_to(archive_root).as_posix(),
+            destination_relative_path=destination.relative_to(archive_root).as_posix(),
+            moved=moved,
+        )
+    return relocations
+
+
+def restore_relocated_pdfs(relocations: dict[str, RelocatedPdf]) -> None:
+    for relocation in reversed(tuple(relocations.values())):
+        if not relocation.moved or not relocation.destination.is_file():
+            continue
+        relocation.source.parent.mkdir(parents=True, exist_ok=True)
+        relocation.destination.replace(relocation.source)
+
+
+def remove_empty_legacy_directories(
+    publications: list[PublicationRecord], archive_root: Path
+) -> None:
+    for publication in publications:
+        legacy_path = legacy_paper_pdf_path(archive_root, publication)
+        for directory in (legacy_path.parent, legacy_path.parent.parent):
+            try:
+                directory.rmdir()
+            except OSError:
+                break
+
+
+def migrate_publications(
+    publications: list[PublicationRecord], archive_root: Path
+) -> MetadataSyncResult:
+    relocations = relocate_existing_pdfs(publications, archive_root)
+    try:
+        result = upsert_metadata(publications, relocations)
+    except Exception:
+        restore_relocated_pdfs(relocations)
+        raise
+    remove_empty_legacy_directories(publications, archive_root)
+    return result
+
+
+def download_papers(
+    publications: list[PublicationRecord], archive_root: Path
+) -> PdfDownloadResult:
     failures: list[str] = []
     downloaded = 0
     skipped = 0
-    for index, paper in enumerate(papers, start=1):
-        destination = archive_root / "paper" / paper.slug / "manuscript" / "paper.pdf"
+    for index, publication in enumerate(publications, start=1):
+        destination = publication_pdf_path(archive_root, publication)
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = destination.with_suffix(".download")
         try:
@@ -586,25 +669,27 @@ def download_papers(papers: list[ConferencePaper], archive_root: Path) -> PdfDow
                 validate_pdf(destination)
                 skipped += 1
                 print(
-                    f"[{index:02d}/{len(papers)}] {paper.metadata.venue} 已验证，跳过下载",
+                    f"[{index:02d}/{len(publications)}] "
+                    f"{publication.metadata.venue} 已验证，跳过下载",
                     flush=True,
                 )
                 continue
-            if paper.metadata.venue == "bioRxiv":
+            if publication.metadata.venue == "bioRxiv":
                 time.sleep(3)
-            content = fetch(str(paper.metadata.pdf_url))
+            content = fetch(str(publication.metadata.pdf_url))
             temporary.write_bytes(content)
             validate_pdf(temporary)
             temporary.replace(destination)
             downloaded += 1
             checksum = hashlib.sha256(content).hexdigest()[:12]
             print(
-                f"[{index:02d}/{len(papers)}] {paper.metadata.venue} {destination.name} {checksum}",
+                f"[{index:02d}/{len(publications)}] "
+                f"{publication.metadata.venue} {destination.name} {checksum}",
                 flush=True,
             )
         except (OSError, RuntimeError, ValueError) as error:
             temporary.unlink(missing_ok=True)
-            failures.append(f"{paper.metadata.source_id}: {error}")
+            failures.append(f"{publication.metadata.source_id}: {error}")
     return PdfDownloadResult(
         downloaded=downloaded,
         skipped=skipped,
@@ -612,7 +697,10 @@ def download_papers(papers: list[ConferencePaper], archive_root: Path) -> PdfDow
     )
 
 
-def upsert_metadata(papers: list[ConferencePaper]) -> MetadataSyncResult:
+def upsert_metadata(
+    publications: list[PublicationRecord],
+    relocations: dict[str, RelocatedPdf] | None = None,
+) -> MetadataSyncResult:
     created = 0
     updated = 0
     skipped = 0
@@ -621,18 +709,20 @@ def upsert_metadata(papers: list[ConferencePaper]) -> MetadataSyncResult:
         owner = owners["zhengyu"]
         tags = {item.name: item for item in session.scalars(select(Tag)).all()}
         tag_names = {
-            str(value) for paper in papers for value in (paper.metadata.venue, paper.metadata.year)
+            str(value)
+            for publication in publications
+            for value in (publication.metadata.venue, publication.metadata.year)
         }
         for name in tag_names:
             tags.setdefault(name, Tag(name=name))
-        for paper in papers:
-            details = paper.metadata.model_dump(mode="json", exclude_none=True)
-            asset = resolve_paper(session, title=paper.title, details=details)
+        for publication in publications:
+            details = publication.metadata.model_dump(mode="json", exclude_none=True)
+            asset = resolve_publication(session, title=publication.title, details=details)
             is_new = asset is None
             if asset is None:
                 asset = Asset(
-                    type=AssetType.PAPER,
-                    slug=paper.slug,
+                    type=AssetType.LITERATURE,
+                    slug=publication.slug,
                     owner=owner,
                     visibility=Visibility.LAB,
                 )
@@ -640,11 +730,15 @@ def upsert_metadata(papers: list[ConferencePaper]) -> MetadataSyncResult:
                 session.add(asset)
                 created += 1
             else:
-                desired_tags = {str(paper.metadata.venue), str(paper.metadata.year)}
+                desired_tags = {
+                    str(publication.metadata.venue),
+                    str(publication.metadata.year),
+                }
                 changed = any(
                     (
-                        asset.title != paper.title,
-                        asset.summary != paper.summary,
+                        asset.title != publication.title,
+                        asset.type != AssetType.LITERATURE,
+                        asset.summary != publication.summary,
                         asset.status != "published",
                         asset.visibility != Visibility.LAB,
                         asset.details != details,
@@ -655,14 +749,25 @@ def upsert_metadata(papers: list[ConferencePaper]) -> MetadataSyncResult:
                     updated += 1
                 else:
                     skipped += 1
-            asset.title = paper.title
-            asset.summary = paper.summary
+            asset.title = publication.title
+            asset.type = AssetType.LITERATURE
+            asset.summary = publication.summary
             asset.status = "published"
             asset.details = details
             asset.tags = [
-                tags[str(paper.metadata.venue)],
-                tags[str(paper.metadata.year)],
+                tags[str(publication.metadata.venue)],
+                tags[str(publication.metadata.year)],
             ]
+            if relocations and publication.slug in relocations:
+                relocation = relocations[publication.slug]
+                file_record = session.scalar(
+                    select(FileRecord).where(
+                        FileRecord.relative_path == relocation.source_relative_path
+                    )
+                )
+                if file_record:
+                    file_record.relative_path = relocation.destination_relative_path
+                    file_record.asset = asset
             activity_exists = False
             if not is_new:
                 activity_exists = bool(
@@ -679,22 +784,44 @@ def upsert_metadata(papers: list[ConferencePaper]) -> MetadataSyncResult:
                         asset=asset,
                         actor=owner,
                         action=ActivityAction.IMPORTED_PUBLICATION,
-                        description=f"从 {paper.metadata.venue} 官方来源同步论文元数据",
+                        description=f"从 {publication.metadata.venue} 官方来源同步文献元数据",
                         created_at=datetime.now(UTC),
                     )
                 )
     return MetadataSyncResult(created=created, updated=updated, skipped=skipped)
 
 
-def write_manifest(papers: list[ConferencePaper], destination: Path) -> None:
+def load_imported_publications() -> list[PublicationRecord]:
+    with SessionLocal() as session:
+        assets = session.scalars(
+            select(Asset)
+            .join(Activity)
+            .where(
+                Asset.type.in_((AssetType.PAPER, AssetType.LITERATURE)),
+                Activity.action == ActivityAction.IMPORTED_PUBLICATION,
+            )
+            .order_by(Asset.slug)
+        ).unique()
+        return [
+            PublicationRecord(
+                slug=asset.slug,
+                title=asset.title,
+                summary=asset.summary,
+                metadata=PublicationMetadata.model_validate(asset.details),
+            )
+            for asset in assets
+        ]
+
+
+def write_manifest(publications: list[PublicationRecord], destination: Path) -> None:
     payload = [
         {
-            "slug": paper.slug,
-            "title": paper.title,
-            "summary": paper.summary,
-            "details": paper.metadata.model_dump(mode="json", exclude_none=True),
+            "slug": publication.slug,
+            "title": publication.title,
+            "summary": publication.summary,
+            "details": publication.metadata.model_dump(mode="json", exclude_none=True),
         }
-        for paper in papers
+        for publication in publications
     ]
     destination.parent.mkdir(parents=True, exist_ok=True)
     content = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
@@ -702,13 +829,13 @@ def write_manifest(papers: list[ConferencePaper], destination: Path) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="从官方学术来源同步论文元数据与 PDF。")
+    parser = argparse.ArgumentParser(description="从官方学术来源同步外部文献元数据与 PDF。")
     parser.add_argument(
         "--venue",
         nargs="+",
         choices=SUPPORTED_VENUES,
         default=list(SUPPORTED_VENUES),
-        help="需要同步的会议，可同时指定多个。",
+        help="需要同步的学术来源，可同时指定多个。",
     )
     parser.add_argument("--year", type=int, default=2026)
     parser.add_argument("--limit", type=int, default=10)
@@ -731,32 +858,56 @@ def main() -> None:
         help="下载并校验正式 PDF（默认启用）。",
     )
     parser.add_argument("--skip-database", action="store_true")
+    parser.add_argument(
+        "--migrate-existing",
+        action="store_true",
+        help="将历史官方收录记录从论文目录迁入文献目录，不访问外部来源。",
+    )
     arguments = parser.parse_args()
 
     if arguments.limit < 1:
         parser.error("--limit 必须大于 0。")
     if not 1900 <= arguments.year <= 2200:
         parser.error("--year 必须在 1900 到 2200 之间。")
-    papers = collect_papers(
-        venues=tuple(arguments.venue),
-        year=arguments.year,
-        limit=arguments.limit,
-        iclr_poster_ids=(tuple(arguments.iclr_poster_id) if arguments.iclr_poster_id else None),
+    if arguments.skip_database and arguments.download_pdf:
+        parser.error("--skip-database 只能与 --no-download-pdf 一起使用。")
+    if arguments.migrate_existing and arguments.skip_database:
+        parser.error("--migrate-existing 需要更新数据库，不能与 --skip-database 一起使用。")
+
+    publications = (
+        load_imported_publications()
+        if arguments.migrate_existing
+        else collect_papers(
+            venues=tuple(arguments.venue),
+            year=arguments.year,
+            limit=arguments.limit,
+            iclr_poster_ids=(
+                tuple(arguments.iclr_poster_id) if arguments.iclr_poster_id else None
+            ),
+        )
     )
+    archive_root = arguments.archive_root.resolve()
     if arguments.manifest:
-        write_manifest(papers, arguments.manifest)
+        write_manifest(publications, arguments.manifest)
     download_result = PdfDownloadResult(downloaded=0, skipped=0, failures=())
-    if arguments.download_pdf:
-        download_result = download_papers(papers, arguments.archive_root.resolve())
     sync_result = None
     if not arguments.skip_database:
-        sync_result = upsert_metadata(papers)
+        sync_result = migrate_publications(publications, archive_root)
+    if arguments.download_pdf:
+        download_result = download_papers(publications, archive_root)
     venue_counts = {
-        venue: sum(paper.metadata.venue == VENUE_LABELS[venue] for paper in papers)
+        venue: sum(
+            publication.metadata.venue == VENUE_LABELS[venue]
+            for publication in publications
+        )
         for venue in arguments.venue
     }
-    summary = "，".join(
-        f"{VENUE_LABELS[venue]} {count} 篇" for venue, count in venue_counts.items()
+    summary = (
+        f"历史官方收录文献 {len(publications)} 篇"
+        if arguments.migrate_existing
+        else "，".join(
+            f"{VENUE_LABELS[venue]} {count} 篇" for venue, count in venue_counts.items()
+        )
     )
     print(f"同步完成：{summary}。")
     if sync_result:
@@ -773,7 +924,7 @@ def main() -> None:
             f"失败 {len(download_result.failures)}。"
         )
     if download_result.failures:
-        raise RuntimeError("以下论文下载失败：\n" + "\n".join(download_result.failures))
+        raise RuntimeError("以下文献下载失败：\n" + "\n".join(download_result.failures))
 
 
 if __name__ == "__main__":

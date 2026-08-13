@@ -128,7 +128,7 @@ test('品牌设置保存后立即更新全站标识', async ({ page }) => {
 
 test('目录筛选与视图状态可通过 URL 恢复', async ({ page }) => {
   await signIn(page)
-  await page.getByRole('link', { name: '论文 Papers', exact: true }).click()
+  await page.getByRole('link', { name: '文献 Literature', exact: true }).click()
   await page.getByRole('button', { name: /筛选条件/ }).click()
   await page.getByLabel('收录会议').selectOption('ICLR')
   await page.getByRole('button', { name: '卡片视图' }).click()
@@ -141,7 +141,7 @@ test('目录筛选与视图状态可通过 URL 恢复', async ({ page }) => {
 
 test('目录筛选浮层支持键盘和外部关闭', async ({ page }) => {
   await signIn(page)
-  await page.goto('/papers')
+  await page.goto('/literature')
   const trigger = page.getByRole('button', { name: /筛选条件/ })
 
   await trigger.click()
@@ -227,11 +227,11 @@ test('操作日志使用服务端活动标签和筛选项', async ({ page }) => 
 
 test('详情页返回到原目录状态', async ({ page }) => {
   await signIn(page)
-  await page.goto('/papers?venue=ICLR&view=grid')
+  await page.goto('/literature?venue=ICLR&view=grid')
   await page.getByRole('link', { name: /查看详情/ }).first().click()
   await expect(page).toHaveURL(/returnTo=/)
   await page.getByRole('button', { name: '返回目录' }).click()
-  await expect(page).toHaveURL(/\/papers\?venue=ICLR&view=grid/)
+  await expect(page).toHaveURL(/\/literature\?venue=ICLR&view=grid/)
   await expect(page.getByLabel('收录会议')).toHaveValue('ICLR')
 })
 
@@ -252,13 +252,13 @@ test('论文登记在专属字段完整后才允许提交', async ({ page }) => 
   await expect(submit).toBeEnabled()
 })
 
-test('论文目录和详情提供统一 BibTeX 引用', async ({ page }) => {
+test('文献目录和详情提供统一 BibTeX 引用', async ({ page }) => {
   await signIn(page)
-  await page.getByRole('link', { name: '论文 Papers', exact: true }).click()
+  await page.getByRole('link', { name: '文献 Literature', exact: true }).click()
   await expect(page.getByRole('button', { name: '导出 BibTeX' })).toBeEnabled()
   await page.getByRole('link', { name: /查看详情/ }).first().click()
-  await expect(page.getByRole('heading', { name: '论文引用' })).toBeVisible()
-  await expect(page.locator('.paper-citation pre')).toContainText('@inproceedings{')
+  await expect(page.getByRole('heading', { name: '出版物引用' })).toBeVisible()
+  await expect(page.locator('.publication-citation pre')).toContainText('@inproceedings{')
   const download = page.waitForEvent('download')
   await page.getByRole('button', { name: '下载 .bib' }).click()
   await expect((await download).suggestedFilename()).toMatch(/\.bib$/)

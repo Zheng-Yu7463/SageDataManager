@@ -30,7 +30,7 @@ ACTIVITY_LABELS = {
     ActivityAction.PREVIEWED_FILE: "预览文件",
     ActivityAction.DOWNLOADED_FILE: "下载文件",
     ActivityAction.UPDATED_BRANDING: "更新品牌设置",
-    ActivityAction.IMPORTED_PUBLICATION: "收录论文",
+    ActivityAction.IMPORTED_PUBLICATION: "收录文献",
 }
 
 

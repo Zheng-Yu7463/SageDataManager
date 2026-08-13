@@ -30,12 +30,15 @@ from app.services.assets import (
     list_archived_assets,
     list_asset_choices,
     list_assets,
-    list_paper_catalogue_facets,
+    list_publication_catalogue_facets,
     remove_asset_relation,
     restore_asset,
     update_asset,
 )
-from app.services.citations import build_paper_citation, build_paper_citation_export
+from app.services.citations import (
+    build_publication_citation,
+    build_publication_citation_export,
+)
 
 
 def make_session() -> Session:
@@ -60,9 +63,11 @@ def payload() -> AssetCreateRequest:
     )
 
 
-def paper_payload(*, slug: str = "acl-2026-octotools") -> AssetCreateRequest:
+def paper_payload(
+    *, slug: str = "acl-2026-octotools", asset_type: AssetType = AssetType.PAPER
+) -> AssetCreateRequest:
     return AssetCreateRequest(
-        type=AssetType.PAPER,
+        type=asset_type,
         slug=slug,
         title="OctoTools: A Multi-Agent Framework with Extensible Tools for Complex Reasoning",
         summary="Multi-agent reasoning framework.",
@@ -126,14 +131,19 @@ def test_paper_metadata_is_normalized_and_duplicate_sources_are_rejected() -> No
     assert created.details["doi"] == "10.18653/v1/2026.acl-long.1"
     assert created.details["publication_url"] == "https://aclanthology.org/2026.acl-long.1/"
     with pytest.raises(AssetMetadataError):
-        create_asset(session, paper_payload(slug="same-paper-second-slug"))
+        create_asset(
+            session,
+            paper_payload(
+                slug="same-paper-second-slug", asset_type=AssetType.LITERATURE
+            ),
+        )
 
 
 def test_paper_bibtex_uses_structured_metadata_and_stable_fallbacks() -> None:
     session = make_session()
     paper = create_asset(session, paper_payload())
 
-    citation = build_paper_citation(paper)
+    citation = build_publication_citation(paper)
 
     assert citation.citation_key == "acl-2026-octotools"
     assert citation.filename == "acl-2026-octotools.bib"
@@ -168,7 +178,7 @@ def test_paper_bibtex_export_joins_records_once() -> None:
     )
     second = create_asset(session, second_payload)
 
-    export = build_paper_citation_export([first, second])
+    export = build_publication_citation_export([first, second], filename="sage-papers.bib")
 
     assert export.count == 2
     assert export.filename == "sage-papers.bib"
@@ -397,10 +407,12 @@ def test_asset_choices_search_beyond_catalogue_page_and_exclude_archived() -> No
     assert archived_matches == []
 
 
-def test_paper_catalogue_facets_follow_active_paper_metadata() -> None:
+def test_publication_catalogue_facets_are_isolated_by_catalogue() -> None:
     session = make_session()
     acl = paper_payload()
-    iclr = paper_payload(slug="iclr-2025-paper").model_copy(deep=True)
+    iclr = paper_payload(
+        slug="iclr-2025-paper", asset_type=AssetType.LITERATURE
+    ).model_copy(deep=True)
     iclr.title = "A Distinct ICLR Paper"
     iclr.details.update(
         venue="ICLR",
@@ -415,18 +427,21 @@ def test_paper_catalogue_facets_follow_active_paper_metadata() -> None:
     create_asset(session, acl)
     session.commit()
 
-    facets = list_paper_catalogue_facets(session)
-    assert facets.venues == ["ACL", "ICLR"]
-    assert facets.years == [2026, 2025]
+    facets = list_publication_catalogue_facets(session, AssetType.PAPER)
+    literature_facets = list_publication_catalogue_facets(session, AssetType.LITERATURE)
+    assert facets.venues == ["ACL"]
+    assert facets.years == [2026]
+    assert literature_facets.venues == ["ICLR"]
+    assert literature_facets.years == [2025]
 
     asset = session.get(Asset, archived.id)
     assert asset is not None
     asset.archived_at = asset.updated_at
     session.commit()
 
-    active_facets = list_paper_catalogue_facets(session)
-    assert active_facets.venues == ["ACL"]
-    assert active_facets.years == [2026]
+    active_facets = list_publication_catalogue_facets(session, AssetType.LITERATURE)
+    assert active_facets.venues == []
+    assert active_facets.years == []
 
 
 def test_asset_metadata_can_be_updated_archived_and_restored() -> None:

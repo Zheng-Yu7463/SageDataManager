@@ -22,8 +22,8 @@ from app.domain.schemas import (
     AssetYamlImportRequest,
     BatchAssetImportRequest,
     BatchAssetImportResponse,
-    PaperCitationExportResponse,
-    PaperCitationResponse,
+    PublicationCitationExportResponse,
+    PublicationCitationResponse,
     RelatedAssetSummary,
 )
 from app.services.assets import (
@@ -42,16 +42,16 @@ from app.services.assets import (
     list_archived_assets,
     list_asset_choices,
     list_assets,
-    list_paper_catalogue_facets,
-    list_papers_for_citation_export,
+    list_publication_catalogue_facets,
+    list_publications_for_citation_export,
     remove_asset_relation,
     restore_asset,
     update_asset,
 )
 from app.services.citations import (
-    PaperCitationError,
-    build_paper_citation,
-    build_paper_citation_export,
+    PublicationCitationError,
+    build_publication_citation,
+    build_publication_citation_export,
 )
 
 router = APIRouter(
@@ -97,13 +97,17 @@ def assets(
         page_size=page_size,
     )
 
-    paper_facets = list_paper_catalogue_facets(session) if asset_type == AssetType.PAPER else None
+    publication_facets = (
+        list_publication_catalogue_facets(session, asset_type)
+        if asset_type in {AssetType.PAPER, AssetType.LITERATURE}
+        else None
+    )
     return AssetListResponse(
         items=items,
         total=total,
         page=page,
         page_size=page_size,
-        paper_facets=paper_facets,
+        publication_facets=publication_facets,
     )
 
 
@@ -111,15 +115,19 @@ def assets(
 def export_bibtex(
     session: SessionDependency,
     _: AdminDependency,
+    asset_type: AssetType = AssetType.PAPER,
     asset_status: str | None = Query(default=None, alias="status", max_length=40),
     visibility: Visibility | None = None,
     has_files: bool | None = None,
     venue: str | None = Query(default=None, min_length=2, max_length=80),
     year: int | None = Query(default=None, ge=1900, le=2200),
     query: str | None = Query(default=None, max_length=200),
-) -> PaperCitationExportResponse:
-    papers = list_papers_for_citation_export(
+) -> PublicationCitationExportResponse:
+    if asset_type not in {AssetType.PAPER, AssetType.LITERATURE}:
+        raise HTTPException(status_code=422, detail="只有论文或文献目录支持 BibTeX 导出。")
+    publications = list_publications_for_citation_export(
         session,
+        asset_type=asset_type,
         query=query,
         status=asset_status,
         visibility=visibility,
@@ -128,8 +136,9 @@ def export_bibtex(
         year=year,
     )
     try:
-        return build_paper_citation_export(papers)
-    except PaperCitationError as error:
+        filename = "sage-papers.bib" if asset_type == AssetType.PAPER else "sage-literature.bib"
+        return build_publication_citation_export(publications, filename=filename)
+    except PublicationCitationError as error:
         raise HTTPException(status_code=409, detail=str(error)) from None
 
 
@@ -330,13 +339,13 @@ def asset(asset_id: UUID, session: SessionDependency) -> AssetDetail:
 
 
 @router.get("/{asset_id}/citation/bibtex")
-def paper_bibtex(
+def publication_bibtex(
     asset_id: UUID, session: SessionDependency, _: AdminDependency
-) -> PaperCitationResponse:
+) -> PublicationCitationResponse:
     result = get_asset(session, asset_id)
     if not result:
         raise HTTPException(status_code=404, detail="资产不存在或已归档。")
     try:
-        return build_paper_citation(result)
-    except PaperCitationError as error:
+        return build_publication_citation(result)
+    except PublicationCitationError as error:
         raise HTTPException(status_code=409, detail=str(error)) from None

@@ -24,12 +24,19 @@ def make_session() -> Session:
     return sessionmaker(bind=engine)()
 
 
-def create_paper(session: Session, *, venue: str, year: int, slug: str) -> str:
+def create_publication(
+    session: Session,
+    *,
+    venue: str,
+    year: int,
+    slug: str,
+    asset_type: AssetType = AssetType.PAPER,
+) -> str:
     owner = ensure_fixed_accounts(session)[1]
     paper = create_asset(
         session,
         AssetCreateRequest(
-            type=AssetType.PAPER,
+            type=asset_type,
             slug=slug,
             title=f"{venue} Citation Paper",
             status="published",
@@ -53,8 +60,16 @@ def test_bibtex_endpoints_require_admin_and_preserve_filters(
     monkeypatch,
 ) -> None:
     session = make_session()
-    acl_id = create_paper(session, venue="ACL", year=2026, slug="acl-citation-paper")
-    create_paper(session, venue="ICLR", year=2025, slug="iclr-citation-paper")
+    acl_id = create_publication(
+        session, venue="ACL", year=2026, slug="acl-citation-paper"
+    )
+    create_publication(
+        session,
+        venue="ICLR",
+        year=2025,
+        slug="iclr-citation-paper",
+        asset_type=AssetType.LITERATURE,
+    )
     session.commit()
     monkeypatch.setattr(settings, "auth_session_secret", "test-session-secret")
     app.dependency_overrides[get_session] = lambda: session
@@ -68,6 +83,10 @@ def test_bibtex_endpoints_require_admin_and_preserve_filters(
             "/api/assets/citations/bibtex?venue=ACL&year=2026",
             headers=headers,
         )
+        literature = client.get(
+            "/api/assets/citations/bibtex?asset_type=literature",
+            headers=headers,
+        )
         single = client.get(
             f"/api/assets/{acl_id}/citation/bibtex",
             headers=headers,
@@ -77,6 +96,10 @@ def test_bibtex_endpoints_require_admin_and_preserve_filters(
         assert filtered.json()["count"] == 1
         assert "ACL Citation Paper" in filtered.json()["bibtex"]
         assert "ICLR Citation Paper" not in filtered.json()["bibtex"]
+        assert literature.status_code == 200
+        assert literature.json()["count"] == 1
+        assert literature.json()["filename"] == "sage-literature.bib"
+        assert "ICLR Citation Paper" in literature.json()["bibtex"]
         assert single.status_code == 200
         assert single.json()["filename"] == "acl-citation-paper.bib"
     finally:
@@ -90,7 +113,7 @@ def test_article_bibtex_uses_journal_instead_of_booktitle() -> None:
     paper = create_asset(
         session,
         AssetCreateRequest(
-            type=AssetType.PAPER,
+            type=AssetType.LITERATURE,
             slug="journal-article",
             title="Journal Article",
             status="published",
@@ -112,9 +135,9 @@ def test_article_bibtex_uses_journal_instead_of_booktitle() -> None:
     )
     session.commit()
 
-    from app.services.citations import build_paper_citation
+    from app.services.citations import build_publication_citation
 
-    citation = build_paper_citation(paper)
+    citation = build_publication_citation(paper)
 
     assert "@article{" in citation.bibtex
     assert "journal = {PLOS One}" in citation.bibtex

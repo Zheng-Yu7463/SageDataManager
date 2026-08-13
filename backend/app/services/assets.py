@@ -21,17 +21,17 @@ from app.domain.schemas import (
     AssetVersionSummary,
     BatchAssetImportRequest,
     FileSummary,
-    PaperCatalogueFacets,
+    PublicationCatalogueFacets,
     RelatedAssetSummary,
     UploadDirectoryOption,
     normalized_asset_details,
 )
 from app.services.activities import activity_summary
 from app.services.paper_identity import (
-    PaperIdentityConflictError,
-    paper_identities_match,
-    paper_identity,
-    resolve_paper,
+    PublicationIdentityConflictError,
+    publication_identities_match,
+    publication_identity,
+    resolve_publication,
 )
 from app.services.upload_directories import UPLOAD_DIRECTORY_OPTIONS
 
@@ -69,6 +69,11 @@ class AssetMetadataError(Exception):
 
 
 ASSET_RELATION_UNIQUE_CONSTRAINT = "uq_asset_relations_identity"
+PUBLICATION_ASSET_TYPES = (AssetType.PAPER, AssetType.LITERATURE)
+
+
+def has_publication_metadata(asset_type: AssetType, details: dict) -> bool:
+    return asset_type in PUBLICATION_ASSET_TYPES and bool(details.get("source_id"))
 
 
 def asset_summary(asset: Asset) -> AssetSummary:
@@ -110,13 +115,13 @@ def create_asset(
 ) -> AssetSummary:
     if session.scalar(select(Asset.id).where(Asset.slug == payload.slug)):
         raise AssetSlugConflictError
-    if payload.type == AssetType.PAPER:
+    if has_publication_metadata(payload.type, payload.details):
         try:
-            duplicate = resolve_paper(session, title=payload.title, details=payload.details)
-        except PaperIdentityConflictError as error:
+            duplicate = resolve_publication(session, title=payload.title, details=payload.details)
+        except PublicationIdentityConflictError as error:
             raise AssetMetadataError(str(error)) from error
         if duplicate:
-            raise AssetMetadataError("该论文已经收录，请按官方来源标识更新现有记录。")
+            raise AssetMetadataError("该出版物已经收录，请按官方来源标识更新现有记录。")
 
     owner = actor
     if payload.owner_email:
@@ -169,22 +174,25 @@ def import_assets(
     existing = set(session.scalars(select(Asset.slug).where(Asset.slug.in_(slugs))).all())
     if existing:
         raise BatchAssetImportError(f"以下 slug 已存在：{', '.join(sorted(existing))}")
-    paper_identities = [
-        paper_identity(item.title, item.details)
+    publication_identities = [
+        publication_identity(item.title, item.details)
         for item in payload.assets
-        if item.type == AssetType.PAPER
+        if has_publication_metadata(item.type, item.details)
     ]
-    for index, identity in enumerate(paper_identities):
-        if any(paper_identities_match(identity, other) for other in paper_identities[:index]):
-            raise BatchAssetImportError("导入内容中含有重复论文。")
+    for index, identity in enumerate(publication_identities):
+        if any(
+            publication_identities_match(identity, other)
+            for other in publication_identities[:index]
+        ):
+            raise BatchAssetImportError("导入内容中含有重复出版物。")
     for item in payload.assets:
-        if item.type == AssetType.PAPER:
+        if has_publication_metadata(item.type, item.details):
             try:
-                duplicate = resolve_paper(session, title=item.title, details=item.details)
-            except PaperIdentityConflictError as error:
+                duplicate = resolve_publication(session, title=item.title, details=item.details)
+            except PublicationIdentityConflictError as error:
                 raise BatchAssetImportError(str(error)) from error
             if duplicate:
-                raise BatchAssetImportError(f"论文已收录：{item.title}")
+                raise BatchAssetImportError(f"出版物已收录：{item.title}")
     return [create_asset(session, item, actor=actor) for item in payload.assets]
 
 
@@ -211,19 +219,19 @@ def update_asset(
             else asset.details
         )
     except ValueError as error:
-        raise AssetMetadataError("论文元数据不完整或格式无效。") from error
-    if asset.type == AssetType.PAPER:
+        raise AssetMetadataError("出版物元数据不完整或格式无效。") from error
+    if has_publication_metadata(asset.type, next_details):
         try:
-            duplicate = resolve_paper(
+            duplicate = resolve_publication(
                 session,
                 title=next_title,
                 details=next_details,
                 exclude_asset_id=asset.id,
             )
-        except PaperIdentityConflictError as error:
+        except PublicationIdentityConflictError as error:
             raise AssetMetadataError(str(error)) from error
         if duplicate:
-            raise AssetMetadataError("该论文已经收录，请检查 DOI 或官方来源标识。")
+            raise AssetMetadataError("该出版物已经收录，请检查 DOI 或官方来源标识。")
     if payload.title is not None:
         asset.title = next_title
     if payload.summary is not None:
@@ -429,7 +437,7 @@ def _prefix_pattern(value: str) -> str:
     return f"{escaped}%"
 
 
-def _paper_search_fields():
+def _publication_search_fields():
     return (
         cast(Asset.details["authors"], Text),
         cast(Asset.details["venue"], Text),
@@ -442,10 +450,10 @@ def _paper_search_fields():
     )
 
 
-def _paper_metadata_matches(pattern: str):
+def _publication_metadata_matches(pattern: str):
     return and_(
-        Asset.type == AssetType.PAPER,
-        or_(*(field.ilike(pattern, escape="\\") for field in _paper_search_fields())),
+        Asset.type.in_(PUBLICATION_ASSET_TYPES),
+        or_(*(field.ilike(pattern, escape="\\") for field in _publication_search_fields())),
     )
 
 
@@ -457,7 +465,7 @@ def _term_matches(term: str):
         Asset.tags.any(Tag.name.ilike(pattern, escape="\\")),
         Asset.owner.has(User.name.ilike(pattern, escape="\\")),
         Asset.files.any(FileRecord.file_name.ilike(pattern, escape="\\")),
-        _paper_metadata_matches(pattern),
+        _publication_metadata_matches(pattern),
     )
 
 
@@ -467,14 +475,10 @@ def _search_relevance(query: str, terms: list[str]):
     score = case((func.lower(Asset.title) == phrase.casefold(), 160), else_=0)
     score += case((Asset.title.ilike(_prefix_pattern(phrase), escape="\\"), 100), else_=0)
     score += case((Asset.title.ilike(phrase_pattern, escape="\\"), 80), else_=0)
-    score += case(
-        (Asset.tags.any(Tag.name.ilike(phrase_pattern, escape="\\")), 65), else_=0
-    )
-    score += case(
-        (Asset.owner.has(User.name.ilike(phrase_pattern, escape="\\")), 55), else_=0
-    )
+    score += case((Asset.tags.any(Tag.name.ilike(phrase_pattern, escape="\\")), 65), else_=0)
+    score += case((Asset.owner.has(User.name.ilike(phrase_pattern, escape="\\")), 55), else_=0)
     score += case((Asset.summary.ilike(phrase_pattern, escape="\\"), 40), else_=0)
-    score += case((_paper_metadata_matches(phrase_pattern), 35), else_=0)
+    score += case((_publication_metadata_matches(phrase_pattern), 35), else_=0)
     score += case(
         (Asset.files.any(FileRecord.file_name.ilike(phrase_pattern, escape="\\")), 30),
         else_=0,
@@ -488,7 +492,7 @@ def _search_relevance(query: str, terms: list[str]):
         score += case(
             (Asset.files.any(FileRecord.file_name.ilike(pattern, escape="\\")), 10), else_=0
         )
-        score += case((_paper_metadata_matches(pattern), 8), else_=0)
+        score += case((_publication_metadata_matches(pattern), 8), else_=0)
     return score
 
 
@@ -515,19 +519,28 @@ def _asset_filters(
         filters.append(~Asset.files.any())
     if venue and venue.strip():
         filters.extend(
-            [Asset.type == AssetType.PAPER, Asset.details["venue"].as_string() == venue.strip()]
+            [
+                Asset.type.in_(PUBLICATION_ASSET_TYPES),
+                Asset.details["venue"].as_string() == venue.strip(),
+            ]
         )
     if year is not None:
-        filters.extend([Asset.type == AssetType.PAPER, Asset.details["year"].as_integer() == year])
+        filters.extend(
+            [
+                Asset.type.in_(PUBLICATION_ASSET_TYPES),
+                Asset.details["year"].as_integer() == year,
+            ]
+        )
     if terms := _search_terms(query):
         filters.append(and_(*(_term_matches(term) for term in terms)))
 
     return filters
 
 
-def list_papers_for_citation_export(
+def list_publications_for_citation_export(
     session: Session,
     *,
+    asset_type: AssetType,
     query: str | None,
     status: str | None,
     visibility: Visibility | None,
@@ -536,7 +549,7 @@ def list_papers_for_citation_export(
     year: int | None,
 ) -> list[AssetSummary]:
     filters = _asset_filters(
-        asset_type=AssetType.PAPER,
+        asset_type=asset_type,
         query=query,
         status=status,
         visibility=visibility,
@@ -562,9 +575,11 @@ def list_papers_for_citation_export(
     return [asset_summary(item) for item in session.scalars(statement).all()]
 
 
-def list_paper_catalogue_facets(session: Session) -> PaperCatalogueFacets:
+def list_publication_catalogue_facets(
+    session: Session, asset_type: AssetType
+) -> PublicationCatalogueFacets:
     statement = select(Asset.details).where(
-        Asset.type == AssetType.PAPER,
+        Asset.type == asset_type,
         Asset.archived_at.is_(None),
     )
     details = session.scalars(statement).all()
@@ -576,7 +591,7 @@ def list_paper_catalogue_facets(session: Session) -> PaperCatalogueFacets:
         {int(item["year"]) for item in details if isinstance(item.get("year"), int)},
         reverse=True,
     )
-    return PaperCatalogueFacets(venues=venues, years=years)
+    return PublicationCatalogueFacets(venues=venues, years=years)
 
 
 def list_archived_assets(session: Session) -> list[AssetSummary]:
@@ -751,8 +766,5 @@ def get_asset(session: Session, asset_id: UUID) -> AssetDetail | None:
                 )
             )
         ],
-        recent_activities=[
-            activity_summary(activity)
-            for activity in activities
-        ],
+        recent_activities=[activity_summary(activity) for activity in activities],
     )

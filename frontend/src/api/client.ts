@@ -23,8 +23,8 @@ import type {
   AssetType,
   DashboardSummary,
   FileClaimResult,
-  PaperCitation,
-  PaperCitationExport,
+  PublicationCitation,
+  PublicationCitationExport,
   UploadCommandInput,
   UploadCommandResult,
   ScanRunSummary,
@@ -117,11 +117,12 @@ export function getAsset(assetId: string, signal?: AbortSignal) {
   return request<AssetDetail>(`/api/assets/${assetId}`, signal)
 }
 
-export function getPaperCitation(assetId: string, signal?: AbortSignal) {
-  return request<PaperCitation>(`/api/assets/${assetId}/citation/bibtex`, signal)
+export function getPublicationCitation(assetId: string, signal?: AbortSignal) {
+  return request<PublicationCitation>(`/api/assets/${assetId}/citation/bibtex`, signal)
 }
 
-export function exportPaperCitations(options: {
+export function exportPublicationCitations(options: {
+  assetType: 'paper' | 'literature'
   query?: string
   status?: string
   visibility?: string
@@ -130,13 +131,14 @@ export function exportPaperCitations(options: {
   year?: number
 }) {
   const params = new URLSearchParams()
+  params.set('asset_type', options.assetType)
   if (options.query) params.set('query', options.query)
   if (options.status) params.set('status', options.status)
   if (options.visibility) params.set('visibility', options.visibility)
   if (options.hasFiles !== undefined) params.set('has_files', String(options.hasFiles))
   if (options.venue) params.set('venue', options.venue)
   if (options.year !== undefined) params.set('year', String(options.year))
-  return request<PaperCitationExport>(`/api/assets/citations/bibtex?${params}`)
+  return request<PublicationCitationExport>(`/api/assets/citations/bibtex?${params}`)
 }
 
 export function createAsset(input: AssetCreateInput) {

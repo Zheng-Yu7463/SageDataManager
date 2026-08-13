@@ -7,7 +7,7 @@ import { getAssets } from '@/api/client'
 import { assetMeta } from '@/catalogue'
 import AssetIcon from '@/components/AssetIcon.vue'
 import { useBranding } from '@/composables/useBranding'
-import { isPaperMetadata } from '@/types'
+import { isPublicationMetadata } from '@/types'
 import type { AssetListResponse, AssetSummary } from '@/types'
 
 const route = useRoute()
@@ -25,7 +25,7 @@ const resultLabel = computed(() => `${data.value?.total ?? 0} 项跨类型资产
 const pageCount = computed(() => Math.max(1, Math.ceil((data.value?.total ?? 0) / pageSize)))
 
 function resultContext(asset: AssetSummary) {
-  if (asset.type === 'paper' && isPaperMetadata(asset.details)) {
+  if (['paper', 'literature'].includes(asset.type) && isPublicationMetadata(asset.details)) {
     const authors = asset.details.authors.slice(0, 3).join('、')
     const remainder = asset.details.authors.length > 3 ? ` 等 ${asset.details.authors.length} 位作者` : ''
     return `${authors}${remainder} · ${asset.details.venue} ${asset.details.year}`
