@@ -316,6 +316,18 @@ def _restore_staging_directory(
         destination.replace(source)
 
 
+def _move_without_overwrite(source: Path, destination: Path, relative_path: str) -> None:
+    try:
+        os.link(source, destination)
+    except FileExistsError:
+        raise UploadConflictError([relative_path]) from None
+    try:
+        source.unlink()
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+
+
 def finalize_upload(
     session: Session,
     storage_root: Path,
@@ -333,7 +345,9 @@ def finalize_upload(
     ):
         raise UploadTicketError("上传凭据无效或已过期，请重新生成上传命令。")
 
-    asset = session.get(Asset, claims.asset_id)
+    asset = session.scalar(
+        select(Asset).where(Asset.id == claims.asset_id).with_for_update()
+    )
     if not asset or asset.archived_at:
         raise UploadTicketError("目标资产不存在或已归档，请重新生成上传命令。")
     subdirectory = _validated_subdirectory(asset, claims.target_subdirectory)
@@ -385,7 +399,8 @@ def finalize_upload(
                 parent = parent.parent
             destination.parent.mkdir(parents=True, exist_ok=True)
             created_archive_directories.update(missing_directories)
-            source.replace(destination)
+            relative_path = destination.relative_to(root).as_posix()
+            _move_without_overwrite(source, destination, relative_path)
             moved_files.append((source, destination))
 
         for destination, relative_path in zip(destinations, relative_paths, strict=True):

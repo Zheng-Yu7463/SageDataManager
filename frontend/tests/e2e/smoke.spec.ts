@@ -329,6 +329,110 @@ test('论文登记在专属字段完整后才允许提交', async ({ page }) => 
   await expect(submit).toBeEnabled()
 })
 
+test('文献登记提交完整期刊引用元数据', async ({ page }) => {
+  await signIn(page)
+  let requestBody: Record<string, unknown> | undefined
+  await page.route('**/api/assets', async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.continue()
+      return
+    }
+    requestBody = route.request().postDataJSON() as Record<string, unknown>
+    await route.fulfill({ status: 201, contentType: 'application/json', body: '{}' })
+  })
+
+  await page.goto('/literature')
+  await page.getByRole('button', { name: '登记文献' }).click()
+  await page.getByLabel('标题').fill('测试期刊文献')
+  await page.getByLabel('资产标识（slug）').fill('test-journal-literature')
+  const submit = page.getByRole('button', { name: '确认登记' })
+  await expect(submit).toBeDisabled()
+  await page.getByLabel('来源或期刊').fill('Nature Communications')
+  await page.getByLabel('文献类别').fill('Journal Article')
+  await page.getByLabel('作者（逗号分隔）').fill('Ada Lovelace')
+  await page.getByLabel('官方来源标识').fill('doi:10.1000/test')
+  await page.getByLabel('官方页面 URL').fill('https://example.com/article')
+  await page.getByLabel('官方 PDF URL').fill('https://example.com/article.pdf')
+  await expect(submit).toBeDisabled()
+  await page.getByLabel('期刊名称').fill('Nature Communications')
+  await expect(submit).toBeEnabled()
+  await submit.click()
+
+  await expect.poll(() => requestBody).toBeDefined()
+  expect(requestBody?.type).toBe('literature')
+  expect(requestBody?.details).toMatchObject({
+    entry_type: 'article',
+    journal: 'Nature Communications',
+    venue: 'Nature Communications',
+  })
+})
+
+test('关联资产通过服务端搜索覆盖完整目录', async ({ page }) => {
+  await signIn(page)
+  await page.route('**/api/assets/choices?*', async (route) => {
+    const query = new URL(route.request().url()).searchParams.get('query')
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(query === 'target-149' ? [{
+        id: '22222222-2222-2222-2222-222222222222',
+        type: 'dataset',
+        slug: 'target-149',
+        title: '第 150 项资产',
+      }] : []),
+    })
+  })
+
+  await page.goto('/literature?view=grid')
+  await page.getByRole('link', { name: /查看详情/ }).first().click()
+  await page.getByRole('button', { name: '添加关联' }).click()
+  const confirm = page.getByRole('button', { name: '建立关联' })
+  await expect(confirm).toBeDisabled()
+  await page.getByLabel('关联到').fill('target-149')
+  await expect(page.getByRole('option', { name: /第 150 项资产/ })).toBeVisible()
+  await page.getByRole('option', { name: /第 150 项资产/ }).click()
+  await expect(confirm).toBeEnabled()
+  await page.getByLabel('关联到').fill('different-target')
+  await expect(confirm).toBeDisabled()
+})
+
+test('首页最近归档入口指向最新资产所属目录', async ({ page }) => {
+  await signIn(page)
+  await page.route('**/api/dashboard', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        counts: { paper: 0, dataset: 0, literature: 1, project: 0, model: 0 },
+        total_storage_bytes: 0,
+        healthy_files: 0,
+        missing_files: 0,
+        popular_tags: [],
+        recent_activities: [],
+        recent_assets: [{
+          id: '33333333-3333-3333-3333-333333333333',
+          type: 'literature',
+          slug: 'latest-literature',
+          title: '最新外部文献',
+          summary: '用于验证目录入口',
+          status: 'published',
+          visibility: 'lab',
+          owner: { id: '44444444-4444-4444-4444-444444444444', name: '测试用户', avatar_url: null },
+          details: {},
+          tags: [],
+          current_version: null,
+          total_size: 0,
+          file_count: 0,
+          upload_directories: [],
+          default_upload_directory: 'source',
+          updated_at: '2026-08-13T06:00:00Z',
+        }],
+      }),
+    })
+  })
+
+  await page.goto('/')
+  await expect(page.getByRole('link', { name: '查看文献目录' })).toHaveAttribute('href', '/literature')
+})
+
 test('文献目录和详情提供统一 BibTeX 引用', async ({ page }) => {
   await signIn(page)
   await navigateTo(page, '文献 Literature')

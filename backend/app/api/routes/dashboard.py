@@ -62,6 +62,8 @@ def dashboard(session: SessionDependency) -> DashboardSummary:
     popular_tags = session.execute(
         select(Tag.name, func.count(asset_tags.c.asset_id).label("usage_count"))
         .join(asset_tags, asset_tags.c.tag_id == Tag.id)
+        .join(Asset, Asset.id == asset_tags.c.asset_id)
+        .where(Asset.archived_at.is_(None))
         .group_by(Tag.id)
         .order_by(func.count(asset_tags.c.asset_id).desc(), Tag.name)
         .limit(10)

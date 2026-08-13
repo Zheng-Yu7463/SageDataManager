@@ -92,7 +92,9 @@ const registration = ref({
   sourceUrl: '',
   pdfUrl: '',
   citationKey: '',
+  entryType: 'inproceedings' as PublicationMetadata['entry_type'],
   booktitle: '',
+  journal: '',
   pages: '',
   publisher: '',
 })
@@ -137,7 +139,7 @@ const registrationValid = computed(() => {
     && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(registration.value.slug.trim())
     && registration.value.slug.trim().length >= 3,
   )
-  if (!baseValid || assetType.value !== 'paper') return baseValid
+  if (!baseValid || !publicationCatalogue.value) return baseValid
 
   const year = Number(registration.value.year)
   return Boolean(
@@ -153,7 +155,8 @@ const registrationValid = computed(() => {
     && (
       !registration.value.citationKey.trim()
       || /^[A-Za-z][A-Za-z0-9_:+.-]*$/.test(registration.value.citationKey.trim())
-    ),
+    )
+    && (registration.value.entryType !== 'article' || registration.value.journal.trim()),
   )
 })
 
@@ -316,7 +319,9 @@ function openRegistration() {
     sourceUrl: '',
     pdfUrl: '',
     citationKey: '',
+    entryType: assetType.value === 'literature' ? 'article' : 'inproceedings',
     booktitle: '',
+    journal: '',
     pages: '',
     publisher: '',
   }
@@ -342,7 +347,7 @@ async function registerAsset() {
       visibility: registration.value.visibility,
       version: registration.value.version.trim() || null,
       tags: registration.value.tags.split(/[，,]/).map((tag) => tag.trim()).filter(Boolean),
-      details: assetType.value === 'paper' ? {
+      details: publicationCatalogue.value ? {
         venue: registration.value.venue.trim(),
         year: Number(registration.value.year),
         track: registration.value.track.trim(),
@@ -350,8 +355,10 @@ async function registerAsset() {
         source_id: registration.value.sourceId.trim(),
         source_url: registration.value.sourceUrl.trim(),
         pdf_url: registration.value.pdfUrl.trim(),
+        entry_type: registration.value.entryType,
         ...(registration.value.citationKey.trim() ? { citation_key: registration.value.citationKey.trim() } : {}),
         ...(registration.value.booktitle.trim() ? { booktitle: registration.value.booktitle.trim() } : {}),
+        ...(registration.value.journal.trim() ? { journal: registration.value.journal.trim() } : {}),
         ...(registration.value.pages.trim() ? { pages: registration.value.pages.trim() } : {}),
         ...(registration.value.publisher.trim() ? { publisher: registration.value.publisher.trim() } : {}),
       } : {},
@@ -674,21 +681,23 @@ onBeforeUnmount(() => controller?.abort())
           <label>状态<select v-model="registration.status"><option value="draft">draft</option><option value="active">active</option><option value="available">available</option><option value="collected">collected</option><option v-if="publicationCatalogue" value="published">published</option></select></label>
           <label>可见范围<select v-model="registration.visibility"><option value="lab">全实验室</option><option value="project">项目成员</option><option value="restricted">受限</option></select></label>
         </div>
-        <template v-if="assetType === 'paper'">
+        <template v-if="publicationCatalogue">
           <div class="registration-grid">
-            <label>会议<input v-model="registration.venue" required maxlength="80" placeholder="例如：ICLR" /></label>
+            <label>{{ assetType === 'literature' ? '来源或期刊' : '会议' }}<input v-model="registration.venue" required maxlength="80" :placeholder="assetType === 'literature' ? '例如：Nature 或 arXiv' : '例如：ICLR'" /></label>
             <label>年份<input v-model="registration.year" required type="number" min="1900" max="2200" /></label>
           </div>
-          <label>会议类别<input v-model="registration.track" required maxlength="120" placeholder="例如：Conference Poster" /></label>
+          <label>{{ assetType === 'literature' ? '文献类别' : '会议类别' }}<input v-model="registration.track" required maxlength="120" :placeholder="assetType === 'literature' ? '例如：Journal Article' : '例如：Conference Poster'" /></label>
           <label>作者（逗号分隔）<input v-model="registration.authors" required placeholder="例如：Pan Lu, Bowen Chen" /></label>
           <label>官方来源标识<input v-model="registration.sourceId" required maxlength="200" placeholder="例如：2026.acl-long.1" /></label>
           <label>官方页面 URL<input v-model="registration.sourceUrl" required type="url" placeholder="https://..." /></label>
           <label>官方 PDF URL<input v-model="registration.pdfUrl" required type="url" placeholder="https://...pdf" /></label>
           <div class="registration-grid">
+            <label>引用类型<select v-model="registration.entryType"><option value="article">期刊文章（article）</option><option value="inproceedings">会议论文（inproceedings）</option><option value="proceedings">论文集（proceedings）</option><option value="misc">其他（misc）</option></select></label>
             <label>引用键（可选）<input v-model="registration.citationKey" pattern="[A-Za-z][A-Za-z0-9_:+.\-]*" maxlength="160" placeholder="例如：lu2026octotools" /></label>
-            <label>页码（可选）<input v-model="registration.pages" maxlength="80" placeholder="例如：101--112" /></label>
           </div>
-          <label>论文集名称（可选）<input v-model="registration.booktitle" maxlength="500" placeholder="例如：Proceedings of ACL 2026" /></label>
+          <label v-if="registration.entryType === 'article'">期刊名称<input v-model="registration.journal" required maxlength="500" placeholder="例如：Nature Communications" /></label>
+          <label v-else-if="['inproceedings', 'proceedings'].includes(registration.entryType ?? '')">论文集名称（可选）<input v-model="registration.booktitle" maxlength="500" placeholder="例如：Proceedings of ACL 2026" /></label>
+          <label>页码（可选）<input v-model="registration.pages" maxlength="80" placeholder="例如：101--112" /></label>
           <label>出版社（可选）<input v-model="registration.publisher" maxlength="300" placeholder="例如：Association for Computational Linguistics" /></label>
         </template>
         <div class="registration-grid">

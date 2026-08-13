@@ -1,15 +1,16 @@
 <script setup lang="ts">
-import { Archive, ArrowDownToLine, ArrowLeft, Check, CheckCircle2, ChevronDown, ChevronRight, CircleAlert, Copy, Eye, FileText, Folder, FolderOpen, GitBranch, History, Layers3, Link2, Pencil, Plus, Save, Trash2, X } from '@lucide/vue'
+import { useDebounceFn } from '@vueuse/core'
+import { Archive, ArrowDownToLine, ArrowLeft, Check, CheckCircle2, ChevronDown, ChevronRight, CircleAlert, Copy, Eye, FileText, Folder, FolderOpen, GitBranch, History, Layers3, Link2, Pencil, Plus, Save, Search, Trash2, X } from '@lucide/vue'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
-import { addAssetRelation, addAssetVersion, archiveAsset, getAsset, getAssets, getFileAccessTicket, getPublicationCitation, removeAssetRelation, updateAsset } from '@/api/client'
+import { addAssetRelation, addAssetVersion, archiveAsset, getAsset, getAssetChoices, getFileAccessTicket, getPublicationCitation, removeAssetRelation, updateAsset } from '@/api/client'
 import AssetIcon from '@/components/AssetIcon.vue'
 import { assetMeta } from '@/catalogue'
 import { useOverlayFocus } from '@/composables/useOverlayFocus'
 import { useBranding } from '@/composables/useBranding'
 import { isPublicationMetadata } from '@/types'
-import type { AssetDetail, AssetSummary, FileAccessMode, FileSummary, PublicationCitation, PublicationMetadata, RelatedAssetSummary, Visibility } from '@/types'
+import type { AssetChoiceSummary, AssetDetail, FileAccessMode, FileSummary, PublicationCitation, PublicationMetadata, RelatedAssetSummary, Visibility } from '@/types'
 import { copyText, downloadTextFile } from '@/utils/textFiles'
 
 const route = useRoute()
@@ -33,7 +34,10 @@ const edit = ref({ title: '', summary: '', status: '', visibility: 'lab' as Visi
 
 const relationOpen = ref(false)
 const relationDialog = ref<HTMLElement | null>(null)
-const relationCandidates = ref<AssetSummary[]>([])
+const relationCandidates = ref<AssetChoiceSummary[]>([])
+const relationQuery = ref('')
+const relationCandidatesLoading = ref(false)
+let relationCandidatesController: AbortController | undefined
 const relationTargetId = ref('')
 const relationType = ref('related_to')
 const relationSaving = ref(false)
@@ -328,25 +332,48 @@ async function saveVersion() {
   }
 }
 
-async function openRelation() {
-  if (!data.value) return
-  relationOpen.value = true
+async function loadRelationCandidates() {
+  relationCandidatesController?.abort()
+  const requestController = new AbortController()
+  relationCandidatesController = requestController
+  relationCandidatesLoading.value = true
   relationError.value = ''
-  relationTargetId.value = ''
-  relationType.value = 'related_to'
   try {
-    const result = await getAssets(undefined, { pageSize: 100 })
-    relationCandidates.value = result.items.filter(
-      (asset) => asset.id !== data.value?.id,
+    const relatedIds = new Set(data.value?.related_assets.map((asset) => asset.id) ?? [])
+    relationCandidates.value = (await getAssetChoices(relationQuery.value.trim(), requestController.signal)).filter(
+      (asset) => asset.id !== data.value?.id && !relatedIds.has(asset.id),
     )
   } catch (reason) {
+    if (reason instanceof DOMException && reason.name === 'AbortError') return
     relationCandidates.value = []
     relationError.value = reason instanceof Error ? reason.message : '无法读取可关联资产'
+  } finally {
+    if (relationCandidatesController === requestController) relationCandidatesLoading.value = false
   }
 }
 
+const searchRelationCandidates = useDebounceFn(() => {
+  void loadRelationCandidates()
+}, 250)
+
+function updateRelationQuery() {
+  relationTargetId.value = ''
+  void searchRelationCandidates()
+}
+
+function openRelation() {
+  if (!data.value) return
+  relationOpen.value = true
+  relationQuery.value = ''
+  relationTargetId.value = ''
+  relationType.value = 'related_to'
+  void loadRelationCandidates()
+}
+
 function closeRelation() {
-  if (!relationSaving.value) relationOpen.value = false
+  if (relationSaving.value) return
+  relationCandidatesController?.abort()
+  relationOpen.value = false
 }
 
 async function saveRelation() {
@@ -383,6 +410,7 @@ async function removeRelation(relation: RelatedAssetSummary) {
 watch(() => route.params.assetId, load, { immediate: true })
 onBeforeUnmount(() => {
   controller?.abort()
+  relationCandidatesController?.abort()
   closePreview()
 })
 </script>
@@ -524,9 +552,13 @@ onBeforeUnmount(() => {
         <form ref="relationDialog" class="edit-dialog relation-dialog" role="dialog" aria-modal="true" aria-label="添加关联资产" @submit.prevent="saveRelation">
           <header><div><p class="eyebrow">LINK ASSETS</p><h2>添加关联资产</h2></div><button type="button" title="关闭" :disabled="relationSaving" @click="closeRelation"><X :size="18" /></button></header>
           <p class="relation-help"><Link2 :size="16" />关联只补充元数据，不会移动、复制或删除任何文件。</p>
-          <label>关联到<select v-model="relationTargetId" required autofocus :disabled="relationSaving || !relationCandidates.length"><option value="" disabled>请选择已登记资产</option><option v-for="asset in relationCandidates" :key="asset.id" :value="asset.id">{{ asset.title }} · {{ assetMeta[asset.type].label }}</option></select></label>
+          <label for="relation-asset-search">关联到</label>
+          <div class="relation-search"><Search :size="17" /><input id="relation-asset-search" v-model="relationQuery" autofocus :disabled="relationSaving" placeholder="搜索资产标题或 slug" autocomplete="off" @input="updateRelationQuery" /><span v-if="relationCandidatesLoading" class="tiny-spinner"></span></div>
+          <div class="relation-choices" role="listbox" aria-label="关联资产候选项">
+            <button v-for="asset in relationCandidates" :key="asset.id" type="button" role="option" :aria-selected="relationTargetId === asset.id" :class="{ selected: relationTargetId === asset.id }" @click="relationTargetId = asset.id"><span><strong>{{ asset.title }}</strong><small>{{ asset.slug }}</small></span><em>{{ assetMeta[asset.type].label }}</em><Check v-if="relationTargetId === asset.id" :size="16" /></button>
+            <p v-if="!relationCandidatesLoading && !relationError && !relationCandidates.length">没有匹配的未关联资产。</p>
+          </div>
           <label>关系类型<input v-model="relationType" required maxlength="60" placeholder="例如：derived_from、supports、documents" /></label>
-          <p v-if="!relationCandidates.length && !relationError" class="edit-error">没有可关联的其他已登记资产。</p>
           <p v-if="relationError" class="edit-error">{{ relationError }}</p>
           <footer><button class="button button--outline" type="button" :disabled="relationSaving" @click="closeRelation">取消</button><button class="button button--primary" :disabled="relationSaving || !relationTargetId || !relationType.trim()" type="submit"><Link2 :size="16" />{{ relationSaving ? '正在关联' : '建立关联' }}</button></footer>
         </form>
@@ -585,6 +617,7 @@ onBeforeUnmount(() => {
 .file-actions { display: flex; gap: 4px; }.file-actions button, .preview-dialog header button { display: grid; width: 29px; height: 29px; padding: 0; color: #506356; place-items: center; background: #f4f6f1; border: 1px solid var(--line); border-radius: 5px; cursor: pointer; }.file-actions button:hover:not(:disabled), .preview-dialog header button:hover { color: var(--asset-accent); border-color: var(--asset-accent); }.file-actions button:disabled { cursor: not-allowed; opacity: .45; }.file-action-error { margin: 12px 0 0; color: #a6633b; font-size: 11px; }
 .detail-link { grid-template-columns: 25px minmax(0, 1fr); color: inherit; }.detail-empty { display: flex; min-height: 68px; margin: 0; align-items: center; color: #7c887f; line-height: 1.6; }.detail-timeline { display: grid; margin: 0; padding: 0; list-style: none; }.detail-timeline li { position: relative; display: grid; min-height: 68px; padding: 7px 0 13px; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: start; gap: 9px; }.detail-timeline li:not(:last-child)::after { position: absolute; top: 28px; bottom: -1px; left: 8px; width: 1px; content: ""; background: #d9e2da; }.detail-timeline svg { position: relative; z-index: 1; margin-top: 1px; color: var(--asset-accent); background: rgba(252, 253, 249, .98); }.detail-timeline strong { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px; font-size: 12px; line-height: 1.4; }.detail-timeline strong small { color: var(--asset-accent); font-size: 9px; }.detail-timeline p { margin: 5px 0 0; line-height: 1.55; overflow-wrap: anywhere; }.detail-timeline time { padding-top: 2px; }.detail-privacy { display: flex; margin: 18px 1px 0; align-items: center; gap: 6px; }
 .section-action, .relation-remove { display: inline-flex; min-height: 30px; padding: 0 2px; align-items: center; gap: 4px; color: #63746a; background: transparent; border: 0; cursor: pointer; font-size: 10px; }.section-action:hover, .relation-remove:hover:not(:disabled) { color: var(--asset-accent); }.detail-related-row { grid-template-columns: minmax(0, 1fr) auto; }.detail-related-row .detail-link { display: grid; min-width: 0; align-items: center; gap: 10px; }.relation-remove { width: 30px; height: 30px; justify-content: center; color: #a6633b; border: 1px solid #eddcd1; border-radius: 5px; }.relation-remove:disabled { opacity: .45; cursor: wait; }.relation-help { display: flex; margin: 0; align-items: center; gap: 6px; color: #6b7a70; font-size: 12px; line-height: 1.5; }.relation-help svg { color: var(--sage); }
+.relation-search { display: flex; min-height: 44px; padding: 0 11px; align-items: center; gap: 8px; color: #748178; background: #fff; border: 1px solid var(--line); border-radius: 5px; }.relation-search:focus-within { border-color: var(--sage); box-shadow: 0 0 0 3px var(--sage-soft); }.relation-search input { min-width: 0; flex: 1; padding-right: 0; padding-left: 0; background: transparent; border: 0; outline: 0; }.relation-choices { display: grid; max-height: 230px; overflow-y: auto; background: #fff; border: 1px solid var(--line); border-radius: 5px; }.relation-choices > button { display: grid; min-height: 52px; padding: 8px 10px; align-items: center; color: var(--ink); text-align: left; background: transparent; border: 0; border-bottom: 1px solid #e8ece6; grid-template-columns: minmax(0, 1fr) auto 18px; gap: 8px; cursor: pointer; }.relation-choices > button:last-of-type { border-bottom: 0; }.relation-choices > button:hover, .relation-choices > button.selected { background: var(--sage-soft); }.relation-choices span { min-width: 0; }.relation-choices strong, .relation-choices small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.relation-choices strong { font-size: 12px; }.relation-choices small { margin-top: 3px; color: #758179; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 10px; }.relation-choices em { color: #617068; font-size: 10px; font-style: normal; }.relation-choices > p { margin: 0; padding: 20px 12px; color: #748178; text-align: center; font-size: 11px; }
 .preview-overlay { position: fixed; z-index: 40; inset: 0; display: grid; padding: 26px; place-items: center; background: rgba(18, 29, 22, .52); }.preview-dialog { display: grid; width: min(100%, 1040px); height: min(84vh, 780px); grid-template-rows: auto minmax(0, 1fr); padding: 18px; background: #fff; border-radius: 8px; box-shadow: 0 25px 70px rgba(0,0,0,.28); }.preview-dialog header { display: flex; margin-bottom: 13px; align-items: flex-start; justify-content: space-between; gap: 12px; }.preview-dialog h2 { margin: 3px 0 0; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 17px; font-weight: 500; }.preview-dialog iframe { width: 100%; height: 100%; border: 1px solid var(--line); border-radius: 5px; background: #f8faf7; }
 .detail-controls { display: flex; margin-top: 5px; justify-content: flex-end; gap: 6px; }.detail-controls .button { min-height: 29px; padding: 0 8px; font-size: 10px; }.detail-archive { color: #9a5b3c; background: #fff7f1; border: 1px solid #edd3c2; }.edit-dialog { display: grid; width: min(100%, 620px); max-height: 86vh; padding: 22px; overflow-y: auto; background: #fff; border-radius: 8px; box-shadow: 0 25px 70px rgba(0,0,0,.28); gap: 12px; }.edit-dialog header { display: flex; margin-bottom: 3px; align-items: flex-start; justify-content: space-between; gap: 12px; }.edit-dialog h2 { margin: 3px 0 0; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 19px; font-weight: 500; }.edit-dialog header button { display: grid; width: 29px; height: 29px; padding: 0; place-items: center; background: #f4f6f1; border: 1px solid var(--line); border-radius: 5px; cursor: pointer; }.edit-dialog label { display: grid; color: #526056; font-size: 12px; font-weight: 700; gap: 6px; }.edit-dialog input, .edit-dialog textarea, .edit-dialog select { width: 100%; padding: 9px 10px; color: var(--ink); font: inherit; font-size: 13px; background: #fff; border: 1px solid var(--line); border-radius: 5px; outline-color: var(--sage); }.edit-dialog textarea { resize: vertical; }.edit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }.edit-dialog footer { display: flex; justify-content: flex-end; gap: 8px; }.edit-error { margin: 0; color: #a6633b; font-size: 12px; }
 @media (max-width: 1040px) { .publication-content-grid { grid-template-columns: 1fr; }.publication-citation { border-top: 1px solid var(--line); border-left: 0; }.detail-facts { grid-template-columns: repeat(3, minmax(0, 1fr)); }.detail-fact-wide { grid-column: span 2; } }

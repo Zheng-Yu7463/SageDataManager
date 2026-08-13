@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -245,6 +246,39 @@ def test_finalize_upload_blocks_all_filesystem_conflicts_before_move(tmp_path: P
     assert (staged_root / "existing.csv").exists()
     assert (staged_root / "new.csv").exists()
     assert not destination.with_name("new.csv").exists()
+
+
+def test_finalize_upload_does_not_overwrite_a_file_created_after_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = make_session()
+    asset = create_asset(session)
+    prepared = prepare_upload(session, asset)
+    staged = staging_directory(tmp_path, prepared.upload_id) / "samples.csv"
+    staged.parent.mkdir(parents=True)
+    staged.write_text("contender")
+    destination = tmp_path / "dataset/soil-samples-2026/raw/2026-08/samples.csv"
+    original_link = os.link
+
+    def competing_link(source: Path, target: Path) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("winner")
+        original_link(source, target)
+
+    monkeypatch.setattr("app.services.transfers.os.link", competing_link)
+
+    with pytest.raises(UploadConflictError, match="samples.csv"):
+        finalize_upload(
+            session,
+            tmp_path,
+            prepared.upload_id,
+            prepared.upload_token,
+            actor=asset.owner,
+        )
+
+    assert destination.read_text() == "winner"
+    assert staged.read_text() == "contender"
+    assert session.scalar(select(func.count()).select_from(FileRecord)) == 0
 
 
 def test_finalize_upload_blocks_database_path_conflict(tmp_path: Path) -> None:

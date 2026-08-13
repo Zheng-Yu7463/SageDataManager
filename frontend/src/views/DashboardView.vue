@@ -23,6 +23,15 @@ const largestCount = computed(() => {
   return Math.max(...Object.values(data.value.counts), 1)
 })
 
+const recentCatalogue = computed(() => {
+  const type = data.value?.recent_assets[0]?.type
+  if (!type) return null
+  return {
+    path: `/${assetMeta[type].english.toLowerCase()}`,
+    label: `查看${assetMeta[type].label}目录`,
+  }
+})
+
 async function load() {
   loading.value = true
   error.value = ''
@@ -155,7 +164,7 @@ onMounted(load)
               <span class="section-number">03</span>
               <div><h2>最近归档</h2><p>Recently catalogued</p></div>
             </div>
-            <RouterLink class="text-link" to="/papers">查看全部 <ArrowUpRight :size="15" /></RouterLink>
+            <RouterLink v-if="recentCatalogue" class="text-link" :to="recentCatalogue.path">{{ recentCatalogue.label }} <ArrowUpRight :size="15" /></RouterLink>
           </header>
           <div class="asset-table">
             <RouterLink
