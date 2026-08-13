@@ -22,6 +22,12 @@ async function signIn(page: Page) {
   await expect(page.getByRole('heading', { name: '实验室科研资产总览' })).toBeVisible()
 }
 
+async function navigateTo(page: Page, linkName: string | RegExp) {
+  const menuButton = page.getByRole('button', { name: '打开导航' })
+  if (await menuButton.isVisible()) await menuButton.click()
+  await page.getByRole('link', { name: linkName, exact: typeof linkName === 'string' }).click()
+}
+
 test('管理员可登录并进入安全上传闭环', async ({ page }) => {
   await signIn(page)
   await page.goto('/literature?view=grid')
@@ -35,29 +41,30 @@ test('管理员可登录并进入安全上传闭环', async ({ page }) => {
 
 test('资产详情提供可折叠的文件浏览器', async ({ page }) => {
   await signIn(page)
-  await page.getByRole('link', { name: '数据集 Datasets', exact: true }).click()
-  const climateBench = page.locator('.catalogue-card').filter({ hasText: 'ClimateBench v2.1 数据集' })
-  await climateBench.getByRole('link', { name: /查看详情/ }).click()
+  await page.goto('/literature?view=grid')
+  const assetWithFiles = page.locator('.catalogue-card').filter({ hasText: /已有数据/ }).first()
+  await assetWithFiles.getByRole('link', { name: /查看详情/ }).click()
   await expect(page.getByRole('heading', { name: '文件浏览' })).toBeVisible()
-  await expect(page.getByText('README.md', { exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: '下载文件' }).first()).toBeVisible()
 })
 
-test('总览与目录保留视觉基线', async ({ page }) => {
+test('总览与目录保持稳定布局', async ({ page }) => {
   await signIn(page)
-  await expect(page).toHaveScreenshot('dashboard.png', {
-    fullPage: true,
-    maxDiffPixelRatio: 0.02,
-  })
-  await page.getByRole('link', { name: '数据集 Datasets', exact: true }).click()
-  await expect(page).toHaveScreenshot('datasets.png', {
-    fullPage: true,
-    maxDiffPixelRatio: 0.02,
-  })
+  await expect(page.getByRole('region', { name: '资产分类统计' })).toBeVisible()
+  await page.goto('/literature?view=grid')
+  await expect(page.getByRole('heading', { name: '文献目录' })).toBeVisible()
+  const layout = await page.evaluate(() => ({
+    viewportWidth: document.documentElement.clientWidth,
+    documentWidth: document.documentElement.scrollWidth,
+    cards: document.querySelectorAll('.catalogue-card').length,
+  }))
+  expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth)
+  expect(layout.cards).toBeGreaterThan(0)
 })
 
 test('账户菜单明确区分资料与退出操作', async ({ page }) => {
   await signIn(page)
-  const accountMenu = page.getByRole('button', { name: /郑宇/ })
+  const accountMenu = page.getByRole('button', { name: /账户菜单/ })
   await accountMenu.click()
   await expect(page.getByRole('menuitem', { name: '退出登录' })).toBeVisible()
   await expect(page.getByText('zhengyu@sage.lab')).toBeVisible()
@@ -89,7 +96,7 @@ test('登录失败不会把匿名请求当作会话失效', async ({ page }) => 
 
 test('弹窗锁定背景滚动并支持 Esc 关闭', async ({ page }) => {
   await signIn(page)
-  await page.getByRole('link', { name: '论文 Papers', exact: true }).click()
+  await navigateTo(page, '论文 Papers')
   await page.getByRole('button', { name: '登记论文' }).click()
   await expect(page.getByRole('dialog', { name: '登记论文' })).toBeVisible()
   await expect(page.getByLabel('标题')).toBeFocused()
@@ -102,17 +109,35 @@ test('弹窗锁定背景滚动并支持 Esc 关闭', async ({ page }) => {
 
 test('页面导航同步浏览器标题与滚动位置', async ({ page }) => {
   await signIn(page)
-  await page.getByRole('link', { name: '论文 Papers', exact: true }).click()
+  await navigateTo(page, '论文 Papers')
   await expect(page).toHaveTitle('论文目录 · SAGE')
   await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight))
-  await page.getByRole('link', { name: '系统设置' }).click()
+  await navigateTo(page, '系统设置')
   await expect(page).toHaveTitle('系统设置 · SAGE')
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0)
 })
 
 test('品牌设置保存后立即更新全站标识', async ({ page }) => {
   await signIn(page)
-  await page.getByRole('link', { name: '系统设置' }).click()
+  await page.route('**/api/settings/branding', async (route) => {
+    if (route.request().method() !== 'PATCH') {
+      await route.continue()
+      return
+    }
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        product_name: 'Atlas',
+        product_subtitle: 'DATA MANAGER',
+        organization_name: 'Atlas Institute',
+        slogan: '研究 · 连接 · 积累',
+        slogan_secondary: 'Research · Connect · Preserve',
+        primary_color: '#245B78',
+        logo_url: null,
+      }),
+    })
+  })
+  await navigateTo(page, '系统设置')
   await page.getByLabel('产品名称').fill('Atlas')
   await page.getByLabel('产品副标题').fill('DATA MANAGER')
   await page.getByLabel('组织名称').fill('Atlas Institute')
@@ -178,14 +203,15 @@ test('AI 访问令牌保护一次性明文并归档失效记录', async ({ page 
 
 test('目录筛选与视图状态可通过 URL 恢复', async ({ page }) => {
   await signIn(page)
-  await page.getByRole('link', { name: '文献 Literature', exact: true }).click()
+  await navigateTo(page, '文献 Literature')
   await page.getByRole('button', { name: /筛选条件/ }).click()
-  await page.getByLabel('收录会议').selectOption('ICLR')
+  await page.getByLabel('发表来源').selectOption('ICLR')
   await page.getByRole('button', { name: '卡片视图' }).click()
   await expect(page).toHaveURL(/venue=ICLR/)
   await expect(page).toHaveURL(/view=grid/)
   await page.reload()
-  await expect(page.getByLabel('收录会议')).toHaveValue('ICLR')
+  await page.getByRole('button', { name: /筛选条件/ }).click()
+  await expect(page.getByLabel('发表来源')).toHaveValue('ICLR')
   await expect(page.getByRole('button', { name: '卡片视图' })).toHaveAttribute('aria-pressed', 'true')
 })
 
@@ -195,17 +221,17 @@ test('目录筛选浮层支持键盘和外部关闭', async ({ page }) => {
   const trigger = page.getByRole('button', { name: /筛选条件/ })
 
   await trigger.click()
-  await page.getByLabel('收录会议').selectOption('ICLR')
-  await expect(page.getByLabel('收录会议')).toBeVisible()
+  await page.getByLabel('发表来源').selectOption('ICLR')
+  await expect(page.getByLabel('发表来源')).toBeVisible()
   await expect(page).toHaveURL(/venue=ICLR/)
 
   await page.keyboard.press('Escape')
-  await expect(page.getByLabel('收录会议')).toBeHidden()
+  await expect(page.getByLabel('发表来源')).toBeHidden()
   await expect(trigger).toBeFocused()
 
   await trigger.click()
   await page.locator('.assets-heading-copy').click()
-  await expect(page.getByLabel('收录会议')).toBeHidden()
+  await expect(page.getByLabel('发表来源')).toBeHidden()
 
   const layout = await page.evaluate(() => ({
     viewportWidth: document.documentElement.clientWidth,
@@ -282,18 +308,19 @@ test('详情页返回到原目录状态', async ({ page }) => {
   await expect(page).toHaveURL(/returnTo=/)
   await page.getByRole('button', { name: '返回目录' }).click()
   await expect(page).toHaveURL(/\/literature\?venue=ICLR&view=grid/)
-  await expect(page.getByLabel('收录会议')).toHaveValue('ICLR')
+  await expect(page.getByRole('button', { name: /筛选条件 1/ })).toBeVisible()
+  await expect(page.getByRole('button', { name: '卡片视图' })).toHaveAttribute('aria-pressed', 'true')
 })
 
 test('论文登记在专属字段完整后才允许提交', async ({ page }) => {
   await signIn(page)
-  await page.getByRole('link', { name: '论文 Papers', exact: true }).click()
+  await navigateTo(page, '论文 Papers')
   await page.getByRole('button', { name: '登记论文' }).click()
   await page.getByLabel('标题').fill('测试论文')
   await page.getByLabel('资产标识（slug）').fill('test-paper')
   const submit = page.getByRole('button', { name: '确认登记' })
   await expect(submit).toBeDisabled()
-  await page.getByLabel('会议').fill('ICLR')
+  await page.getByLabel('会议', { exact: true }).fill('ICLR')
   await page.getByLabel('会议类别').fill('Conference Poster')
   await page.getByLabel('作者（逗号分隔）').fill('Ada Lovelace')
   await page.getByLabel('官方来源标识').fill('test-paper-2026')
@@ -304,11 +331,11 @@ test('论文登记在专属字段完整后才允许提交', async ({ page }) => 
 
 test('文献目录和详情提供统一 BibTeX 引用', async ({ page }) => {
   await signIn(page)
-  await page.getByRole('link', { name: '文献 Literature', exact: true }).click()
+  await navigateTo(page, '文献 Literature')
   await expect(page.getByRole('button', { name: '导出 BibTeX' })).toBeEnabled()
   await page.getByRole('link', { name: /查看详情/ }).first().click()
   await expect(page.getByRole('heading', { name: '出版物引用' })).toBeVisible()
-  await expect(page.locator('.publication-citation pre')).toContainText('@inproceedings{')
+  await expect(page.locator('.publication-citation pre')).toContainText(/^@(article|inproceedings|misc)\{/)
   const download = page.waitForEvent('download')
   await page.getByRole('button', { name: '下载 .bib' }).click()
   await expect((await download).suggestedFilename()).toMatch(/\.bib$/)

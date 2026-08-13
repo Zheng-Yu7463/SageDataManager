@@ -374,10 +374,10 @@ class AccessTokenCreateRequest(BaseModel):
     scopes: list[AgentScope] = Field(min_length=1, max_length=5)
     expires_in_days: int = Field(default=90, ge=1, le=365)
 
-    @field_validator("name")
+    @field_validator("name", mode="before")
     @classmethod
-    def strip_token_name(cls, value: str) -> str:
-        return value.strip()
+    def strip_token_name(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
 
     @field_validator("scopes")
     @classmethod

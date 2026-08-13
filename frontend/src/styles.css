@@ -1062,12 +1062,12 @@ a {
   .global-search input::placeholder { color: transparent; }
   .panel-heading { padding-right: 14px; padding-left: 14px; }
   .asset-row { padding-right: 12px; padding-left: 12px; }
-  .catalogue-toolbar { grid-template-columns: 1fr; }
-  .catalogue-search { grid-column: auto; }
+  .catalogue-toolbar { align-items: start; grid-template-columns: minmax(0, 1fr) auto; }
+  .catalogue-search { grid-column: 1 / -1; }
   .asset-filters { width: 100%; }
   .filter-button { justify-content: center; }
-  .filter-popover { right: auto; left: 0; width: min(100%, 280px); }
-  .view-switch { display: none; }
+  .filter-popover { position: static; width: 100%; margin-top: 8px; }
+  .view-switch { width: fit-content; }
   .catalogue-card-meta span:last-child { display: none; }
   .catalogue-facts { gap: 12px; }
   .catalogue-facts > div:last-child { display: block; }

@@ -1,7 +1,9 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -124,6 +126,18 @@ def test_personal_tokens_are_shown_once_hashed_and_revocable(monkeypatch) -> Non
     finally:
         app.dependency_overrides.clear()
         session.close()
+
+
+def test_access_token_name_is_normalized_before_length_validation() -> None:
+    payload = AccessTokenCreateRequest(
+        name="  Literature sync  ",
+        scopes=["assets:read"],
+    )
+    assert payload.name == "Literature sync"
+
+    for invalid_name in ["  ", " a "]:
+        with pytest.raises(ValidationError):
+            AccessTokenCreateRequest(name=invalid_name, scopes=["assets:read"])
 
 
 def test_token_management_is_isolated_to_its_owner(monkeypatch) -> None:
