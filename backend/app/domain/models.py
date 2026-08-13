@@ -16,6 +16,7 @@ from sqlalchemy import (
     String,
     Table,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -114,6 +115,9 @@ class AssetVersion(Base):
 
 class FileRecord(Base):
     __tablename__ = "asset_files"
+    __table_args__ = (
+        UniqueConstraint("relative_path", name="uq_asset_files_relative_path"),
+    )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     asset_id: Mapped[UUID] = mapped_column(ForeignKey("assets.id", ondelete="CASCADE"), index=True)

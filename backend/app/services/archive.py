@@ -68,10 +68,10 @@ def scan_storage(session: Session, storage_root: Path) -> ScanRunSummary:
         ).all()
     }
     existing = {
-        (record.asset_id, record.relative_path): record
+        record.relative_path: record
         for record in session.scalars(select(FileRecord)).all()
     }
-    seen_record_ids = set()
+    seen_paths: set[str] = set()
 
     for candidate in root.rglob("*"):
         if candidate.is_symlink() or not candidate.is_file():
@@ -102,10 +102,12 @@ def scan_storage(session: Session, storage_root: Path) -> ScanRunSummary:
             continue
 
         stat = resolved.stat()
-        record = existing.get((asset.id, relative_path))
+        record = existing.get(relative_path)
         if not record:
             record = FileRecord(asset_id=asset.id, relative_path=relative_path)
             session.add(record)
+        else:
+            record.asset_id = asset.id
         record.file_name = resolved.name
         record.file_kind = file_kind(resolved)
         record.mime_type = guess_type(resolved.name)[0]
@@ -113,11 +115,10 @@ def scan_storage(session: Session, storage_root: Path) -> ScanRunSummary:
         record.health_status = HealthStatus.HEALTHY
         record.modified_at = datetime.fromtimestamp(stat.st_mtime, UTC)
         run.files_indexed += 1
-        if record.id:
-            seen_record_ids.add(record.id)
+        seen_paths.add(relative_path)
 
-    for record in existing.values():
-        if record.id not in seen_record_ids:
+    for relative_path, record in existing.items():
+        if relative_path not in seen_paths:
             record.health_status = HealthStatus.MISSING
             run.files_missing += 1
 

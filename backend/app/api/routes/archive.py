@@ -22,6 +22,7 @@ from app.services.unclaimed import (
     AssetNotFoundError,
     ClaimSourceFileError,
     FileAlreadyClaimedError,
+    FilePathConflictError,
     UnclaimedFileNotFoundError,
     claim_unclaimed_file,
     list_unclaimed_files,
@@ -67,6 +68,9 @@ def claim_file(
     except FileAlreadyClaimedError:
         session.rollback()
         raise HTTPException(status_code=409, detail="该文件已被认领。") from None
+    except FilePathConflictError:
+        session.rollback()
+        raise HTTPException(status_code=409, detail="该归档路径已归属于其他资产。") from None
     except ClaimSourceFileError:
         session.rollback()
         raise HTTPException(status_code=409, detail="源文件不可用，无法认领。") from None

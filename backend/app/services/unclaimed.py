@@ -6,6 +6,7 @@ from pathlib import Path
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.domain.activity import ActivityAction
@@ -28,6 +29,22 @@ class FileAlreadyClaimedError(Exception):
 
 class ClaimSourceFileError(Exception):
     pass
+
+
+class FilePathConflictError(Exception):
+    pass
+
+
+FILE_PATH_UNIQUE_CONSTRAINT = "uq_asset_files_relative_path"
+
+
+def locked_unclaimed_file_statement(unclaimed_file_id: UUID):
+    return select(UnclaimedFile).where(UnclaimedFile.id == unclaimed_file_id).with_for_update()
+
+
+def is_file_path_unique_violation(error: IntegrityError) -> bool:
+    diagnostic = getattr(error.orig, "diag", None)
+    return getattr(diagnostic, "constraint_name", None) == FILE_PATH_UNIQUE_CONSTRAINT
 
 
 def file_kind(path: Path) -> str:
@@ -91,7 +108,7 @@ def claim_unclaimed_file(
     *,
     actor: User | None = None,
 ) -> FileClaimResult:
-    record = session.get(UnclaimedFile, unclaimed_file_id)
+    record = session.scalar(locked_unclaimed_file_statement(unclaimed_file_id))
     if not record:
         raise UnclaimedFileNotFoundError
     if record.claimed_asset_id:
@@ -114,11 +131,10 @@ def claim_unclaimed_file(
         raise ClaimSourceFileError
 
     file_record = session.scalar(
-        select(FileRecord).where(
-            FileRecord.asset_id == asset.id,
-            FileRecord.relative_path == record.relative_path,
-        )
+        select(FileRecord).where(FileRecord.relative_path == record.relative_path)
     )
+    if file_record and file_record.asset_id != asset.id:
+        raise FilePathConflictError
     if not file_record:
         file_record = FileRecord(asset_id=asset.id, relative_path=record.relative_path)
         session.add(file_record)
@@ -142,7 +158,12 @@ def claim_unclaimed_file(
             )
         )
 
-    session.flush()
+    try:
+        session.flush()
+    except IntegrityError as error:
+        if is_file_path_unique_violation(error):
+            raise FilePathConflictError from error
+        raise
     return FileClaimResult(asset_id=asset.id, file=FileSummary.model_validate(file_record))
 
 
