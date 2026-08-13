@@ -306,6 +306,118 @@ test('品牌设置保存后立即更新全站标识', async ({ page }) => {
   await expect(page).toHaveTitle('系统设置 · Atlas')
 })
 
+test('设置页令牌加载失败不影响管理员账号事实', async ({ page }) => {
+  await page.route('**/api/dashboard', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        counts: { paper: 0, dataset: 0, literature: 0, project: 0, model: 0 },
+        total_storage_bytes: 0,
+        healthy_files: 0,
+        missing_files: 0,
+        recent_assets: [],
+        recent_activities: [],
+        popular_tags: [],
+      }),
+    })
+  })
+  await page.route('**/api/auth/admin-accounts', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify([{
+        id: '45454545-4545-4545-4545-454545454545',
+        username: 'testadmin',
+        name: '测试管理员',
+        email: 'test-admin@sage.test',
+        role: 'admin',
+        upload_username: 'testadmin',
+        is_active: true,
+      }]),
+    })
+  })
+  await page.route('**/api/auth/access-tokens', async (route) => {
+    await route.fulfill({
+      status: 503,
+      contentType: 'application/json',
+      body: JSON.stringify({ detail: '令牌服务暂时不可用' }),
+    })
+  })
+  await signInWithMockAccount(page)
+  await page.goto('/settings')
+
+  await expect(page.getByRole('heading', { name: '管理员账号' })).toBeVisible()
+  await expect(page.locator('.accounts-table')).toContainText('testadmin')
+  await expect(page.getByRole('alert')).toContainText('令牌服务暂时不可用')
+  await expect(page.getByText('没有有效的 AI 访问令牌')).toBeHidden()
+  await expect(page.getByRole('button', { name: '刷新' })).toBeEnabled()
+})
+
+test('并发更新管理员时各行保持独立状态', async ({ page }) => {
+  await page.route('**/api/dashboard', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        counts: { paper: 0, dataset: 0, literature: 0, project: 0, model: 0 },
+        total_storage_bytes: 0,
+        healthy_files: 0,
+        missing_files: 0,
+        recent_assets: [],
+        recent_activities: [],
+        popular_tags: [],
+      }),
+    })
+  })
+  const managedAccounts = ['alpha', 'beta'].map((username, index) => ({
+    id: `${index + 1}5656565-5656-5656-5656-565656565656`,
+    username,
+    name: `${username.toUpperCase()} 管理员`,
+    email: `${username}@sage.test`,
+    role: 'admin',
+    upload_username: username,
+    is_active: true,
+  }))
+  await page.route('**/api/auth/admin-accounts', async (route) => {
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify([
+      {
+        id: '90909090-9090-9090-9090-909090909090',
+        username: 'testadmin',
+        name: '测试管理员',
+        email: 'test-admin@sage.test',
+        role: 'admin',
+        upload_username: 'testadmin',
+        is_active: true,
+      },
+      ...managedAccounts,
+    ]) })
+  })
+  await page.route('**/api/auth/access-tokens', async (route) => {
+    await route.fulfill({ contentType: 'application/json', body: '[]' })
+  })
+  const updateReleases = new Map<string, () => void>()
+  await page.route('**/api/auth/admin-accounts/*', async (route) => {
+    const username = route.request().url().split('/').at(-1)!
+    await new Promise<void>((resolve) => updateReleases.set(username, resolve))
+    const account = managedAccounts.find((item) => item.username === username)!
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ ...account, is_active: false }) })
+  })
+  await signInWithMockAccount(page)
+  await page.goto('/settings')
+
+  const alphaRow = page.locator('.account-row').filter({ hasText: 'alpha@sage.test' })
+  const betaRow = page.locator('.account-row').filter({ hasText: 'beta@sage.test' })
+  await alphaRow.getByRole('button', { name: '停用' }).click()
+  await betaRow.getByRole('button', { name: '停用' }).click()
+  await expect(alphaRow.getByRole('button', { name: '处理中' })).toBeDisabled()
+  await expect(betaRow.getByRole('button', { name: '处理中' })).toBeDisabled()
+
+  updateReleases.get('alpha')?.()
+  await expect(alphaRow.getByRole('button', { name: '启用' })).toBeEnabled()
+  await expect(betaRow.getByRole('button', { name: '处理中' })).toBeDisabled()
+
+  updateReleases.get('beta')?.()
+  await expect(betaRow.getByRole('button', { name: '启用' })).toBeEnabled()
+})
+
 test('AI 访问令牌保护一次性明文并归档失效记录', async ({ page }) => {
   await signIn(page)
   const createdToken = {
@@ -687,6 +799,124 @@ test('待认领文件加载期间禁止重复刷新', async ({ page }) => {
   await expect(refresh).toBeEnabled()
 })
 
+test('低高度移动端认领弹窗保持完整可滚动', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 500 })
+  await page.route('**/api/dashboard', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        counts: { paper: 0, dataset: 0, literature: 0, project: 0, model: 0 },
+        total_storage_bytes: 0,
+        healthy_files: 0,
+        missing_files: 0,
+        recent_assets: [],
+        recent_activities: [],
+        popular_tags: [],
+      }),
+    })
+  })
+  await page.route('**/api/archive/unclaimed', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify([{
+        id: '12121212-3434-5656-7878-909090909090',
+        relative_path: 'incoming/a-very-long-unclaimed-publication-file-name.pdf',
+        file_name: 'a-very-long-unclaimed-publication-file-name.pdf',
+        file_kind: 'document',
+        mime_type: 'application/pdf',
+        file_size: 4096,
+        modified_at: '2026-08-14T02:00:00Z',
+        first_seen_at: '2026-08-14T02:00:00Z',
+        last_seen_at: '2026-08-14T02:00:00Z',
+      }]),
+    })
+  })
+  await page.route('**/api/assets/choices?*', async (route) => {
+    await route.fulfill({
+      status: 503,
+      contentType: 'application/json',
+      body: JSON.stringify({ detail: '候选资产暂时不可用，请稍后重试' }),
+    })
+  })
+  await signInWithMockAccount(page)
+  await page.goto('/unclaimed-files')
+  await page.getByRole('button', { name: '认领' }).click()
+
+  const dialog = page.getByRole('dialog', { name: /认领/ })
+  const dialogBounds = await dialog.boundingBox()
+  expect(dialogBounds).not.toBeNull()
+  expect(dialogBounds!.y).toBeGreaterThanOrEqual(0)
+  expect(dialogBounds!.y + dialogBounds!.height).toBeLessThanOrEqual(500)
+  await expect(dialog.getByRole('alert')).toContainText('候选资产暂时不可用')
+  await dialog.getByRole('button', { name: '取消' }).scrollIntoViewIfNeeded()
+  await expect(dialog.getByRole('button', { name: '取消' })).toBeInViewport()
+  await dialog.getByRole('button', { name: '取消' }).click()
+  await expect(dialog).toBeHidden()
+})
+
+test('并发恢复已归档资产时各行保持独立忙碌状态', async ({ page }) => {
+  await page.route('**/api/dashboard', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        counts: { paper: 0, dataset: 0, literature: 0, project: 0, model: 0 },
+        total_storage_bytes: 0,
+        healthy_files: 0,
+        missing_files: 0,
+        recent_assets: [],
+        recent_activities: [],
+        popular_tags: [],
+      }),
+    })
+  })
+  const archivedAssets = ['第一项归档资产', '第二项归档资产'].map((title, index) => ({
+    id: `${index + 1}1111111-2222-3333-4444-555555555555`,
+    type: 'dataset',
+    slug: `archived-${index + 1}`,
+    title,
+    summary: `归档资产 ${index + 1}`,
+    status: 'archived',
+    visibility: 'lab',
+    owner: { id: '99999999-8888-7777-6666-555555555555', name: '测试用户', avatar_url: null },
+    details: {},
+    tags: [],
+    current_version: null,
+    total_size: 0,
+    file_count: 0,
+    upload_directories: [],
+    default_upload_directory: 'raw',
+    updated_at: '2026-08-14T02:00:00Z',
+  }))
+  await page.route('**/api/assets/archived', async (route) => {
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(archivedAssets) })
+  })
+  const restoreReleases = new Map<string, () => void>()
+  const restoreCounts = new Map<string, number>()
+  await page.route('**/api/assets/*/restore', async (route) => {
+    const assetId = route.request().url().split('/').at(-2)!
+    restoreCounts.set(assetId, (restoreCounts.get(assetId) ?? 0) + 1)
+    await new Promise<void>((resolve) => restoreReleases.set(assetId, resolve))
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(archivedAssets.find((asset) => asset.id === assetId)) })
+  })
+  await signInWithMockAccount(page)
+  await page.goto('/archived-assets')
+
+  const firstRow = page.locator('.archived-row').filter({ hasText: archivedAssets[0].title })
+  const secondRow = page.locator('.archived-row').filter({ hasText: archivedAssets[1].title })
+  await firstRow.getByRole('button', { name: '恢复资产' }).click()
+  await secondRow.getByRole('button', { name: '恢复资产' }).click()
+  await expect(firstRow.getByRole('button', { name: '正在恢复' })).toBeDisabled()
+  await expect(secondRow.getByRole('button', { name: '正在恢复' })).toBeDisabled()
+
+  restoreReleases.get(archivedAssets[0].id)?.()
+  await expect(firstRow).toBeHidden()
+  await expect(secondRow.getByRole('button', { name: '正在恢复' })).toBeDisabled()
+  expect(restoreCounts.get(archivedAssets[1].id)).toBe(1)
+
+  restoreReleases.get(archivedAssets[1].id)?.()
+  await expect(secondRow).toBeHidden()
+})
+
 test('归档扫描完成后摘要刷新失败仍保留已有健康数据', async ({ page }) => {
   await page.route('**/api/dashboard', async (route) => {
     await route.fulfill({
@@ -748,6 +978,62 @@ test('归档扫描完成后摘要刷新失败仍保留已有健康数据', async
   await expect(page.getByText('25', { exact: true })).toBeVisible()
   await expect(page.getByText('归档服务暂不可用')).toBeHidden()
   await expect(page.getByRole('button', { name: '运行扫描' })).toBeEnabled()
+})
+
+test('扫描记录用文本呈现失败状态和原因', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 500 })
+  await page.route('**/api/dashboard', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        counts: { paper: 0, dataset: 0, literature: 0, project: 0, model: 0 },
+        total_storage_bytes: 0,
+        healthy_files: 0,
+        missing_files: 0,
+        recent_assets: [],
+        recent_activities: [],
+        popular_tags: [],
+      }),
+    })
+  })
+  const failedScan = {
+    id: '88888888-8888-8888-8888-888888888888',
+    status: 'failed',
+    source: 'storage-root',
+    files_discovered: 0,
+    files_indexed: 0,
+    files_missing: 0,
+    files_unclaimed: 0,
+    files_skipped: 0,
+    message: '存储根不可用，未执行扫描。',
+    started_at: '2026-08-14T01:00:00Z',
+    completed_at: '2026-08-14T01:00:01Z',
+  }
+  await page.route('**/api/archive/health', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        storage_available: false,
+        latest_scan: failedScan,
+        recent_scans: [failedScan],
+        indexed_files: 0,
+        healthy_files: 0,
+        missing_files: 0,
+        unclaimed_files: 0,
+      }),
+    })
+  })
+  await signInWithMockAccount(page)
+  await page.goto('/archive-health')
+
+  const scanRow = page.locator('.scan-row')
+  await expect(scanRow.getByText('失败', { exact: true })).toBeVisible()
+  await expect(scanRow.getByText('存储根不可用，未执行扫描。')).toBeVisible()
+  const layout = await page.evaluate(() => ({
+    viewportWidth: document.documentElement.clientWidth,
+    documentWidth: document.documentElement.scrollWidth,
+  }))
+  expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth)
 })
 
 test('操作日志使用服务端活动标签和筛选项', async ({ page }) => {

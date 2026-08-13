@@ -207,7 +207,7 @@ export interface DashboardSummary {
 
 export interface ScanRunSummary {
   id: string
-  status: string
+  status: 'running' | 'completed' | 'failed'
   source: string
   files_discovered: number
   files_indexed: number
