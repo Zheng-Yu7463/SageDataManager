@@ -48,6 +48,16 @@ async function signInWithMockAccount(page: Page) {
   await expect(page.getByRole('button', { name: '账户菜单：测试管理员' })).toBeVisible()
 }
 
+async function mockRejectedLogin(page: Page) {
+  await page.route('**/api/auth/login', async (route) => {
+    await route.fulfill({
+      status: 401,
+      contentType: 'application/json',
+      body: JSON.stringify({ detail: '账号或密码错误。' }),
+    })
+  })
+}
+
 async function mockEmptyDashboard(page: Page) {
   await page.route('**/api/dashboard', async (route) => {
     await route.fulfill({
@@ -387,6 +397,7 @@ test('运行中的失效会话会立即返回登录页', async ({ page }) => {
 })
 
 test('登录失败不会把匿名请求当作会话失效', async ({ page }) => {
+  await mockRejectedLogin(page)
   await page.goto('/')
   await page.evaluate(() => window.localStorage.setItem('sage-session-token', 'unrelated-token'))
   await page.getByLabel('账号').fill('zhengyu')
@@ -400,6 +411,7 @@ test('登录失败不会把匿名请求当作会话失效', async ({ page }) => 
 })
 
 test('登录页密码框提供清晰焦点与错误播报', async ({ page }) => {
+  await mockRejectedLogin(page)
   await page.goto('/')
   await page.getByLabel('账号').focus()
   await page.keyboard.press('Tab')
@@ -1215,7 +1227,7 @@ test('搜索与品牌文件控件提供稳定的可访问名称', async ({ page 
 })
 
 test('待认领文件必须搜索并明确选择目标资产', async ({ page }) => {
-  await signIn(page)
+  await signInWithMockAccount(page)
   await page.route('**/api/archive/unclaimed', async (route) => {
     await route.fulfill({
       contentType: 'application/json',
