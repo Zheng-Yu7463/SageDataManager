@@ -530,7 +530,7 @@ onBeforeUnmount(() => controller?.abort())
     <section class="catalogue-toolbar">
       <label class="catalogue-search">
         <Search :size="19" />
-        <input v-model="query" :placeholder="`搜索${meta.label}标题、摘要或关键词`" @input="updateSearch" />
+        <input v-model="query" :aria-label="`搜索${meta.label}`" :placeholder="`搜索${meta.label}标题、摘要或关键词`" @input="updateSearch" />
         <span v-if="loading" class="tiny-spinner"></span>
       </label>
       <div class="asset-filters">

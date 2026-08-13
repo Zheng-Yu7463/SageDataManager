@@ -113,7 +113,7 @@ onBeforeUnmount(() => controller?.abort())
 
     <form class="discovery-search" @submit.prevent="submit">
       <Search :size="22" />
-      <input v-model="inputQuery" autofocus placeholder="输入标题、摘要或关键词" />
+      <input v-model="inputQuery" aria-label="统一检索关键词" autofocus placeholder="输入标题、摘要或关键词" />
       <button v-if="inputQuery" type="button" aria-label="清空搜索" @click="clear"><X :size="18" /></button>
       <button class="button button--primary">检索目录</button>
     </form>

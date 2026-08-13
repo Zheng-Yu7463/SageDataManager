@@ -339,6 +339,19 @@ test('批量导入文件选择器支持页面声明的三种格式', async ({ pa
   expect(acceptedTypes).toContain('.json')
   expect(acceptedTypes).toContain('.csv')
   expect(acceptedTypes).toContain('.yaml')
+  await expect(page.getByLabel('导入数据内容')).toBeVisible()
+})
+
+test('搜索与品牌文件控件提供稳定的可访问名称', async ({ page }) => {
+  await signIn(page)
+  await page.goto('/literature')
+  await expect(page.getByRole('textbox', { name: '搜索文献' })).toBeVisible()
+
+  await page.goto('/search')
+  await expect(page.getByRole('textbox', { name: '统一检索关键词' })).toBeVisible()
+
+  await page.goto('/settings')
+  await expect(page.getByLabel('选择实例 Logo 图片')).toHaveCount(1)
 })
 
 test('待认领文件必须搜索并明确选择目标资产', async ({ page }) => {
