@@ -239,6 +239,13 @@ export function updateInstanceBranding(input: InstanceBrandingInput) {
 }
 
 export async function uploadInstanceLogo(file: File) {
+  const supportedLogoMimeTypes = new Set(['image/png', 'image/jpeg', 'image/webp'])
+  if (!supportedLogoMimeTypes.has(file.type)) {
+    throw new ApiError('仅支持 PNG、JPEG 或 WebP 图片。', 422)
+  }
+  if (!file.size || file.size > 1_000_000) {
+    throw new ApiError('Logo 文件必须小于 1 MB。', 413)
+  }
   const sessionToken = getSessionToken()
   const response = await fetch('/api/settings/branding/logo', {
     method: 'PUT',

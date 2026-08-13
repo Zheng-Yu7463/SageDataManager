@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import hashlib
+import warnings
 from datetime import UTC, datetime
+from io import BytesIO
 
+from PIL import Image, UnidentifiedImageError
 from sqlalchemy.orm import Session
 
 from app.domain.activity import ActivityAction
@@ -16,12 +20,14 @@ DEFAULT_BRANDING = {
     "slogan_secondary": "Science · Archive · Growth · Excellence",
     "primary_color": "#2E7351",
 }
-LOGO_MIME_SIGNATURES = {
-    "image/png": (b"\x89PNG\r\n\x1a\n",),
-    "image/jpeg": (b"\xff\xd8\xff",),
-    "image/webp": (b"RIFF",),
+LOGO_FORMAT_MIME_TYPES = {
+    "PNG": "image/png",
+    "JPEG": "image/jpeg",
+    "WEBP": "image/webp",
 }
 MAX_LOGO_BYTES = 1_000_000
+MAX_LOGO_SIDE = 4096
+MAX_LOGO_PIXELS = 4_194_304
 
 
 class BrandingLogoError(ValueError):
@@ -39,11 +45,8 @@ def branding_response(session: Session) -> InstanceBrandingResponse:
     }
     logo_url = None
     if record and record.logo_data:
-        updated_at = record.updated_at
-        if updated_at.tzinfo is None:
-            updated_at = updated_at.replace(tzinfo=UTC)
-        version = int(updated_at.timestamp())
-        logo_url = f"/api/settings/branding/logo?v={version}"
+        content_digest = hashlib.sha256(record.logo_data).hexdigest()
+        logo_url = f"/api/settings/branding/logo/{content_digest}"
     return InstanceBrandingResponse(**values, logo_url=logo_url)
 
 
@@ -79,17 +82,40 @@ def update_branding_logo(
     actor: User,
 ) -> InstanceBrandingResponse:
     normalized_mime = mime_type.split(";", 1)[0].strip().lower()
-    signatures = LOGO_MIME_SIGNATURES.get(normalized_mime)
-    valid_webp = normalized_mime != "image/webp" or (
-        len(content) >= 12 and content[8:12] == b"WEBP"
-    )
     if not content or len(content) > MAX_LOGO_BYTES:
         raise BrandingLogoError("Logo 文件必须小于 1 MB。")
-    has_valid_signature = signatures and any(
-        content.startswith(signature) for signature in signatures
-    )
-    if not has_valid_signature or not valid_webp:
+    if normalized_mime not in LOGO_FORMAT_MIME_TYPES.values():
         raise BrandingLogoError("仅支持有效的 PNG、JPEG 或 WebP 图片。")
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(BytesIO(content)) as image:
+                actual_mime = LOGO_FORMAT_MIME_TYPES.get(image.format or "")
+                width, height = image.size
+                if actual_mime != normalized_mime:
+                    raise BrandingLogoError("Logo 文件内容与声明的图片格式不一致。")
+                if getattr(image, "n_frames", 1) != 1:
+                    raise BrandingLogoError("Logo 仅支持静态 PNG、JPEG 或 WebP 图片。")
+                if (
+                    width > MAX_LOGO_SIDE
+                    or height > MAX_LOGO_SIDE
+                    or width * height > MAX_LOGO_PIXELS
+                ):
+                    raise BrandingLogoError("Logo 尺寸不能超过 4096 像素或 419 万总像素。")
+                image.verify()
+            with Image.open(BytesIO(content)) as image:
+                image.load()
+    except BrandingLogoError:
+        raise
+    except (
+        Image.DecompressionBombError,
+        Image.DecompressionBombWarning,
+        UnidentifiedImageError,
+        OSError,
+        SyntaxError,
+        ValueError,
+    ):
+        raise BrandingLogoError("仅支持可完整解码的静态 PNG、JPEG 或 WebP 图片。") from None
 
     record = get_branding_record(session)
     if record is None:

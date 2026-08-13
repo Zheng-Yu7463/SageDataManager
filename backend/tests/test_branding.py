@@ -1,4 +1,7 @@
+from io import BytesIO
+
 from fastapi.testclient import TestClient
+from PIL import Image
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -19,6 +22,17 @@ def make_session() -> Session:
     )
     Base.metadata.create_all(engine)
     return sessionmaker(bind=engine)()
+
+
+def image_bytes(
+    image_format: str,
+    *,
+    size: tuple[int, int] = (24, 24),
+    color: tuple[int, int, int] = (46, 115, 81),
+) -> bytes:
+    output = BytesIO()
+    Image.new("RGB", size, color).save(output, format=image_format)
+    return output.getvalue()
 
 
 def test_branding_is_public_and_updates_require_admin(monkeypatch) -> None:
@@ -90,31 +104,128 @@ def test_branding_logo_validates_content_and_can_be_removed(monkeypatch) -> None
     app.dependency_overrides[get_session] = lambda: session
     try:
         client = TestClient(app)
-        invalid = client.put(
-            "/api/settings/branding/logo",
-            content=b"not-an-image",
-            headers={**headers, "Content-Type": "image/png"},
-        )
-        assert invalid.status_code == 422
+        for image_format, mime_type in (
+            ("PNG", "image/png"),
+            ("JPEG", "image/jpeg"),
+            ("WEBP", "image/webp"),
+        ):
+            content = image_bytes(image_format)
+            uploaded = client.put(
+                "/api/settings/branding/logo",
+                content=content,
+                headers={**headers, "Content-Type": mime_type},
+            )
+            logo_url = uploaded.json()["logo_url"]
 
-        png = b"\x89PNG\r\n\x1a\n" + b"test-image-data"
-        uploaded = client.put(
-            "/api/settings/branding/logo",
-            content=png,
-            headers={**headers, "Content-Type": "image/png"},
-        )
-        assert uploaded.status_code == 200
-        assert uploaded.json()["logo_url"].startswith("/api/settings/branding/logo?v=")
+            assert uploaded.status_code == 200
+            assert logo_url.startswith("/api/settings/branding/logo/")
+            assert len(logo_url.rsplit("/", 1)[1]) == 64
 
-        logo = client.get("/api/settings/branding/logo")
-        assert logo.status_code == 200
-        assert logo.headers["content-type"] == "image/png"
-        assert logo.content == png
+            logo = client.get(logo_url)
+            assert logo.status_code == 200
+            assert logo.headers["content-type"] == mime_type
+            assert logo.headers["cache-control"] == "public, max-age=31536000, immutable"
+            assert logo.headers["etag"] == f'"{logo_url.rsplit("/", 1)[1]}"'
+            assert logo.content == content
 
         removed = client.delete("/api/settings/branding/logo", headers=headers)
         assert removed.status_code == 200
         assert removed.json()["logo_url"] is None
-        assert client.get("/api/settings/branding/logo").status_code == 404
+        assert client.get(logo_url).status_code == 404
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
+def test_branding_logo_rejects_invalid_format_size_and_animation(monkeypatch) -> None:
+    session = make_session()
+    session.add(
+        User(
+            username="zhengyu",
+            name="郑宇",
+            email="zhengyu@sage.lab",
+            role="admin",
+            is_active=True,
+        )
+    )
+    session.commit()
+    monkeypatch.setattr(settings, "auth_session_secret", "test-session-secret")
+    headers = {"X-Sage-Session": create_session_token("zhengyu")}
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        client = TestClient(app)
+        invalid_contents = [
+            (b"\x89PNG\r\n\x1a\nnot-an-image", "image/png"),
+            (image_bytes("PNG")[:-8], "image/png"),
+            (image_bytes("PNG"), "image/jpeg"),
+            (image_bytes("PNG", size=(4097, 1)), "image/png"),
+            (image_bytes("PNG", size=(2049, 2049)), "image/png"),
+        ]
+        animation = BytesIO()
+        frames = [Image.new("RGB", (8, 8), color) for color in ("red", "blue")]
+        frames[0].save(
+            animation,
+            format="WEBP",
+            save_all=True,
+            append_images=frames[1:],
+            duration=100,
+            loop=0,
+        )
+        invalid_contents.append((animation.getvalue(), "image/webp"))
+
+        for content, mime_type in invalid_contents:
+            response = client.put(
+                "/api/settings/branding/logo",
+                content=content,
+                headers={**headers, "Content-Type": mime_type},
+            )
+            assert response.status_code == 422
+
+        oversized = client.put(
+            "/api/settings/branding/logo",
+            content=b"x" * 1_000_001,
+            headers={**headers, "Content-Type": "image/png"},
+        )
+        assert oversized.status_code == 413
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
+def test_branding_logo_url_is_content_addressed(monkeypatch) -> None:
+    session = make_session()
+    session.add(
+        User(
+            username="zhengyu",
+            name="郑宇",
+            email="zhengyu@sage.lab",
+            role="admin",
+            is_active=True,
+        )
+    )
+    session.commit()
+    monkeypatch.setattr(settings, "auth_session_secret", "test-session-secret")
+    headers = {"X-Sage-Session": create_session_token("zhengyu"), "Content-Type": "image/png"}
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        client = TestClient(app)
+        first_content = image_bytes("PNG", color=(46, 115, 81))
+        second_content = image_bytes("PNG", color=(36, 91, 120))
+        first_url = client.put(
+            "/api/settings/branding/logo", content=first_content, headers=headers
+        ).json()["logo_url"]
+        repeated_url = client.put(
+            "/api/settings/branding/logo", content=first_content, headers=headers
+        ).json()["logo_url"]
+        second_url = client.put(
+            "/api/settings/branding/logo", content=second_content, headers=headers
+        ).json()["logo_url"]
+
+        assert repeated_url == first_url
+        assert second_url != first_url
+        assert client.get(first_url).status_code == 404
+        assert client.get(second_url).content == second_content
+        assert client.get("/api/settings/branding/logo/not-a-digest").status_code == 422
     finally:
         app.dependency_overrides.clear()
         session.close()
