@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Check, CircleAlert, FileQuestion, RefreshCw, Search, X } from '@lucide/vue'
 import { useDebounceFn } from '@vueuse/core'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { claimUnclaimedFile, getAssetChoices, getUnclaimedFiles } from '@/api/client'
 import { assetMeta } from '@/catalogue'
@@ -20,6 +20,7 @@ const choicesError = ref('')
 const submitting = ref(false)
 const claimError = ref('')
 let choicesController: AbortController | undefined
+let filesController: AbortController | undefined
 
 const loading = ref(true)
 const error = ref('')
@@ -29,14 +30,21 @@ const claimOpen = computed(() => Boolean(activeFile.value))
 useOverlayFocus(claimOpen, claimDialog, closeClaim)
 
 async function load() {
+  filesController?.abort()
+  const requestController = new AbortController()
+  filesController = requestController
   loading.value = true
   error.value = ''
   try {
-    files.value = await getUnclaimedFiles()
+    const result = await getUnclaimedFiles(requestController.signal)
+    if (filesController !== requestController) return
+    files.value = result
   } catch (reason) {
+    if (filesController !== requestController) return
+    if (reason instanceof DOMException && reason.name === 'AbortError') return
     error.value = reason instanceof Error ? reason.message : '无法读取待认领文件'
   } finally {
-    loading.value = false
+    if (filesController === requestController) loading.value = false
   }
 }
 
@@ -100,11 +108,15 @@ async function claim() {
 }
 
 onMounted(load)
+onBeforeUnmount(() => {
+  filesController?.abort()
+  choicesController?.abort()
+})
 </script>
 
 <template>
   <div class="page pending-files-page">
-    <header class="page-heading"><div><p class="eyebrow">{{ pageEyebrow('ARCHIVE INTAKE') }}</p><h1>待认领文件</h1><p>这些文件已由扫描器发现，但尚未匹配到实验室登记资产。</p></div><button class="button button--outline" @click="load"><RefreshCw :size="16" />刷新列表</button></header>
+    <header class="page-heading"><div><p class="eyebrow">{{ pageEyebrow('ARCHIVE INTAKE') }}</p><h1>待认领文件</h1><p>这些文件已由扫描器发现，但尚未匹配到实验室登记资产。</p></div><button class="button button--outline" :disabled="loading" @click="load"><RefreshCw :size="16" />刷新列表</button></header>
     <div v-if="loading" class="state-panel" role="status" aria-live="polite"><span class="loader-ring"></span><p>正在读取待认领文件…</p></div>
     <div v-else-if="error" class="state-panel state-panel--error" role="alert"><CircleAlert :size="28" /><strong>读取失败</strong><p>{{ error }}</p><button class="button button--outline" @click="load">重试</button></div>
     <div v-else-if="!files.length" class="empty-catalogue"><span><FileQuestion :size="30" /></span><h2>没有待认领文件</h2><p>下一次扫描发现无法匹配路径的文件时，会显示在这里。</p></div>

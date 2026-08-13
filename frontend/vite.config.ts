@@ -3,6 +3,8 @@ import { fileURLToPath, URL } from 'node:url'
 import vue from '@vitejs/plugin-vue'
 import { defineConfig } from 'vite'
 
+const apiProxyTarget = process.env.SAGE_API_PROXY_TARGET ?? 'http://127.0.0.1:8000'
+
 export default defineConfig({
   plugins: [vue()],
   resolve: {
@@ -14,9 +16,9 @@ export default defineConfig({
     host: '127.0.0.1',
     port: 5173,
     proxy: {
-      '/api': 'http://127.0.0.1:8000',
-      '/agent.md': 'http://127.0.0.1:8000',
-      '/.well-known/datamanager-agent.json': 'http://127.0.0.1:8000',
+      '/api': apiProxyTarget,
+      '/agent.md': apiProxyTarget,
+      '/.well-known/datamanager-agent.json': apiProxyTarget,
     },
   },
 })

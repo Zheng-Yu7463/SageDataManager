@@ -183,6 +183,10 @@ onMounted(load)
               <span class="asset-owner">{{ asset.owner.name }}</span>
               <time>{{ relativeTime(asset.updated_at) }}</time>
             </RouterLink>
+            <div v-if="!data.recent_assets.length" class="dashboard-empty">
+              <span>尚未登记科研资产。完成首次登记后，最近归档会显示在这里。</span>
+              <RouterLink class="text-link" to="/papers">前往论文目录 <ArrowUpRight :size="15" /></RouterLink>
+            </div>
           </div>
         </article>
 
@@ -192,6 +196,7 @@ onMounted(load)
               <div><span class="section-number">04</span><div><h2>最近活动</h2><p>Lab activity</p></div></div>
             </header>
             <ol class="activity-list">
+              <li v-if="!data.recent_activities.length" class="dashboard-empty dashboard-empty--activity">尚无归档活动。资产登记、更新和文件操作会记录在这里。</li>
               <li v-for="activity in data.recent_activities" :key="activity.id">
                 <span class="activity-marker"></span>
                 <div>
@@ -207,6 +212,7 @@ onMounted(load)
               <div><span class="section-number">05</span><div><h2>知识标签</h2><p>Shared vocabulary</p></div></div>
             </header>
             <div class="tag-cloud">
+              <p v-if="!data.popular_tags.length" class="dashboard-empty dashboard-empty--tags">尚无知识标签。为资产添加标签后，会形成团队共享词表。</p>
               <span v-for="([tag, count], index) in data.popular_tags" :key="tag" :class="{ prominent: index < 3 }">
                 {{ tag }} <small>{{ count }}</small>
               </span>

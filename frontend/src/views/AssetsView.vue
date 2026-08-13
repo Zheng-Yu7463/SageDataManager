@@ -119,6 +119,7 @@ const upload = ref({
 })
 
 const activeFilterCount = computed(() => Object.values(filters.value).filter(Boolean).length)
+const catalogueHasConstraints = computed(() => Boolean(query.value.trim() || activeFilterCount.value))
 const meta = computed(() => assetMeta[assetType.value])
 const totalPages = computed(() => Math.max(1, Math.ceil((data.value?.total ?? 0) / 20)))
 const currentUploadFolders = computed(() => uploadAsset.value?.upload_directories ?? [])
@@ -259,6 +260,13 @@ function applyFilters() {
 function clearFilters() {
   filters.value = { status: '', visibility: '', hasFiles: '', venue: '', year: '' }
   applyFilters()
+}
+
+function clearCatalogueConstraints() {
+  query.value = ''
+  filters.value = { status: '', visibility: '', hasFiles: '', venue: '', year: '' }
+  page.value = 1
+  syncCatalogueRoute()
 }
 
 function changePage(nextPage: number) {
@@ -619,7 +627,8 @@ onBeforeUnmount(() => controller?.abort())
     <div v-else-if="!loading && data?.items.length === 0" class="empty-catalogue">
       <span><AssetIcon :type="assetType" :size="32" /></span>
       <h2>尚未找到{{ meta.label }}</h2>
-      <p>{{ query ? '尝试减少关键词，或清空搜索条件。' : `登记第一项${meta.label}，开始建立实验室共同目录。` }}</p>
+      <p>{{ catalogueHasConstraints ? '当前搜索和筛选条件没有匹配结果。' : `登记第一项${meta.label}，开始建立实验室共同目录。` }}</p>
+      <button v-if="catalogueHasConstraints" class="button button--outline" type="button" @click="clearCatalogueConstraints">清除搜索与筛选</button>
     </div>
 
     <section v-else class="catalogue-results" :class="{ 'catalogue-results--grid': view === 'grid' }">

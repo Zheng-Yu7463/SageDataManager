@@ -793,7 +793,6 @@ a {
 .asset-row-main small { overflow: hidden; color: #929c95; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .type-chip { justify-self: start; padding: 3px 7px; font-size: 9px; font-weight: 700; border-radius: 4px; }
 .asset-owner, .asset-row time { color: #78857d; font-size: 10px; }
-
 .activity-panel { min-height: 385px; }
 .activity-list { display: grid; margin: 0; padding: 17px 19px; list-style: none; gap: 5px; }
 .activity-list li { position: relative; display: grid; padding-bottom: 16px; grid-template-columns: 20px 1fr; }
@@ -807,6 +806,9 @@ a {
 .tag-cloud > span { padding: 6px 8px; color: #627269; font-size: 9px; background: #eef2ec; border: 1px solid #e4e9e2; border-radius: 4px; }
 .tag-cloud > span.prominent { color: var(--sage-dark); background: #e1ece2; }
 .tag-cloud small { margin-left: 3px; color: #93a097; }
+.dashboard-empty { display: grid; min-height: 150px; margin: 0; padding: 24px; place-items: center; align-content: center; color: #7c8980; text-align: center; font-size: 11px; line-height: 1.65; gap: 7px; }
+.dashboard-empty--activity { min-height: 260px; padding: 24px 12px; grid-template-columns: 1fr !important; }
+.dashboard-empty--tags { min-height: 100px; width: 100%; padding: 20px 8px; }
 
 .state-panel {
   display: grid;
@@ -970,6 +972,7 @@ a {
 .empty-catalogue > span { display: grid; width: 64px; height: 64px; color: var(--asset-accent); place-items: center; background: var(--asset-soft); border-radius: 50%; }
 .empty-catalogue h2 { margin: 14px 0 4px; font-family: "Iowan Old Style", "Songti SC", serif; }
 .empty-catalogue p { margin: 0; color: #87928b; font-size: 12px; }
+.empty-catalogue .button { margin-top: 16px; }
 .state-panel--inline { min-height: 300px; }
 .pagination { display: flex; margin-top: 20px; align-items: center; justify-content: flex-end; gap: 13px; color: #79857d; font-size: 11px; }
 .pagination button { display: inline-flex; height: 35px; padding: 0 11px; align-items: center; gap: 5px; color: var(--asset-accent); background: #fff; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }

@@ -29,6 +29,7 @@ const editOpen = ref(false)
 const editDialog = ref<HTMLElement | null>(null)
 const saving = ref(false)
 const archiving = ref(false)
+const actionError = ref('')
 const editError = ref('')
 const edit = ref({ title: '', summary: '', status: '', visibility: 'lab' as Visibility, tags: '' })
 
@@ -171,6 +172,7 @@ async function load() {
   citation.value = null
   citationLoading.value = false
   citationError.value = ''
+  actionError.value = ''
   try {
     const next = await getAsset(String(route.params.assetId), requestController.signal)
     if (controller !== requestController) return
@@ -304,11 +306,12 @@ async function saveEdit() {
 async function archiveCurrentAsset() {
   if (!data.value || !window.confirm('归档后资产将从普通目录隐藏，但不会删除原始文件。确定继续吗？')) return
   archiving.value = true
+  actionError.value = ''
   try {
     await archiveAsset(data.value.id)
     await router.replace(`/${assetMeta[data.value.type].english.toLowerCase()}`)
   } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : '无法归档资产'
+    actionError.value = reason instanceof Error ? reason.message : '无法归档资产'
   } finally {
     archiving.value = false
   }
@@ -408,11 +411,12 @@ async function saveRelation() {
 async function removeRelation(relation: RelatedAssetSummary) {
   if (!data.value || !window.confirm(`解除与「${relation.title}」的关联吗？`)) return
   removingRelationId.value = relation.relation_id
+  actionError.value = ''
   try {
     await removeAssetRelation(data.value.id, relation.relation_id)
     await load()
   } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : '无法解除关联'
+    actionError.value = reason instanceof Error ? reason.message : '无法解除关联'
   } finally {
     removingRelationId.value = null
   }
@@ -435,6 +439,7 @@ onBeforeUnmount(() => {
     </div>
     <template v-else-if="data && meta">
       <button class="detail-back" @click="returnToCatalogue"><ArrowLeft :size="16" /> 返回目录</button>
+      <p v-if="actionError" class="detail-action-error" role="alert"><CircleAlert :size="16" />{{ actionError }}</p>
       <header class="page-heading detail-heading">
         <div class="heading-icon"><AssetIcon :type="data.type" :size="28" /></div>
         <div>
@@ -582,6 +587,7 @@ onBeforeUnmount(() => {
 .detail-page { --asset-accent: var(--sage); --asset-soft: var(--sage-soft); }
 .detail-back { display: inline-flex; min-height: 30px; margin: -4px 0 11px; padding: 0 4px 0 0; align-items: center; gap: 5px; color: #66746b; background: transparent; border: 0; cursor: pointer; font-size: 12px; }
 .detail-back:hover, .detail-link:hover { color: var(--asset-accent); }
+.detail-action-error { display: flex; min-height: 40px; margin: 0 0 14px; padding: 9px 11px; align-items: center; color: #9a5b3c; background: #fff7f1; border: 1px solid #edd3c2; border-radius: 6px; gap: 7px; font-size: 11px; }
 .detail-heading { display: grid; margin-bottom: 24px; grid-template-columns: 42px minmax(0, 1fr) 132px; align-items: start; justify-content: initial; gap: 16px; } .detail-heading .heading-icon { margin-top: 7px; } .detail-heading > div:nth-child(2) { min-width: 0; }
 .detail-heading > div:nth-child(2) > p:not(.eyebrow) { display: -webkit-box; max-width: 940px; overflow: hidden; line-height: 1.6; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .detail-heading .publication-byline-detail { color: #5f6f64; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 12px; }

@@ -62,6 +62,29 @@ test('总览与目录保持稳定布局', async ({ page }) => {
   expect(layout.cards).toBeGreaterThan(0)
 })
 
+test('新实例总览为尚无数据的面板提供明确状态', async ({ page }) => {
+  await page.route('**/api/dashboard', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        counts: { paper: 0, dataset: 0, literature: 0, project: 0, model: 0 },
+        total_storage_bytes: 0,
+        healthy_files: 0,
+        missing_files: 0,
+        recent_assets: [],
+        recent_activities: [],
+        popular_tags: [],
+      }),
+    })
+  })
+  await signIn(page)
+
+  await expect(page.getByText('尚未登记科研资产。完成首次登记后，最近归档会显示在这里。')).toBeVisible()
+  await expect(page.getByText('尚无归档活动。资产登记、更新和文件操作会记录在这里。')).toBeVisible()
+  await expect(page.getByText('尚无知识标签。为资产添加标签后，会形成团队共享词表。')).toBeVisible()
+  await expect(page.getByRole('link', { name: '前往论文目录' })).toHaveAttribute('href', '/papers')
+})
+
 test('窄屏顶栏与目录保持在视口内', async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 760 })
   await signIn(page)
@@ -261,6 +284,17 @@ test('目录筛选浮层支持键盘和外部关闭', async ({ page }) => {
   expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth)
 })
 
+test('目录无匹配结果可一次清除搜索与筛选', async ({ page }) => {
+  await signIn(page)
+  await page.goto('/literature?q=definitely-no-such-publication&venue=ICLR&view=grid')
+
+  await expect(page.getByText('当前搜索和筛选条件没有匹配结果。')).toBeVisible()
+  await page.getByRole('button', { name: '清除搜索与筛选' }).click()
+
+  await expect(page).toHaveURL('/literature?view=grid')
+  await expect(page.locator('.catalogue-card').first()).toBeVisible()
+})
+
 test('连续搜索只显示最新请求的状态和结果', async ({ page }) => {
   await signIn(page)
   let releaseLatestSearch: (() => void) | undefined
@@ -363,6 +397,31 @@ test('批量导入文件选择器支持页面声明的三种格式', async ({ pa
   await expect(page.getByLabel('导入数据内容')).toBeVisible()
 })
 
+test('CSV 导入支持 BOM、转义引号和跨行字段', async ({ page }) => {
+  await signIn(page)
+  await page.goto('/import-assets')
+  await page.locator('.import-file-picker input').setInputFiles({
+    name: 'assets.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from('\uFEFFtype,slug,title,summary\nliterature,csv-reader,"A ""quoted"" title","first line\nsecond line"'),
+  })
+
+  const parsed = JSON.parse(await page.getByLabel('导入数据内容').inputValue()) as Array<Record<string, unknown>>
+  expect(parsed).toMatchObject([{
+    type: 'literature',
+    slug: 'csv-reader',
+    title: 'A "quoted" title',
+    summary: 'first line\nsecond line',
+  }])
+
+  await page.locator('.import-file-picker input').setInputFiles({
+    name: 'invalid-details.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from('type,slug,title,details\ndataset,invalid-details,Invalid Details,"[]"'),
+  })
+  await expect(page.getByText('CSV 第 2 行 details 必须是 JSON 对象。')).toBeVisible()
+})
+
 test('搜索与品牌文件控件提供稳定的可访问名称', async ({ page }) => {
   await signIn(page)
   await page.goto('/literature')
@@ -425,6 +484,35 @@ test('待认领文件必须搜索并明确选择目标资产', async ({ page }) 
     documentWidth: document.documentElement.scrollWidth,
   }))
   expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth)
+})
+
+test('待认领文件加载期间禁止重复刷新', async ({ page }) => {
+  await signIn(page)
+  let releaseRequest: (() => void) | undefined
+  const requestReleased = new Promise<void>((resolve) => { releaseRequest = resolve })
+  await page.route('**/api/archive/unclaimed', async (route) => {
+    await requestReleased
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify([{
+        id: '99999999-0000-0000-0000-000000000000',
+        relative_path: 'unclaimed/latest.pdf',
+        file_name: 'latest.pdf',
+        file_kind: 'document',
+        mime_type: 'application/pdf',
+        file_size: 128,
+        modified_at: '2026-08-13T06:00:00Z',
+      }]),
+    })
+  })
+
+  const navigation = page.goto('/unclaimed-files')
+  const refresh = page.getByRole('button', { name: '刷新列表' })
+  await expect(refresh).toBeDisabled()
+  releaseRequest?.()
+  await navigation
+  await expect(page.getByText('latest.pdf', { exact: true })).toBeVisible()
+  await expect(refresh).toBeEnabled()
 })
 
 test('操作日志使用服务端活动标签和筛选项', async ({ page }) => {
@@ -707,6 +795,23 @@ test('详情切换后不会被上一项的延迟引用覆盖', async ({ page }) 
   await expect(page.getByRole('heading', { name: '当前数据集' })).toBeVisible()
   await expect(page.getByText('不应出现的旧引用')).toBeHidden()
   await expect(page.getByRole('heading', { name: '出版物引用' })).toBeHidden()
+})
+
+test('详情操作失败不会替换已加载的资产内容', async ({ page }) => {
+  await signIn(page)
+  await page.goto('/literature?view=grid')
+  await page.getByRole('link', { name: /查看详情/ }).first().click()
+  const title = await page.getByRole('heading', { level: 1 }).textContent()
+  await page.route('**/api/assets/*/archive', async (route) => {
+    await route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ detail: '归档冲突，请稍后重试' }) })
+  })
+
+  page.once('dialog', (dialog) => dialog.accept())
+  await page.getByRole('button', { name: '归档' }).click()
+
+  await expect(page.getByRole('alert')).toContainText('归档冲突，请稍后重试')
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText(title ?? '')
+  await expect(page.getByRole('heading', { name: '归档概要' })).toBeVisible()
 })
 
 test('首页最近归档入口指向最新资产所属目录', async ({ page }) => {

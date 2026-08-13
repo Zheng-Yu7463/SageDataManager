@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { CheckCircle2, CircleAlert, FileJson, FileSpreadsheet, Upload } from '@lucide/vue'
+import Papa from 'papaparse'
 import { ref } from 'vue'
 
 import { importAssets, importAssetsYaml } from '@/api/client'
@@ -36,30 +37,30 @@ function parseAssets(): AssetCreateInput[] {
   return assets as AssetCreateInput[]
 }
 
-function splitCsv(line: string): string[] {
-  const cells: string[] = []
-  let cell = ''
-  let quoted = false
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index]
-    if (char === '"' && quoted && line[index + 1] === '"') { cell += char; index += 1
-    } else if (char === '"') quoted = !quoted
-    else if (char === ',' && !quoted) { cells.push(cell); cell = ''
-    } else cell += char
-  }
-  cells.push(cell)
-  return cells.map((value) => value.trim())
-}
-
 function parseCsv(text: string): AssetCreateInput[] {
-  const lines = text.split(/\r?\n/).filter((line) => line.trim())
-  const headers = splitCsv(lines.shift() ?? '')
+  const result = Papa.parse<Record<string, string>>(text.replace(/^\uFEFF/, ''), {
+    header: true,
+    skipEmptyLines: 'greedy',
+    transformHeader: (header) => header.trim(),
+  })
+  if (result.errors.length) {
+    const first = result.errors[0]
+    throw new Error(`CSV 第 ${(first.row ?? 0) + 2} 行格式无效：${first.message}`)
+  }
+  const headers = result.meta.fields ?? []
   for (const required of ['type', 'slug', 'title']) if (!headers.includes(required)) throw new Error(`CSV 缺少必填列：${required}`)
-  return lines.map((line, index) => {
-    const row = splitCsv(line)
-    const value = (key: string) => row[headers.indexOf(key)] ?? ''
+  return result.data.map((row, index) => {
+    const value = (key: string) => row[key]?.trim() ?? ''
     let details: Record<string, unknown> = {}
-    if (value('details')) { try { details = JSON.parse(value('details')) as Record<string, unknown> } catch { throw new Error(`CSV 第 ${index + 2} 行 details 必须是 JSON 对象。`) } }
+    if (value('details')) {
+      try {
+        const parsedDetails: unknown = JSON.parse(value('details'))
+        if (typeof parsedDetails !== 'object' || parsedDetails === null || Array.isArray(parsedDetails)) throw new Error()
+        details = parsedDetails as Record<string, unknown>
+      } catch {
+        throw new Error(`CSV 第 ${index + 2} 行 details 必须是 JSON 对象。`)
+      }
+    }
     return { type: value('type') as AssetCreateInput['type'], slug: value('slug'), title: value('title'), summary: value('summary'), status: value('status') || 'draft', visibility: (value('visibility') || 'lab') as AssetCreateInput['visibility'], version: value('version') || null, tags: value('tags').split('|').filter(Boolean), details }
   })
 }
