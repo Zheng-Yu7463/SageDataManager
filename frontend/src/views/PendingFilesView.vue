@@ -125,7 +125,7 @@ onBeforeUnmount(() => {
         <FileQuestion :size="21" />
         <div><strong>{{ file.file_name }}</strong><p>{{ file.relative_path }}</p></div>
         <span>{{ file.file_kind }}</span><time>{{ formatBytes(file.file_size) }}</time>
-        <button class="button button--outline button--compact" @click="openClaim(file)">认领</button>
+        <button class="button button--outline button--compact" :aria-label="`认领文件：${file.file_name}`" @click="openClaim(file)">认领</button>
       </article>
     </section>
 

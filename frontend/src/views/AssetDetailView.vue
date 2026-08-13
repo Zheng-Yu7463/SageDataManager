@@ -608,7 +608,7 @@ onBeforeUnmount(() => {
               </template>
               <template v-else><span></span><span></span><span></span><span></span></template>
             </div>
-            <p v-if="fileActionError" class="file-action-error">{{ fileActionError }}</p>
+            <p v-if="fileActionError" class="file-action-error" role="alert">{{ fileActionError }}</p>
           </div>
           <p v-else class="detail-empty">尚未从受控存储根索引到文件记录。</p>
         </article>
@@ -657,7 +657,7 @@ onBeforeUnmount(() => {
           <label>摘要<textarea v-model="edit.summary" maxlength="5000" rows="3"></textarea></label>
           <div class="edit-grid"><label>状态<input v-model="edit.status" required maxlength="40" /></label><label>可见范围<select v-model="edit.visibility"><option value="lab">全实验室</option><option value="project">项目成员</option><option value="restricted">受限</option></select></label></div>
           <label>标签（逗号分隔）<input v-model="edit.tags" /></label>
-          <p v-if="editError" class="edit-error">{{ editError }}</p>
+          <p v-if="editError" class="edit-error" role="alert">{{ editError }}</p>
           <footer><button class="button button--outline" type="button" :disabled="saving" @click="closeEdit">取消</button><button class="button button--primary" :disabled="saving || !edit.title.trim()" type="submit"><Save :size="16" />{{ saving ? '正在保存' : '保存修改' }}</button></footer>
         </form>
       </div>
@@ -667,7 +667,7 @@ onBeforeUnmount(() => {
           <label>版本号<input v-model="versionDraft.version" required autofocus maxlength="80" placeholder="例如：v1.1 或 2026.08" /></label>
           <label>版本说明<textarea v-model="versionDraft.releaseNotes" maxlength="5000" rows="3" placeholder="说明本次版本包含的变更" /></label>
           <label class="version-current"><input v-model="versionDraft.makeCurrent" type="checkbox" />设为当前版本</label>
-          <p v-if="versionError" class="edit-error">{{ versionError }}</p>
+          <p v-if="versionError" class="edit-error" role="alert">{{ versionError }}</p>
           <footer><button class="button button--outline" type="button" :disabled="versionSaving" @click="closeVersion">取消</button><button class="button button--primary" :disabled="versionSaving || !versionDraft.version.trim()" type="submit"><Save :size="16" />{{ versionSaving ? '正在登记' : '登记版本' }}</button></footer>
         </form>
       </div>
@@ -682,7 +682,7 @@ onBeforeUnmount(() => {
             <p v-if="!relationCandidatesLoading && !relationError && !relationCandidates.length">没有匹配的未关联资产。</p>
           </div>
           <label>关系类型<input v-model="relationType" required maxlength="60" placeholder="例如：derived_from、supports、documents" /></label>
-          <p v-if="relationError" class="edit-error">{{ relationError }}</p>
+          <p v-if="relationError" class="edit-error" role="alert">{{ relationError }}</p>
           <footer><button class="button button--outline" type="button" :disabled="relationSaving" @click="closeRelation">取消</button><button class="button button--primary" :disabled="relationSaving || !relationTargetId || !relationType.trim()" type="submit"><Link2 :size="16" />{{ relationSaving ? '正在关联' : '建立关联' }}</button></footer>
         </form>
       </div>

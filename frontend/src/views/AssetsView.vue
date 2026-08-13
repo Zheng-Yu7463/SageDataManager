@@ -69,6 +69,7 @@ const query = ref(typeof route.query.q === 'string' ? route.query.q : '')
 const page = ref(1)
 const view = ref<'list' | 'grid'>('list')
 let controller: AbortController | undefined
+let loadedRequestKey = ''
 
 const assetType = computed(() => route.meta.assetType as AssetType)
 const publicationCatalogue = computed(() => ['paper', 'literature'].includes(assetType.value))
@@ -213,8 +214,23 @@ function syncCatalogueRoute() {
   void router.replace({ query: catalogueQuery() })
 }
 
+function catalogueRequestKey() {
+  return JSON.stringify([
+    assetType.value,
+    query.value.trim(),
+    filters.value.status,
+    filters.value.visibility,
+    filters.value.hasFiles,
+    publicationCatalogue.value ? filters.value.venue : '',
+    publicationCatalogue.value ? filters.value.year : '',
+    page.value,
+  ])
+}
+
 async function load() {
   controller?.abort()
+  const requestKey = catalogueRequestKey()
+  if (loadedRequestKey !== requestKey) data.value = null
   const requestController = new AbortController()
   controller = requestController
   loading.value = true
@@ -236,6 +252,7 @@ async function load() {
     )
     if (controller !== requestController) return
     data.value = result
+    loadedRequestKey = requestKey
     const lastPage = Math.max(1, Math.ceil(result.total / 20))
     if (page.value > lastPage) {
       page.value = lastPage

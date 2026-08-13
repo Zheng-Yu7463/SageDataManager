@@ -379,7 +379,7 @@ onMounted(load)
             <small>到期 {{ formatTokenDate(token.expires_at) }}</small>
             <small>{{ token.last_used_at ? `最近使用 ${formatTokenDate(token.last_used_at)}` : '尚未使用' }}</small>
           </div>
-          <button class="token-revoke" type="button" aria-label="撤销令牌" title="撤销令牌" @click="openRevokeDialog(token)">
+          <button class="token-revoke" type="button" :aria-label="`撤销令牌：${token.name}`" :title="`撤销令牌：${token.name}`" @click="openRevokeDialog(token)">
             <Trash2 :size="16" />
           </button>
         </article>
@@ -421,7 +421,7 @@ onMounted(load)
             <div class="account-copy"><strong>{{ account.name }}</strong><small>{{ account.username }} · {{ account.email }}</small></div>
             <span class="account-role">{{ account.role }}</span>
             <span class="account-status" :class="{ 'account-status--inactive': !account.is_active }">{{ account.is_active ? '已启用' : '已停用' }}</span>
-            <button class="button button--outline account-toggle" :disabled="updatingUsernames.has(account.username) || account.username === currentUsername" :title="account.username === currentUsername ? '当前登录账号不可自行停用' : ''" @click="toggleAccount(account)"><UserRoundX v-if="account.is_active" :size="15" /><Check v-else :size="15" />{{ updatingUsernames.has(account.username) ? '处理中' : account.is_active ? '停用' : '启用' }}</button>
+            <button class="button button--outline account-toggle" :disabled="updatingUsernames.has(account.username) || account.username === currentUsername" :aria-label="`${updatingUsernames.has(account.username) ? '正在处理' : account.is_active ? '停用管理员' : '启用管理员'}：${account.name}`" :title="account.username === currentUsername ? '当前登录账号不可自行停用' : ''" @click="toggleAccount(account)"><UserRoundX v-if="account.is_active" :size="15" /><Check v-else :size="15" />{{ updatingUsernames.has(account.username) ? '处理中' : account.is_active ? '停用' : '启用' }}</button>
             <p v-if="accountActionErrors[account.username]" class="account-row-error" role="alert">{{ accountActionErrors[account.username] }}</p>
           </div>
         </div>

@@ -317,13 +317,27 @@ test('窄屏顶栏与目录保持在视口内', async ({ page }) => {
 })
 
 test('账户菜单明确区分资料与退出操作', async ({ page }) => {
-  await signIn(page)
+  await page.route('**/api/dashboard', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        counts: { paper: 0, dataset: 0, literature: 0, project: 0, model: 0 },
+        total_storage_bytes: 0,
+        healthy_files: 0,
+        missing_files: 0,
+        recent_assets: [],
+        recent_activities: [],
+        popular_tags: [],
+      }),
+    })
+  })
+  await signInWithMockAccount(page)
   const accountMenu = page.getByRole('button', { name: /账户菜单/ })
   await accountMenu.click()
-  await expect(page.getByRole('menuitem', { name: '退出登录' })).toBeVisible()
-  await expect(page.getByText('zhengyu@sage.lab')).toBeVisible()
+  await expect(page.getByRole('button', { name: '退出登录' })).toBeVisible()
+  await expect(page.getByText('test-admin@sage.test')).toBeVisible()
   await page.keyboard.press('Escape')
-  await expect(page.getByRole('menuitem', { name: '退出登录' })).toBeHidden()
+  await expect(page.getByRole('button', { name: '退出登录' })).toBeHidden()
   await expect(page.getByRole('heading', { name: '实验室科研资产总览' })).toBeVisible()
 })
 
@@ -344,8 +358,24 @@ test('登录失败不会把匿名请求当作会话失效', async ({ page }) => 
   await page.getByLabel('密码').fill('wrong-password')
   await page.getByRole('button', { name: '进入归档系统' }).click()
 
-  await expect(page.getByText('账号或密码错误。')).toBeVisible()
+  await expect(page.getByRole('alert')).toHaveText('账号或密码错误。')
+  await expect(page.getByLabel('账号')).toHaveAttribute('aria-describedby', 'login-error')
+  await expect(page.getByLabel('密码')).toHaveAttribute('aria-describedby', 'login-error')
   await expect.poll(() => page.evaluate(() => window.localStorage.getItem('sage-session-token'))).toBe('unrelated-token')
+})
+
+test('登录页密码框提供清晰焦点与错误播报', async ({ page }) => {
+  await page.goto('/')
+  await page.getByLabel('账号').focus()
+  await page.keyboard.press('Tab')
+  await expect(page.getByLabel('密码')).toBeFocused()
+  await expect(page.locator('.password-field')).toHaveCSS('border-color', 'rgb(46, 115, 81)')
+  await expect(page.locator('.password-field')).not.toHaveCSS('box-shadow', 'none')
+
+  await page.getByLabel('账号').fill('zhengyu')
+  await page.getByLabel('密码').fill('wrong-password')
+  await page.getByRole('button', { name: '进入归档系统' }).click()
+  await expect(page.getByRole('alert')).toHaveText('账号或密码错误。')
 })
 
 test('弹窗锁定背景滚动并支持 Esc 关闭', async ({ page }) => {
@@ -503,21 +533,49 @@ test('并发更新管理员时各行保持独立状态', async ({ page }) => {
 
   const alphaRow = page.locator('.account-row').filter({ hasText: 'alpha@sage.test' })
   const betaRow = page.locator('.account-row').filter({ hasText: 'beta@sage.test' })
-  await alphaRow.getByRole('button', { name: '停用' }).click()
-  await betaRow.getByRole('button', { name: '停用' }).click()
-  await expect(alphaRow.getByRole('button', { name: '处理中' })).toBeDisabled()
-  await expect(betaRow.getByRole('button', { name: '处理中' })).toBeDisabled()
+  await alphaRow.getByRole('button', { name: '停用管理员：ALPHA 管理员' }).click()
+  await betaRow.getByRole('button', { name: '停用管理员：BETA 管理员' }).click()
+  await expect(alphaRow.getByRole('button', { name: '正在处理：ALPHA 管理员' })).toBeDisabled()
+  await expect(betaRow.getByRole('button', { name: '正在处理：BETA 管理员' })).toBeDisabled()
 
   updateReleases.get('alpha')?.()
-  await expect(alphaRow.getByRole('button', { name: '启用' })).toBeEnabled()
-  await expect(betaRow.getByRole('button', { name: '处理中' })).toBeDisabled()
+  await expect(alphaRow.getByRole('button', { name: '启用管理员：ALPHA 管理员' })).toBeEnabled()
+  await expect(betaRow.getByRole('button', { name: '正在处理：BETA 管理员' })).toBeDisabled()
 
   updateReleases.get('beta')?.()
-  await expect(betaRow.getByRole('button', { name: '启用' })).toBeEnabled()
+  await expect(betaRow.getByRole('button', { name: '启用管理员：BETA 管理员' })).toBeEnabled()
 })
 
 test('AI 访问令牌保护一次性明文并归档失效记录', async ({ page }) => {
-  await signIn(page)
+  await page.route('**/api/dashboard', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        counts: { paper: 0, dataset: 0, literature: 0, project: 0, model: 0 },
+        total_storage_bytes: 0,
+        healthy_files: 0,
+        missing_files: 0,
+        recent_assets: [],
+        recent_activities: [],
+        popular_tags: [],
+      }),
+    })
+  })
+  await page.route('**/api/auth/admin-accounts', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify([{
+        id: '90909090-9090-9090-9090-909090909090',
+        username: 'testadmin',
+        name: '测试管理员',
+        email: 'test-admin@sage.test',
+        role: 'admin',
+        upload_username: 'testadmin',
+        is_active: true,
+      }]),
+    })
+  })
+  await signInWithMockAccount(page)
   const createdToken = {
     id: '33333333-3333-3333-3333-333333333333',
     name: '自动化验收',
@@ -557,7 +615,7 @@ test('AI 访问令牌保护一次性明文并归档失效记录', async ({ page 
 
   await createdDialog.getByRole('button', { name: '我已安全保存' }).click()
   await expect(page.getByText(createdToken.token, { exact: true })).toHaveCount(0)
-  await page.getByRole('button', { name: '撤销令牌' }).click()
+  await page.getByRole('button', { name: '撤销令牌：自动化验收' }).click()
   await page.getByRole('alertdialog').getByRole('button', { name: '确认撤销' }).click()
 
   const history = page.getByRole('button', { name: /历史令牌/ })
@@ -618,7 +676,21 @@ test('目录无匹配结果可一次清除搜索与筛选', async ({ page }) => 
 })
 
 test('连续搜索只显示最新请求的状态和结果', async ({ page }) => {
-  await signIn(page)
+  await page.route('**/api/dashboard', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        counts: { paper: 0, dataset: 0, literature: 0, project: 1, model: 0 },
+        total_storage_bytes: 0,
+        healthy_files: 0,
+        missing_files: 0,
+        recent_assets: [],
+        recent_activities: [],
+        popular_tags: [],
+      }),
+    })
+  })
+  await signInWithMockAccount(page)
   let releaseLatestSearch: (() => void) | undefined
   const latestSearchReleased = new Promise<void>((resolve) => { releaseLatestSearch = resolve })
   let markLatestSearchStarted: (() => void) | undefined
@@ -670,6 +742,156 @@ test('连续搜索只显示最新请求的状态和结果', async ({ page }) => 
   releaseLatestSearch?.()
   await expect(page.getByText('最新搜索结果')).toBeVisible()
   await expect(page.locator('.search-summary .tiny-spinner')).toBeHidden()
+})
+
+test('切换搜索词后不会把旧结果显示在新查询下', async ({ page }) => {
+  await page.route('**/api/dashboard', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        counts: { paper: 0, dataset: 0, literature: 0, project: 1, model: 0 },
+        total_storage_bytes: 0,
+        healthy_files: 0,
+        missing_files: 0,
+        recent_assets: [],
+        recent_activities: [],
+        popular_tags: [],
+      }),
+    })
+  })
+  await signInWithMockAccount(page)
+  let releaseBeta: (() => void) | undefined
+  const betaReleased = new Promise<void>((resolve) => { releaseBeta = resolve })
+  let markBetaStarted: (() => void) | undefined
+  const betaStarted = new Promise<void>((resolve) => { markBetaStarted = resolve })
+  const result = {
+    id: '51515151-5151-5151-5151-515151515151',
+    type: 'project',
+    slug: 'alpha-result',
+    title: 'Alpha 旧结果',
+    summary: '不应显示在 Beta 查询下',
+    status: 'active',
+    visibility: 'lab',
+    owner: { id: '52525252-5252-5252-5252-525252525252', name: '测试用户', avatar_url: null },
+    details: {},
+    tags: [],
+    current_version: null,
+    total_size: 0,
+    file_count: 0,
+    upload_directories: [],
+    default_upload_directory: 'documents',
+    updated_at: '2026-08-14T05:00:00Z',
+  }
+  await page.route('**/api/assets?*', async (route) => {
+    const query = new URL(route.request().url()).searchParams.get('query')
+    if (query === 'Beta') {
+      markBetaStarted?.()
+      await betaReleased
+      await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: 'Beta 暂不可用' }) })
+      return
+    }
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ items: [result], total: 1, page: 1, page_size: 20, publication_facets: null }),
+    })
+  })
+
+  await page.goto('/search?q=Alpha')
+  await expect(page.getByText('Alpha 旧结果')).toBeVisible()
+  await page.getByLabel('统一检索关键词').fill('Beta')
+  await page.getByRole('button', { name: '检索目录' }).click()
+  await betaStarted
+
+  await expect(page.locator('.search-summary')).toContainText('与“Beta”相关')
+  await expect(page.getByText('Alpha 旧结果')).toBeHidden()
+  releaseBeta?.()
+  await expect(page.getByRole('alert')).toContainText('Beta 暂不可用')
+  await expect(page.getByText('Alpha 旧结果')).toBeHidden()
+})
+
+test('目录切换会隔离旧卡片并结束旧目录弹窗', async ({ page }) => {
+  await page.route('**/api/dashboard', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        counts: { paper: 0, dataset: 0, literature: 1, project: 0, model: 0 },
+        total_storage_bytes: 0,
+        healthy_files: 0,
+        missing_files: 0,
+        recent_assets: [],
+        recent_activities: [],
+        popular_tags: [],
+      }),
+    })
+  })
+  await signInWithMockAccount(page)
+  let datasetRequests = 0
+  let releaseDatasets: (() => void) | undefined
+  const datasetsReleased = new Promise<void>((resolve) => { releaseDatasets = resolve })
+  let markDatasetsStarted: (() => void) | undefined
+  const datasetsStarted = new Promise<void>((resolve) => { markDatasetsStarted = resolve })
+  const literature = {
+    id: '53535353-5353-5353-5353-535353535353',
+    type: 'literature',
+    slug: 'old-literature',
+    title: '旧目录文献',
+    summary: '不得出现在数据集目录',
+    status: 'published',
+    visibility: 'lab',
+    owner: { id: '54545454-5454-5454-5454-545454545454', name: '测试用户', avatar_url: null },
+    details: {
+      venue: 'ACL', year: 2026, track: 'Conference Paper', authors: ['Ada Lovelace'],
+      source_id: 'old-literature', source_url: 'https://example.com/old', pdf_url: 'https://example.com/old.pdf',
+    },
+    tags: ['ACL'],
+    current_version: null,
+    total_size: 0,
+    file_count: 0,
+    upload_directories: [{ name: 'original', label: '原始文件' }],
+    default_upload_directory: 'original',
+    updated_at: '2026-08-14T05:00:00Z',
+  }
+  await page.route('**/api/assets?*', async (route) => {
+    const assetType = new URL(route.request().url()).searchParams.get('asset_type')
+    if (assetType === 'dataset') {
+      datasetRequests += 1
+      if (datasetRequests === 1) {
+        await route.fulfill({
+          contentType: 'application/json',
+          body: JSON.stringify({ items: [], total: 0, page: 1, page_size: 20, publication_facets: null }),
+        })
+        return
+      }
+      markDatasetsStarted?.()
+      await datasetsReleased
+      await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: '数据集目录暂不可用' }) })
+      return
+    }
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: [literature], total: 1, page: 1, page_size: 20,
+        publication_facets: { venues: ['ACL'], years: [2026] },
+      }),
+    })
+  })
+
+  await page.goto('/datasets')
+  await expect(page.getByRole('heading', { name: '数据集目录' })).toBeVisible()
+  await navigateTo(page, '文献 Literature')
+  await page.getByRole('button', { name: '卡片视图' }).click()
+  await expect(page.getByText('旧目录文献')).toBeVisible()
+  await page.getByRole('button', { name: '上传文件' }).click()
+  await expect(page.getByRole('dialog')).toBeVisible()
+  await page.goBack()
+  await datasetsStarted
+
+  await expect(page.getByRole('heading', { name: '数据集目录' })).toBeVisible()
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect(page.getByText('旧目录文献')).toBeHidden()
+  releaseDatasets?.()
+  await expect(page.getByRole('alert')).toContainText('数据集目录暂不可用')
+  await expect(page.getByText('旧目录文献')).toBeHidden()
 })
 
 test('搜索失败后可重试同一关键词并保留已有结果', async ({ page }) => {
@@ -907,7 +1129,7 @@ test('待认领文件必须搜索并明确选择目标资产', async ({ page }) 
   })
 
   await page.goto('/unclaimed-files')
-  await page.getByRole('button', { name: '认领' }).click()
+  await page.getByRole('button', { name: '认领文件：unassigned.pdf' }).click()
   const confirm = page.getByRole('button', { name: '确认认领' })
   await expect(confirm).toBeDisabled()
 
@@ -997,7 +1219,7 @@ test('低高度移动端认领弹窗保持完整可滚动', async ({ page }) => 
   })
   await signInWithMockAccount(page)
   await page.goto('/unclaimed-files')
-  await page.getByRole('button', { name: '认领' }).click()
+  await page.getByRole('button', { name: '认领文件：a-very-long-unclaimed-publication-file-name.pdf' }).click()
 
   const dialog = page.getByRole('dialog', { name: /认领/ })
   const dialogBounds = await dialog.boundingBox()
@@ -1063,14 +1285,14 @@ test('并发恢复已归档资产时各行保持独立忙碌状态', async ({ pa
 
   const firstRow = page.locator('.archived-row').filter({ hasText: archivedAssets[0].title })
   const secondRow = page.locator('.archived-row').filter({ hasText: archivedAssets[1].title })
-  await firstRow.getByRole('button', { name: '恢复资产' }).click()
-  await secondRow.getByRole('button', { name: '恢复资产' }).click()
-  await expect(firstRow.getByRole('button', { name: '正在恢复' })).toBeDisabled()
-  await expect(secondRow.getByRole('button', { name: '正在恢复' })).toBeDisabled()
+  await firstRow.getByRole('button', { name: '恢复资产：第一项归档资产' }).click()
+  await secondRow.getByRole('button', { name: '恢复资产：第二项归档资产' }).click()
+  await expect(firstRow.getByRole('button', { name: '正在恢复资产：第一项归档资产' })).toBeDisabled()
+  await expect(secondRow.getByRole('button', { name: '正在恢复资产：第二项归档资产' })).toBeDisabled()
 
   restoreReleases.get(archivedAssets[0].id)?.()
   await expect(firstRow).toBeHidden()
-  await expect(secondRow.getByRole('button', { name: '正在恢复' })).toBeDisabled()
+  await expect(secondRow.getByRole('button', { name: '正在恢复资产：第二项归档资产' })).toBeDisabled()
   expect(restoreCounts.get(archivedAssets[1].id)).toBe(1)
 
   restoreReleases.get(archivedAssets[1].id)?.()
@@ -1134,7 +1356,7 @@ test('已归档资产分页归一化并在末页恢复后回退', async ({ page 
   await page.goto('/archived-assets?page=2')
   await expect(page.getByText('末页唯一归档资产')).toBeVisible()
   await expect(page.getByText('第 2 / 2 页')).toBeVisible()
-  await page.getByRole('button', { name: '恢复资产' }).click()
+  await page.getByRole('button', { name: '恢复资产：末页唯一归档资产' }).click()
 
   await expect(page).toHaveURL('/archived-assets')
   await expect(page.getByText('末页唯一归档资产')).toBeHidden()

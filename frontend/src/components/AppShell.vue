@@ -154,20 +154,22 @@ onBeforeUnmount(() => {
             <Bell :size="20" />
           </button>
           <div ref="profileMenu" class="profile-menu">
-            <button class="profile-button" :aria-expanded="profileMenuOpen" :aria-label="`账户菜单：${account.name}`" aria-haspopup="menu" title="账户菜单" @click="profileMenuOpen = !profileMenuOpen">
+            <button class="profile-button" :aria-expanded="profileMenuOpen" :aria-label="`账户菜单：${account.name}`" title="账户菜单" @click="profileMenuOpen = !profileMenuOpen">
               <span class="avatar">{{ account.username.slice(0, 1).toUpperCase() }}</span>
               <span class="profile-copy"><strong>{{ account.name }}</strong><small>管理员 · {{ account.username }}</small></span>
               <ChevronDown :size="16" />
             </button>
-            <div v-if="profileMenuOpen" class="profile-popover" role="menu">
+            <div v-if="profileMenuOpen" class="profile-popover">
               <div><strong>{{ account.name }}</strong><small>{{ account.email }}</small></div>
-              <button role="menuitem" @click="emit('signOut')"><LogOut :size="16" />退出登录</button>
+              <button @click="emit('signOut')"><LogOut :size="16" />退出登录</button>
             </div>
           </div>
         </div>
       </header>
       <main id="main-content" class="main-content" tabindex="-1">
-        <RouterView />
+        <RouterView v-slot="{ Component, route: currentRoute }">
+          <component :is="Component" :key="String(currentRoute.name)" />
+        </RouterView>
       </main>
     </section>
   </div>

@@ -123,7 +123,7 @@ onBeforeUnmount(() => loadController?.abort())
           <span class="archived-icon"><AssetIcon :type="asset.type" :size="21" /></span>
           <div><p class="eyebrow">{{ assetMeta[asset.type].english.toUpperCase() }}</p><h2>{{ asset.title }}</h2><p>{{ asset.summary || '未附摘要' }}</p><p v-if="restoreErrors[asset.id]" class="archived-row-error" role="alert">{{ restoreErrors[asset.id] }}</p></div>
           <span class="archived-data">{{ asset.file_count }} 个文件 · {{ asset.tags.join('、') || '无标签' }}</span>
-          <button class="button button--primary" :disabled="restoringIds.has(asset.id)" @click="restore(asset)"><ArchiveRestore :size="16" />{{ restoringIds.has(asset.id) ? '正在恢复' : '恢复资产' }}</button>
+          <button class="button button--primary" :disabled="restoringIds.has(asset.id)" :aria-label="`${restoringIds.has(asset.id) ? '正在恢复资产' : '恢复资产'}：${asset.title}`" @click="restore(asset)"><ArchiveRestore :size="16" />{{ restoringIds.has(asset.id) ? '正在恢复' : '恢复资产' }}</button>
         </article>
       </section>
       <nav v-if="pageCount > 1" class="pagination" aria-label="已归档资产分页">

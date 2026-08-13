@@ -21,6 +21,7 @@ const page = ref(1)
 const pageSize = 20
 const { pageEyebrow } = useBranding()
 let controller: AbortController | undefined
+let loadedRequestKey = ''
 
 const resultLabel = computed(() => `${data.value?.total ?? 0} 项跨类型资产`)
 const pageCount = computed(() => Math.max(1, Math.ceil((data.value?.total ?? 0) / pageSize)))
@@ -42,10 +43,13 @@ async function load(nextQuery: string, nextPage: number) {
   if (!nextQuery) {
     controller = undefined
     data.value = null
+    loadedRequestKey = ''
     error.value = ''
     loading.value = false
     return
   }
+  const requestKey = JSON.stringify([nextQuery, nextPage])
+  if (loadedRequestKey !== requestKey) data.value = null
   const requestController = new AbortController()
   controller = requestController
   loading.value = true
@@ -62,6 +66,7 @@ async function load(nextQuery: string, nextPage: number) {
       return
     }
     data.value = result
+    loadedRequestKey = requestKey
   } catch (reason) {
     if (controller !== requestController) return
     if (reason instanceof DOMException && reason.name === 'AbortError') return
