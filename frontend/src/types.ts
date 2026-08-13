@@ -253,10 +253,21 @@ export interface UploadCommandInput {
 }
 
 export interface UploadCommandResult {
+  upload_id: string
   asset_id: string
   asset_title: string
   archive_relative_path: string
+  staging_relative_path: string
+  upload_token: string
+  expires_at: string
   command: string
+}
+
+export interface UploadFinalizeResult {
+  asset_id: string
+  imported_file_count: number
+  total_size: number
+  relative_paths: string[]
 }
 
 export type FileAccessMode = 'download' | 'preview'

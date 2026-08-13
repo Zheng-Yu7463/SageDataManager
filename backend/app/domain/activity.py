@@ -5,6 +5,7 @@ class ActivityAction(StrEnum):
     CREATED = "created"
     UPDATED_METADATA = "updated_metadata"
     PREPARED_UPLOAD = "prepared_upload"
+    COMPLETED_UPLOAD = "completed_upload"
     ARCHIVED = "archived"
     RESTORED = "restored"
     ADDED_VERSION = "added_version"
@@ -21,6 +22,7 @@ ACTIVITY_LABELS = {
     ActivityAction.CREATED: "登记资产",
     ActivityAction.UPDATED_METADATA: "更新元数据",
     ActivityAction.PREPARED_UPLOAD: "生成上传指令",
+    ActivityAction.COMPLETED_UPLOAD: "完成文件上传",
     ActivityAction.ARCHIVED: "归档资产",
     ActivityAction.RESTORED: "恢复资产",
     ActivityAction.ADDED_VERSION: "登记版本",

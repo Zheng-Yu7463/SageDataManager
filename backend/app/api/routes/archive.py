@@ -15,9 +15,19 @@ from app.domain.schemas import (
     UnclaimedFileSummary,
     UploadCommandRequest,
     UploadCommandResponse,
+    UploadFinalizeRequest,
+    UploadFinalizeResponse,
 )
 from app.services.archive import StorageScanError, archive_health, scan_storage
-from app.services.transfers import UploadCommandError, generate_upload_command
+from app.services.transfers import (
+    UploadCommandError,
+    UploadConflictError,
+    UploadContentError,
+    UploadNotReadyError,
+    UploadTicketError,
+    finalize_upload,
+    generate_upload_command,
+)
 from app.services.unclaimed import (
     AssetNotFoundError,
     ClaimSourceFileError,
@@ -74,6 +84,33 @@ def claim_file(
     except ClaimSourceFileError:
         session.rollback()
         raise HTTPException(status_code=409, detail="源文件不可用，无法认领。") from None
+    except Exception:
+        session.rollback()
+        raise
+
+
+@router.post("/uploads/{upload_id}/finalize")
+def finalize_staged_upload(
+    upload_id: UUID,
+    payload: UploadFinalizeRequest,
+    session: SessionDependency,
+    current_user: AdminDependency,
+) -> UploadFinalizeResponse:
+    try:
+        result = finalize_upload(
+            session,
+            settings.storage_root,
+            upload_id,
+            payload.upload_token,
+            actor=current_user,
+        )
+        return result
+    except UploadTicketError as error:
+        session.rollback()
+        raise HTTPException(status_code=403, detail=str(error)) from None
+    except (UploadNotReadyError, UploadContentError, UploadConflictError) as error:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from None
     except Exception:
         session.rollback()
         raise

@@ -338,10 +338,25 @@ class UploadCommandRequest(BaseModel):
 
 
 class UploadCommandResponse(BaseModel):
+    upload_id: UUID
     asset_id: UUID
     asset_title: str
     archive_relative_path: str
+    staging_relative_path: str
+    upload_token: str
+    expires_at: datetime
     command: str
+
+
+class UploadFinalizeRequest(BaseModel):
+    upload_token: str = Field(min_length=1, max_length=4000)
+
+
+class UploadFinalizeResponse(BaseModel):
+    asset_id: UUID
+    imported_file_count: int
+    total_size: int
+    relative_paths: list[str]
 
 
 class FileAccessTicketRequest(BaseModel):

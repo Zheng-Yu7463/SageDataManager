@@ -22,16 +22,15 @@ async function signIn(page: Page) {
   await expect(page.getByRole('heading', { name: '实验室科研资产总览' })).toBeVisible()
 }
 
-test('管理员可登录、筛选目录并生成上传指令', async ({ page }) => {
+test('管理员可登录并进入安全上传闭环', async ({ page }) => {
   await signIn(page)
-  await page.getByRole('link', { name: '数据集 Datasets', exact: true }).click()
-  await page.getByRole('button', { name: /筛选条件/ }).click()
-  await page.getByLabel('数据状态').selectOption('present')
-  await expect(page.getByText('ClimateBench v2.1 数据集')).toBeVisible()
-  await page.getByTitle('获取此资产的 SCP 上传指令').click()
-  await page.getByLabel('本机待上传文件或目录').fill('/tmp/visual-e2e.csv')
-  await page.getByRole('button', { name: '生成 SCP 命令' }).click()
-  await expect(page.getByText('上传指令已生成')).toBeVisible()
+  await page.goto('/literature?view=grid')
+  await expect(page.getByRole('heading', { name: '文献目录' })).toBeVisible()
+  await page.getByRole('button', { name: '上传文件' }).first().click()
+  await page.getByLabel('本机待上传路径').fill('/tmp/visual-e2e.csv')
+  await page.getByRole('button', { name: '生成上传命令' }).click()
+  await expect(page.getByText('终端上传命令')).toBeVisible()
+  await expect(page.getByRole('button', { name: '检测并入库' })).toBeVisible()
 })
 
 test('资产详情提供可折叠的文件浏览器', async ({ page }) => {

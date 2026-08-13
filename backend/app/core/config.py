@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     auth_session_secret: str = ""
     auth_session_ttl_seconds: int = 43200
     file_access_ttl_seconds: int = 120
+    upload_ticket_ttl_seconds: int = 86400
     upload_destination_root: str = "/home/zhengyu/SageDataManager/sample-archive"
 
     model_config = SettingsConfigDict(

@@ -10,24 +10,12 @@ from sqlalchemy.orm import Session
 from app.domain.enums import AssetType, HealthStatus
 from app.domain.models import Asset, FileRecord, ScanRun, UnclaimedFile
 from app.domain.schemas import ArchiveHealthSummary, ScanRunSummary
+from app.services.storage import file_kind, is_internal_storage_path
 from app.services.unclaimed import sync_unclaimed_files
 
 
 class StorageScanError(Exception):
     pass
-
-
-def file_kind(path: Path) -> str:
-    suffix = path.suffix.lower()
-    if suffix in {".pdf", ".doc", ".docx", ".md", ".txt", ".tex"}:
-        return "document"
-    if suffix in {".csv", ".tsv", ".json", ".jsonl", ".parquet", ".nc"}:
-        return "data"
-    if suffix in {".pt", ".pth", ".bin", ".safetensors", ".ckpt"}:
-        return "model-weight"
-    if suffix in {".png", ".jpg", ".jpeg", ".svg", ".gif"}:
-        return "image"
-    return "other"
 
 
 def scan_run_summary(run: ScanRun) -> ScanRunSummary:
@@ -74,6 +62,8 @@ def scan_storage(session: Session, storage_root: Path) -> ScanRunSummary:
     seen_paths: set[str] = set()
 
     for candidate in root.rglob("*"):
+        if is_internal_storage_path(candidate.relative_to(root)):
+            continue
         if candidate.is_symlink() or not candidate.is_file():
             if candidate.is_symlink():
                 run.files_skipped += 1

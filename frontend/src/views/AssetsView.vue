@@ -7,11 +7,13 @@ import {
   Copy,
   Database,
   Download,
+  File,
   FolderUp,
   ExternalLink,
   Grid2X2,
   List,
   LockKeyhole,
+  LoaderCircle,
   Plus,
   Save,
   X,
@@ -26,6 +28,7 @@ import AssetIcon from '@/components/AssetIcon.vue'
 import {
   createAsset,
   exportPublicationCitations,
+  finalizeUpload,
   getAssets,
   getPublicationCitation,
   getUploadCommand,
@@ -41,6 +44,7 @@ import type {
   AssetType,
   PublicationMetadata,
   UploadCommandResult,
+  UploadFinalizeResult,
   Visibility,
 } from '@/types'
 import { copyText, downloadTextFile } from '@/utils/textFiles'
@@ -99,9 +103,12 @@ const exportingCitations = ref(false)
 const uploadAsset = ref<AssetSummary | null>(null)
 const uploadDialog = ref<HTMLElement | null>(null)
 const uploadGenerating = ref(false)
+const uploadFinalizing = ref(false)
 const uploadError = ref('')
 const uploadCopied = ref(false)
 const uploadResult = ref<UploadCommandResult | null>(null)
+const uploadFinalizeResult = ref<UploadFinalizeResult | null>(null)
+const uploadPhase = ref<'configure' | 'transfer' | 'success'>('configure')
 const upload = ref({
   sourcePath: '',
   directory: '',
@@ -114,6 +121,16 @@ const meta = computed(() => assetMeta[assetType.value])
 const totalPages = computed(() => Math.max(1, Math.ceil((data.value?.total ?? 0) / 20)))
 const currentUploadFolders = computed(() => uploadAsset.value?.upload_directories ?? [])
 const uploadOpen = computed(() => Boolean(uploadAsset.value))
+const uploadBusy = computed(() => uploadGenerating.value || uploadFinalizing.value)
+const uploadTargetPath = computed(() => {
+  if (!uploadAsset.value || !upload.value.directory) return ''
+  return [
+    uploadAsset.value.type,
+    uploadAsset.value.slug,
+    upload.value.directory,
+    upload.value.nestedPath.trim(),
+  ].filter(Boolean).join('/')
+})
 const registrationValid = computed(() => {
   const baseValid = Boolean(
     registration.value.title.trim()
@@ -363,10 +380,12 @@ function openUpload(asset: AssetSummary) {
   uploadError.value = ''
   uploadCopied.value = false
   uploadResult.value = null
+  uploadFinalizeResult.value = null
+  uploadPhase.value = 'configure'
 }
 
 function closeUpload() {
-  if (!uploadGenerating.value) uploadAsset.value = null
+  if (!uploadBusy.value) uploadAsset.value = null
 }
 
 async function generateUploadCommand() {
@@ -381,10 +400,39 @@ async function generateUploadCommand() {
       target_subdirectory: [upload.value.directory, upload.value.nestedPath.trim()].filter(Boolean).join('/'),
       recursive: upload.value.recursive,
     })
+    uploadPhase.value = 'transfer'
   } catch (reason) {
     uploadError.value = reason instanceof Error ? reason.message : '无法生成上传命令'
   } finally {
     uploadGenerating.value = false
+  }
+}
+
+function reconfigureUpload() {
+  uploadError.value = ''
+  uploadCopied.value = false
+  uploadResult.value = null
+  uploadFinalizeResult.value = null
+  uploadPhase.value = 'configure'
+}
+
+async function finalizeCurrentUpload() {
+  if (!uploadResult.value) return
+  uploadFinalizing.value = true
+  uploadError.value = ''
+  try {
+    uploadFinalizeResult.value = await finalizeUpload(
+      uploadResult.value.upload_id,
+      uploadResult.value.upload_token,
+    )
+    await load()
+    const refreshedAsset = data.value?.items.find((asset) => asset.id === uploadFinalizeResult.value?.asset_id)
+    if (refreshedAsset) uploadAsset.value = refreshedAsset
+    uploadPhase.value = 'success'
+  } catch (reason) {
+    uploadError.value = reason instanceof Error ? reason.message : '无法检测并入库，请稍后重试'
+  } finally {
+    uploadFinalizing.value = false
   }
 }
 
@@ -601,7 +649,7 @@ onBeforeUnmount(() => controller?.abort())
         <div class="catalogue-actions">
           <a v-if="publicationMetadata(asset)" :href="publicationMetadata(asset)!.source_url" target="_blank" rel="noreferrer"><ExternalLink :size="17" /><span>官方页面</span></a>
           <button v-if="publicationMetadata(asset)" title="复制这篇出版物的 BibTeX 引用" :disabled="citationActionId === asset.id" @click="copyPublicationCitation(asset)"><Check v-if="citationCopiedId === asset.id" :size="17" /><Copy v-else :size="17" /><span>{{ citationCopiedId === asset.id ? '已复制' : 'BibTeX' }}</span></button>
-          <button title="获取此资产的 SCP 上传指令" @click="openUpload(asset)"><FolderUp :size="18" /><span>上传指令</span></button>
+          <button title="向此资产安全上传文件" @click="openUpload(asset)"><FolderUp :size="18" /><span>上传文件</span></button>
           <RouterLink class="action-primary" :to="{ name: 'asset-detail', params: { assetId: asset.id }, query: { returnTo: route.fullPath } }">查看详情 <ArrowRight :size="16" /></RouterLink>
         </div>
       </article>
@@ -652,22 +700,52 @@ onBeforeUnmount(() => controller?.abort())
       </form>
     </div>
     <div v-if="uploadAsset" class="registration-backdrop" @click.self="closeUpload">
-      <form ref="uploadDialog" class="registration-dialog upload-dialog" role="dialog" aria-modal="true" aria-labelledby="upload-title" @submit.prevent="generateUploadCommand">
-        <button class="registration-close" type="button" aria-label="关闭" :disabled="uploadGenerating" @click="closeUpload"><X :size="18" /></button>
-        <p class="eyebrow">SCP UPLOAD · {{ meta.english.toUpperCase() }}</p>
+      <form ref="uploadDialog" class="registration-dialog upload-dialog" role="dialog" aria-modal="true" aria-labelledby="upload-title" @submit.prevent="uploadPhase === 'configure' ? generateUploadCommand() : finalizeCurrentUpload()">
+        <button class="registration-close" type="button" aria-label="关闭" :disabled="uploadBusy" @click="closeUpload"><X :size="18" /></button>
+        <p class="eyebrow">SECURE UPLOAD · {{ meta.english.toUpperCase() }}</p>
         <h2 id="upload-title">上传到「{{ uploadAsset.title }}」</h2>
-        <p class="registration-note">目标资产与一级归档目录均按资产类型固定。填写本机待上传文件或目录的路径，复制命令到该电脑终端执行。</p>
-        <label>本机待上传文件或目录<input v-model="upload.sourcePath" required autofocus placeholder="例如：/mnt/research/soil-samples.csv" /></label>
-        <label>归档一级目录<select v-model="upload.directory" required><option v-for="folder in currentUploadFolders" :key="folder.name" :value="folder.name">{{ folder.name }} · {{ folder.label }}</option></select></label>
-        <label>目录内细分路径（可选）<input v-model="upload.nestedPath" placeholder="例如：2026-08 或 experiment-a" /></label>
-        <label class="upload-recursive"><input v-model="upload.recursive" type="checkbox" /> 上传整个目录（添加 <code>-r</code>）</label>
-        <p v-if="uploadError" class="registration-error" role="alert">{{ uploadError }}</p>
-        <footer><button class="button button--outline" type="button" :disabled="uploadGenerating" @click="closeUpload">取消</button><button class="button button--primary" :disabled="uploadGenerating || !upload.sourcePath.trim() || !upload.directory" type="submit"><FolderUp :size="16" />{{ uploadGenerating ? '正在生成' : '生成 SCP 命令' }}</button></footer>
-        <section v-if="uploadResult" class="upload-command-result">
-          <header><div><strong>上传指令已生成</strong><small>归档目录：{{ uploadResult.archive_relative_path }}</small></div><button class="button button--outline" type="button" @click="copyUploadCommand"><Check v-if="uploadCopied" :size="16" /><Copy v-else :size="16" />{{ uploadCopied ? '已复制' : '复制' }}</button></header>
-          <pre><code>{{ uploadResult.command }}</code></pre>
-          <p>完成传输后，到“归档健康”运行扫描；成功索引后此资产会显示为“已有数据”。</p>
-        </section>
+        <ol class="upload-steps" aria-label="上传进度">
+          <li :class="{ active: uploadPhase === 'configure', complete: uploadPhase !== 'configure' }"><span>1</span>配置传输</li>
+          <li :class="{ active: uploadPhase === 'transfer', complete: uploadPhase === 'success' }"><span>2</span>检测入库</li>
+          <li :class="{ active: uploadPhase === 'success' }"><span>3</span>完成</li>
+        </ol>
+
+        <template v-if="uploadPhase === 'configure'">
+          <p class="registration-note">填写保存文件的电脑上的路径。网站只生成终端命令，不会读取这台电脑上的文件。</p>
+          <label>本机待上传路径<input v-model="upload.sourcePath" required autofocus placeholder="例如：/mnt/research/soil-samples.csv" /></label>
+          <fieldset class="upload-source-kind">
+            <legend>上传内容</legend>
+            <button type="button" :class="{ active: !upload.recursive }" @click="upload.recursive = false"><File :size="15" />单个文件</button>
+            <button type="button" :class="{ active: upload.recursive }" @click="upload.recursive = true"><FolderUp :size="15" />整个目录</button>
+          </fieldset>
+          <div class="registration-grid">
+            <label>归档一级目录<select v-model="upload.directory" required><option v-for="folder in currentUploadFolders" :key="folder.name" :value="folder.name">{{ folder.name }} · {{ folder.label }}</option></select></label>
+            <label>目录内细分路径（可选）<input v-model="upload.nestedPath" placeholder="例如：2026-08 或 experiment-a" /></label>
+          </div>
+          <div class="upload-target-preview"><span>入库位置</span><code>{{ uploadTargetPath }}</code></div>
+          <p v-if="uploadError" class="registration-error" role="alert">{{ uploadError }}</p>
+          <footer><button class="button button--outline" type="button" :disabled="uploadGenerating" @click="closeUpload">取消</button><button class="button button--primary" :disabled="uploadGenerating || !upload.sourcePath.trim() || !upload.directory" type="submit"><LoaderCircle v-if="uploadGenerating" class="spin" :size="16" /><FolderUp v-else :size="16" />{{ uploadGenerating ? '正在生成' : '生成上传命令' }}</button></footer>
+        </template>
+
+        <template v-else-if="uploadPhase === 'transfer' && uploadResult">
+          <p class="registration-note">复制并在保存文件的电脑终端执行命令。传输结束后回到这里检测，系统会先校验全部路径，再一次性入库并建立索引。</p>
+          <section class="upload-command-result">
+            <header><div><strong>终端上传命令</strong><small>最终位置：{{ uploadResult.archive_relative_path }}</small></div><button class="button button--outline" type="button" @click="copyUploadCommand"><Check v-if="uploadCopied" :size="16" /><Copy v-else :size="16" />{{ uploadCopied ? '已复制' : '复制' }}</button></header>
+            <pre><code>{{ uploadResult.command }}</code></pre>
+          </section>
+          <div class="upload-safety-note"><ShieldCheck :size="17" /><p><strong>正式归档受保护</strong><span>传输文件暂存在隔离区；发现重名、符号链接或异常内容时不会移动任何正式文件。</span></p></div>
+          <p v-if="uploadError" class="registration-error upload-error-block" role="alert">{{ uploadError }}</p>
+          <footer><button class="button button--outline" type="button" :disabled="uploadFinalizing" @click="reconfigureUpload">重新配置</button><button class="button button--primary" :disabled="uploadFinalizing" type="submit"><LoaderCircle v-if="uploadFinalizing" class="spin" :size="16" /><ShieldCheck v-else :size="16" />{{ uploadFinalizing ? '正在检测临时区' : '检测并入库' }}</button></footer>
+        </template>
+
+        <template v-else-if="uploadPhase === 'success' && uploadFinalizeResult">
+          <section class="upload-success" role="status">
+            <span><Check :size="24" /></span>
+            <div><strong>文件已完成入库</strong><p>已索引 {{ uploadFinalizeResult.imported_file_count }} 个文件 · {{ formatBytes(uploadFinalizeResult.total_size) }}</p></div>
+          </section>
+          <div class="upload-imported-paths"><span>已写入</span><code v-for="path in uploadFinalizeResult.relative_paths.slice(0, 4)" :key="path">{{ path }}</code><small v-if="uploadFinalizeResult.relative_paths.length > 4">另有 {{ uploadFinalizeResult.relative_paths.length - 4 }} 个文件</small></div>
+          <footer><button class="button button--primary" type="button" @click="closeUpload"><Check :size="16" />完成</button></footer>
+        </template>
       </form>
     </div>
 
@@ -677,5 +755,5 @@ onBeforeUnmount(() => controller?.abort())
 <style scoped>
 .registration-backdrop { position: fixed; z-index: 40; inset: 0; display: grid; padding: 20px; place-items: center; background: rgba(23, 34, 26, .48); }
 .registration-dialog { position: relative; display: grid; width: min(100%, 610px); max-height: calc(100vh - 40px); padding: 28px; overflow-y: auto; background: #fdfefb; border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 20px 50px rgba(24, 37, 29, .22); gap: 11px; }.registration-dialog h2 { margin: -5px 0 0; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 24px; font-weight: 500; }.registration-note { margin: -3px 0 7px; color: var(--muted); font-size: 12px; line-height: 1.55; }.registration-dialog label { display: grid; color: #526056; font-size: 12px; font-weight: 700; gap: 6px; }.registration-dialog input, .registration-dialog textarea, .registration-dialog select { width: 100%; padding: 9px 10px; color: var(--ink); font: inherit; font-size: 13px; background: #fff; border: 1px solid var(--line); border-radius: 5px; outline-color: var(--sage); }.registration-dialog textarea { resize: vertical; }.registration-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }.registration-close { position: absolute; top: 13px; right: 13px; display: grid; width: 31px; height: 31px; color: #68776d; place-items: center; background: transparent; border: 0; border-radius: 50%; cursor: pointer; }.registration-close:hover { background: #eef2ed; }.registration-error { margin: 1px 0; color: #a6633b; font-size: 12px; }.registration-dialog footer { display: flex; margin-top: 9px; justify-content: flex-end; gap: 9px; } @media (max-width: 560px) { .registration-dialog { padding: 24px 20px; }.registration-grid { grid-template-columns: 1fr; } }
-.data-status { display: inline-flex; color: #89968e; align-items: center; gap: 4px; font-family: inherit; font-size: 11px; }.data-status--present { color: var(--asset-accent); }.upload-dialog { width: min(100%, 720px); }.upload-recursive { display: flex !important; align-items: center; color: #637068 !important; font-weight: 500 !important; gap: 7px !important; }.upload-recursive input { width: auto !important; accent-color: var(--sage); }.upload-command-result { display: grid; margin-top: 8px; padding-top: 17px; gap: 10px; border-top: 1px solid var(--line); }.upload-command-result header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }.upload-command-result header div { display: grid; gap: 3px; }.upload-command-result strong { font-size: 13px; }.upload-command-result small, .upload-command-result p { color: var(--muted); font-size: 11px; line-height: 1.55; }.upload-command-result p { margin: 0; }.upload-command-result pre { margin: 0; padding: 13px; overflow-x: auto; color: #dfeade; background: #17221b; border-radius: 6px; font-size: 11px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }.upload-command-result code { color: inherit; }
+.data-status { display: inline-flex; color: #89968e; align-items: center; gap: 4px; font-family: inherit; font-size: 11px; }.data-status--present { color: var(--asset-accent); }.upload-dialog { width: min(100%, 720px); }.upload-steps { display: grid; margin: 3px 0 7px; padding: 0; grid-template-columns: repeat(3, 1fr); list-style: none; border-top: 1px solid var(--line); }.upload-steps li { display: flex; padding-top: 10px; color: #98a29b; align-items: center; font-size: 11px; gap: 6px; }.upload-steps li + li { justify-content: center; }.upload-steps li:last-child { justify-content: flex-end; }.upload-steps span { display: grid; width: 20px; height: 20px; place-items: center; border: 1px solid #cfd7d1; border-radius: 50%; font-size: 10px; }.upload-steps .active { color: var(--ink); font-weight: 700; }.upload-steps .active span { color: #fff; background: var(--sage); border-color: var(--sage); }.upload-steps .complete { color: var(--sage); }.upload-steps .complete span { color: var(--sage); background: #e8f0e9; border-color: #aebfb1; }.upload-source-kind { display: grid; margin: 0; padding: 0; grid-template-columns: 1fr 1fr; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }.upload-source-kind legend { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); }.upload-source-kind button { display: flex; min-height: 38px; color: #657168; align-items: center; justify-content: center; background: #fff; border: 0; cursor: pointer; gap: 7px; }.upload-source-kind button + button { border-left: 1px solid var(--line); }.upload-source-kind button.active { color: #24452f; font-weight: 700; background: #edf3ed; box-shadow: inset 0 0 0 1px #aec0b1; }.upload-target-preview { display: grid; padding: 10px 12px; background: #f3f6f2; border: 1px solid #dce4dc; border-radius: 5px; gap: 4px; }.upload-target-preview span, .upload-imported-paths > span { color: var(--muted); font-size: 10px; font-weight: 700; text-transform: uppercase; }.upload-target-preview code { overflow-wrap: anywhere; color: #36533e; font-size: 12px; }.upload-command-result { display: grid; margin-top: 2px; gap: 10px; }.upload-command-result header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }.upload-command-result header div { display: grid; gap: 3px; }.upload-command-result strong { font-size: 13px; }.upload-command-result small { color: var(--muted); font-size: 11px; line-height: 1.55; }.upload-command-result pre { margin: 0; padding: 13px; overflow-x: auto; color: #dfeade; background: #17221b; border-radius: 6px; font-size: 11px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }.upload-command-result code { color: inherit; }.upload-safety-note { display: flex; padding: 11px 12px; color: #36513e; align-items: flex-start; background: #eff4ef; border-left: 3px solid #78937c; gap: 9px; }.upload-safety-note svg { margin-top: 1px; flex: 0 0 auto; }.upload-safety-note p { display: grid; margin: 0; gap: 2px; }.upload-safety-note strong { font-size: 11px; }.upload-safety-note span { color: #68766c; font-size: 11px; line-height: 1.5; }.upload-error-block { padding: 10px 12px; white-space: pre-line; background: #fff6f0; border-left: 3px solid #bd7750; }.upload-success { display: flex; padding: 18px; align-items: center; background: #eff5ef; border: 1px solid #cddccd; border-radius: 6px; gap: 13px; }.upload-success > span { display: grid; width: 40px; height: 40px; color: #fff; place-items: center; background: #52745b; border-radius: 50%; }.upload-success div { display: grid; gap: 4px; }.upload-success strong { font-size: 15px; }.upload-success p { margin: 0; color: #627069; font-size: 12px; }.upload-imported-paths { display: grid; padding: 12px; background: #f7f8f5; border: 1px solid var(--line); border-radius: 5px; gap: 5px; }.upload-imported-paths code { overflow-wrap: anywhere; color: #4f5e54; font-size: 11px; }.upload-imported-paths small { color: var(--muted); font-size: 10px; }.spin { animation: spin .8s linear infinite; } @keyframes spin { to { transform: rotate(360deg); } } @media (max-width: 560px) { .upload-dialog { max-height: calc(100dvh - 24px); }.upload-steps li { font-size: 10px; }.upload-command-result header { align-items: flex-start; }.upload-command-result header div { min-width: 0; }.upload-command-result small { overflow-wrap: anywhere; }.upload-dialog footer { position: sticky; bottom: -24px; margin-right: -20px; margin-left: -20px; padding: 12px 20px 0; background: #fdfefb; border-top: 1px solid var(--line); } }
 </style>

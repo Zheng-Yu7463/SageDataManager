@@ -27,6 +27,7 @@ import type {
   PublicationCitationExport,
   UploadCommandInput,
   UploadCommandResult,
+  UploadFinalizeResult,
   ScanRunSummary,
   UnclaimedFileSummary,
 } from '@/types'
@@ -200,6 +201,12 @@ export function claimUnclaimedFile(unclaimedFileId: string, assetId: string) {
 
 export function getUploadCommand(input: UploadCommandInput) {
   return request<UploadCommandResult>('/api/archive/upload-command', undefined, 'POST', input)
+}
+
+export function finalizeUpload(uploadId: string, uploadToken: string) {
+  return request<UploadFinalizeResult>(`/api/archive/uploads/${uploadId}/finalize`, undefined, 'POST', {
+    upload_token: uploadToken,
+  })
 }
 
 export function getFileAccessTicket(fileId: string, mode: FileAccessMode) {

@@ -18,6 +18,14 @@ class FileAccessClaims:
     username: str
 
 
+@dataclass(frozen=True)
+class UploadClaims:
+    upload_id: UUID
+    asset_id: UUID
+    target_subdirectory: str
+    username: str
+
+
 def _encode(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).decode().rstrip("=")
 
@@ -85,4 +93,48 @@ def read_file_access_token(token: str) -> FileAccessClaims | None:
             file_id=UUID(value["file_id"]), mode=value["mode"], username=value["username"]
         )
     except (ValueError, json.JSONDecodeError, TypeError):
+        return None
+
+
+def create_upload_token(
+    upload_id: UUID, asset_id: UUID, target_subdirectory: str, username: str
+) -> tuple[str, datetime]:
+    expires_at = datetime.now(UTC) + timedelta(seconds=settings.upload_ticket_ttl_seconds)
+    payload = _encode(
+        json.dumps(
+            {
+                "kind": "upload",
+                "upload_id": str(upload_id),
+                "asset_id": str(asset_id),
+                "target_subdirectory": target_subdirectory,
+                "username": username,
+                "exp": expires_at.timestamp(),
+            }
+        ).encode()
+    )
+    return f"{payload}.{_sign(payload)}", expires_at
+
+
+def read_upload_token(token: str) -> UploadClaims | None:
+    try:
+        payload, signature = token.split(".", 1)
+        if not hmac.compare_digest(signature, _sign(payload)):
+            return None
+        value = json.loads(_decode(payload))
+        if (
+            value.get("kind") != "upload"
+            or not isinstance(value.get("upload_id"), str)
+            or not isinstance(value.get("asset_id"), str)
+            or not isinstance(value.get("target_subdirectory"), str)
+            or not isinstance(value.get("username"), str)
+            or datetime.now(UTC).timestamp() >= value["exp"]
+        ):
+            return None
+        return UploadClaims(
+            upload_id=UUID(value["upload_id"]),
+            asset_id=UUID(value["asset_id"]),
+            target_subdirectory=value["target_subdirectory"],
+            username=value["username"],
+        )
+    except (ValueError, json.JSONDecodeError, TypeError, KeyError):
         return None

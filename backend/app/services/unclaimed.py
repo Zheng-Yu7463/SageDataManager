@@ -14,6 +14,7 @@ from app.domain.activity import ActivityAction
 from app.domain.enums import HealthStatus
 from app.domain.models import Activity, Asset, FileRecord, UnclaimedFile, User
 from app.domain.schemas import FileClaimResult, FileSummary, UnclaimedFileSummary
+from app.services.storage import file_kind, is_internal_storage_path
 
 
 class UnclaimedFileNotFoundError(Exception):
@@ -43,19 +44,6 @@ def locked_unclaimed_file_statement(unclaimed_file_id: UUID):
     return select(UnclaimedFile).where(UnclaimedFile.id == unclaimed_file_id).with_for_update()
 
 
-def file_kind(path: Path) -> str:
-    suffix = path.suffix.lower()
-    if suffix in {".pdf", ".doc", ".docx", ".md", ".txt", ".tex"}:
-        return "document"
-    if suffix in {".csv", ".tsv", ".json", ".jsonl", ".parquet", ".nc"}:
-        return "data"
-    if suffix in {".pt", ".pth", ".bin", ".safetensors", ".ckpt"}:
-        return "model-weight"
-    if suffix in {".png", ".jpg", ".jpeg", ".svg", ".gif"}:
-        return "image"
-    return "other"
-
-
 def sync_unclaimed_files(session: Session, storage_root: Path) -> None:
     assets = {
         (asset.type.value, asset.slug)
@@ -67,6 +55,8 @@ def sync_unclaimed_files(session: Session, storage_root: Path) -> None:
     root = storage_root.resolve()
     seen_paths: set[str] = set()
     for candidate in root.rglob("*"):
+        if is_internal_storage_path(candidate.relative_to(root)):
+            continue
         if candidate.is_symlink() or not candidate.is_file():
             continue
         try:
