@@ -6,8 +6,10 @@ import json
 import re
 import subprocess
 import tempfile
+import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlencode, urljoin
@@ -34,9 +36,19 @@ DEFAULT_ICLR_POSTER_IDS = (
     "10008342",
     "10011722",
 )
-USER_AGENT = "SageDataManager/0.1 (conference fixture importer)"
+USER_AGENT = "SageDataManager/0.1 (paper importer)"
 ICLR_PROCEEDINGS_ROOT = "https://proceedings.iclr.cc"
-SUPPORTED_VENUES = ("ACL", "ICLR")
+ARXIV_API_ROOT = "https://export.arxiv.org/api/query"
+BIORXIV_API_ROOT = "https://api.biorxiv.org/details/biorxiv"
+CROSSREF_API_ROOT = "https://api.crossref.org"
+SUPPORTED_VENUES = ("ACL", "ICLR", "ARXIV", "BIORXIV", "PLOS")
+VENUE_LABELS = {
+    "ACL": "ACL",
+    "ICLR": "ICLR",
+    "ARXIV": "arXiv",
+    "BIORXIV": "bioRxiv",
+    "PLOS": "PLOS ONE",
+}
 
 
 @dataclass(frozen=True)
@@ -45,6 +57,20 @@ class ConferencePaper:
     title: str
     summary: str
     metadata: PaperMetadata
+
+
+@dataclass(frozen=True)
+class MetadataSyncResult:
+    created: int
+    updated: int
+    skipped: int
+
+
+@dataclass(frozen=True)
+class PdfDownloadResult:
+    downloaded: int
+    skipped: int
+    failures: tuple[str, ...]
 
 
 class PaperPageParser(HTMLParser):
@@ -178,6 +204,28 @@ def citation_key(venue: str, year: int, source_id: str) -> str:
     return f"{venue.lower()}{year}{suffix.removeprefix(str(year))}"
 
 
+def strip_markup(value: str) -> str:
+    return " ".join(re.sub(r"<[^>]+>", " ", value).split())
+
+
+def date_parts(value: dict[str, object]) -> tuple[int, int | None, int | None]:
+    parts = value.get("date-parts")
+    if not isinstance(parts, list) or not parts or not isinstance(parts[0], list):
+        raise ValueError("官方元数据缺少发布日期。")
+    values = parts[0]
+    if not values or not isinstance(values[0], int):
+        raise ValueError("官方元数据发布日期格式无效。")
+    return (
+        values[0],
+        values[1] if len(values) > 1 and isinstance(values[1], int) else None,
+        values[2] if len(values) > 2 and isinstance(values[2], int) else None,
+    )
+
+
+def iso_publication_date(year: int, month: int | None, day: int | None) -> str:
+    return date(year, month or 1, day or 1).isoformat()
+
+
 def first_meta(parser: PaperPageParser, *names: str) -> str | None:
     return next(
         (
@@ -212,12 +260,9 @@ def parse_iclr_paper(poster_id: str, year: int = 2026) -> ConferencePaper:
     forum_id = forum_match.group(1)
     title = structured["name"]
     virtual_authors = [author["name"] for author in structured["author"]]
-    publication_url, publication_parser = find_iclr_proceedings_page(
-        title, virtual_authors[0]
-    )
+    publication_url, publication_parser = find_iclr_proceedings_page(title, virtual_authors[0])
     publication_authors = [
-        citation_author_name(author)
-        for author in publication_parser.meta["citation_author"]
+        citation_author_name(author) for author in publication_parser.meta["citation_author"]
     ]
     metadata = PaperMetadata(
         venue="ICLR",
@@ -231,9 +276,7 @@ def parse_iclr_paper(poster_id: str, year: int = 2026) -> ConferencePaper:
         abstract=parser.abstract,
         published_at=publication_parser.meta["citation_publication_date"][0],
         citation_key=citation_key("ICLR", year, forum_id),
-        booktitle=first_meta(
-            publication_parser, "citation_conference_title", "citation_book_title"
-        )
+        booktitle=first_meta(publication_parser, "citation_conference_title", "citation_book_title")
         or f"Proceedings of the International Conference on Learning Representations {year}",
         publisher=first_meta(publication_parser, "citation_publisher"),
     )
@@ -274,6 +317,224 @@ def parse_acl_paper(anthology_id: str) -> ConferencePaper:
     )
 
 
+def parse_arxiv_feed(payload: bytes, limit: int) -> list[ConferencePaper]:
+    root = ET.fromstring(payload)
+    namespace = {"atom": "http://www.w3.org/2005/Atom"}
+    papers: list[ConferencePaper] = []
+    for entry in root.findall("atom:entry", namespace)[:limit]:
+        source_url = (entry.findtext("atom:id", default="", namespaces=namespace)).strip()
+        source_id = source_url.rsplit("/", 1)[-1]
+        canonical_id = source_id.split("v", 1)[0]
+        title = " ".join(entry.findtext("atom:title", default="", namespaces=namespace).split())
+        summary = " ".join(entry.findtext("atom:summary", default="", namespaces=namespace).split())
+        published_at = entry.findtext("atom:published", default="", namespaces=namespace)
+        authors = [
+            " ".join(author.findtext("atom:name", default="", namespaces=namespace).split())
+            for author in entry.findall("atom:author", namespace)
+        ]
+        pdf_url = next(
+            (
+                link.attrib["href"]
+                for link in entry.findall("atom:link", namespace)
+                if link.attrib.get("type") == "application/pdf"
+            ),
+            "",
+        )
+        if not all((canonical_id, title, summary, published_at, authors, pdf_url)):
+            raise ValueError("arXiv 官方响应缺少必要论文元数据。")
+        year = int(published_at[:4])
+        papers.append(
+            ConferencePaper(
+                slug=f"arxiv-{canonical_id.replace('.', '-')}",
+                title=title,
+                summary=summary,
+                metadata=PaperMetadata(
+                    venue="arXiv",
+                    year=year,
+                    track="Computer Science Preprint",
+                    authors=authors,
+                    source_id=f"arxiv:{canonical_id}",
+                    source_url=f"https://arxiv.org/abs/{canonical_id}",
+                    pdf_url=f"https://arxiv.org/pdf/{canonical_id}",
+                    abstract=summary,
+                    published_at=published_at,
+                    citation_key=citation_key("arxiv", year, canonical_id),
+                    entry_type="misc",
+                    publisher="arXiv",
+                ),
+            )
+        )
+    if len(papers) < limit:
+        raise ValueError(f"arXiv 只返回 {len(papers)} 篇，无法收录 {limit} 篇。")
+    return papers
+
+
+def collect_arxiv_papers(year: int, limit: int) -> list[ConferencePaper]:
+    query = urlencode(
+        {
+            "search_query": f"cat:cs.AI AND submittedDate:[{year}01010000 TO {year}12312359]",
+            "start": 0,
+            "max_results": limit,
+            "sortBy": "submittedDate",
+            "sortOrder": "descending",
+        }
+    )
+    return parse_arxiv_feed(fetch(f"{ARXIV_API_ROOT}?{query}"), limit)
+
+
+def biorxiv_author_name(value: str) -> str:
+    family, separator, given = value.partition(",")
+    return f"{given.strip()} {family.strip()}" if separator else value.strip()
+
+
+def parse_biorxiv_response(payload: bytes, limit: int) -> list[ConferencePaper]:
+    collection = json.loads(payload)["collection"]
+    papers: list[ConferencePaper] = []
+    seen_dois: set[str] = set()
+    for item in collection:
+        doi = str(item["doi"]).lower()
+        if doi in seen_dois:
+            continue
+        seen_dois.add(doi)
+        published_at = str(item["date"])
+        year = int(published_at[:4])
+        title = " ".join(str(item["title"]).split())
+        summary = " ".join(str(item["abstract"]).split())
+        authors = [
+            biorxiv_author_name(author)
+            for author in str(item["authors"]).split(";")
+            if author.strip()
+        ]
+        suffix = doi.split("/", 1)[1]
+        source_url = f"https://www.biorxiv.org/content/{doi}v{item['version']}"
+        papers.append(
+            ConferencePaper(
+                slug=f"biorxiv-{re.sub(r'[^a-z0-9]+', '-', suffix.lower()).strip('-')}",
+                title=title,
+                summary=summary,
+                metadata=PaperMetadata(
+                    venue="bioRxiv",
+                    year=year,
+                    track=str(item["category"]).title(),
+                    authors=authors,
+                    source_id=f"biorxiv:{doi}",
+                    source_url=source_url,
+                    pdf_url=f"{source_url}.full.pdf",
+                    abstract=summary,
+                    doi=doi,
+                    published_at=published_at,
+                    citation_key=citation_key("biorxiv", year, suffix),
+                    entry_type="misc",
+                    publisher="Cold Spring Harbor Laboratory",
+                ),
+            )
+        )
+        if len(papers) == limit:
+            break
+    if len(papers) < limit:
+        raise ValueError(f"bioRxiv 只返回 {len(papers)} 篇，无法收录 {limit} 篇。")
+    return papers
+
+
+def collect_biorxiv_papers(year: int, limit: int) -> list[ConferencePaper]:
+    end = min(date.today(), date(year, 12, 31))
+    start = max(date(year, 1, 1), end - timedelta(days=45))
+    url = f"{BIORXIV_API_ROOT}/{start.isoformat()}/{end.isoformat()}/0/json"
+    return parse_biorxiv_response(fetch(url), limit)
+
+
+def crossref_authors(item: dict[str, object]) -> list[str]:
+    authors = item.get("author")
+    if not isinstance(authors, list):
+        return []
+    return [
+        " ".join(
+            part for part in (str(author.get("given", "")), str(author.get("family", ""))) if part
+        )
+        for author in authors
+        if isinstance(author, dict)
+    ]
+
+
+def parse_plos_response(payload: bytes, limit: int) -> list[ConferencePaper]:
+    items = json.loads(payload)["message"]["items"]
+    papers: list[ConferencePaper] = []
+    for item in items[:limit]:
+        title_values = item.get("title")
+        journals = item.get("container-title")
+        if not isinstance(title_values, list) or not title_values:
+            raise ValueError("Crossref 官方响应缺少 PLOS 论文标题。")
+        if not isinstance(journals, list) or not journals:
+            raise ValueError("Crossref 官方响应缺少 PLOS 期刊名称。")
+        doi = str(item["DOI"]).lower()
+        year, month, day = date_parts(item["published"])
+        title = strip_markup(str(title_values[0]))
+        summary = strip_markup(str(item.get("abstract", "")))
+        if not summary:
+            raise ValueError(f"PLOS 论文缺少摘要：{doi}")
+        authors = crossref_authors(item)
+        if not authors:
+            raise ValueError(f"PLOS 论文缺少作者：{doi}")
+        source_url = f"https://journals.plos.org/plosone/article?id={doi}"
+        suffix = doi.split("/", 1)[1]
+        papers.append(
+            ConferencePaper(
+                slug=f"plos-{re.sub(r'[^a-z0-9]+', '-', suffix.lower()).strip('-')}",
+                title=title,
+                summary=summary,
+                metadata=PaperMetadata(
+                    venue="PLOS ONE",
+                    year=year,
+                    track="Research Article",
+                    authors=authors,
+                    source_id=f"crossref:{doi}",
+                    source_url=source_url,
+                    publication_url=str(item.get("URL") or source_url),
+                    pdf_url=(
+                        f"https://journals.plos.org/plosone/article/file?id={doi}&type=printable"
+                    ),
+                    abstract=summary,
+                    doi=doi,
+                    published_at=iso_publication_date(year, month, day),
+                    citation_key=citation_key("plos", year, suffix),
+                    entry_type="article",
+                    journal=str(journals[0]),
+                    pages=str(item["page"]) if item.get("page") else None,
+                    publisher=str(item["publisher"]) if item.get("publisher") else None,
+                    month=str(month) if month else None,
+                    volume=str(item["volume"]) if item.get("volume") else None,
+                    issue=str(item["issue"]) if item.get("issue") else None,
+                ),
+            )
+        )
+    if len(papers) < limit:
+        raise ValueError(f"PLOS 只返回 {len(papers)} 篇，无法收录 {limit} 篇。")
+    return papers
+
+
+def collect_plos_papers(year: int, limit: int) -> list[ConferencePaper]:
+    end = min(date.today(), date(year, 12, 31))
+    start = max(date(year, 1, 1), end - timedelta(days=45))
+    query = urlencode(
+        {
+            "filter": (
+                f"from-pub-date:{start.isoformat()},until-pub-date:{end.isoformat()},"
+                "type:journal-article,has-abstract:true"
+            ),
+            "sort": "published",
+            "order": "desc",
+            "rows": limit,
+            "select": (
+                "DOI,title,author,abstract,published,URL,volume,issue,page,"
+                "publisher,container-title"
+            ),
+        }
+    )
+    return parse_plos_response(
+        fetch(f"{CROSSREF_API_ROOT}/journals/1932-6203/works?{query}"), limit
+    )
+
+
 def collect_papers(
     *,
     venues: tuple[str, ...] = SUPPORTED_VENUES,
@@ -294,53 +555,73 @@ def collect_papers(
             raise ValueError(f"ICLR poster ID 只有 {len(poster_ids)} 个，无法收录 {limit} 篇。")
         papers.extend(parse_iclr_paper(poster_id, year) for poster_id in poster_ids[:limit])
     if "ACL" in venues:
-        papers.extend(
-            parse_acl_paper(f"{year}.acl-long.{index}") for index in range(1, limit + 1)
-        )
+        papers.extend(parse_acl_paper(f"{year}.acl-long.{index}") for index in range(1, limit + 1))
+    if "ARXIV" in venues:
+        papers.extend(collect_arxiv_papers(year, limit))
+    if "BIORXIV" in venues:
+        papers.extend(collect_biorxiv_papers(year, limit))
+    if "PLOS" in venues:
+        papers.extend(collect_plos_papers(year, limit))
     return papers
 
 
 def validate_pdf(path: Path) -> None:
     if not path.read_bytes().startswith(b"%PDF"):
         raise ValueError(f"下载内容不是 PDF：{path}")
-    result = subprocess.run(
-        ["pdfinfo", str(path)], capture_output=True, check=False, text=True
-    )
+    result = subprocess.run(["pdfinfo", str(path)], capture_output=True, check=False, text=True)
     if result.returncode != 0 or not re.search(r"^Pages:\s+[1-9]\d*$", result.stdout, re.MULTILINE):
         raise ValueError(f"PDF 结构校验失败：{path}")
 
 
-def download_papers(papers: list[ConferencePaper], archive_root: Path) -> list[str]:
+def download_papers(papers: list[ConferencePaper], archive_root: Path) -> PdfDownloadResult:
     failures: list[str] = []
+    downloaded = 0
+    skipped = 0
     for index, paper in enumerate(papers, start=1):
         destination = archive_root / "paper" / paper.slug / "manuscript" / "paper.pdf"
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = destination.with_suffix(".download")
         try:
+            if destination.is_file():
+                validate_pdf(destination)
+                skipped += 1
+                print(
+                    f"[{index:02d}/{len(papers)}] {paper.metadata.venue} 已验证，跳过下载",
+                    flush=True,
+                )
+                continue
+            if paper.metadata.venue == "bioRxiv":
+                time.sleep(3)
             content = fetch(str(paper.metadata.pdf_url))
             temporary.write_bytes(content)
             validate_pdf(temporary)
             temporary.replace(destination)
+            downloaded += 1
             checksum = hashlib.sha256(content).hexdigest()[:12]
             print(
-                f"[{index:02d}/{len(papers)}] "
-                f"{paper.metadata.venue} {destination.name} {checksum}"
+                f"[{index:02d}/{len(papers)}] {paper.metadata.venue} {destination.name} {checksum}",
+                flush=True,
             )
         except (OSError, RuntimeError, ValueError) as error:
             temporary.unlink(missing_ok=True)
             failures.append(f"{paper.metadata.source_id}: {error}")
-    return failures
+    return PdfDownloadResult(
+        downloaded=downloaded,
+        skipped=skipped,
+        failures=tuple(failures),
+    )
 
 
-def upsert_metadata(papers: list[ConferencePaper]) -> None:
+def upsert_metadata(papers: list[ConferencePaper]) -> MetadataSyncResult:
+    created = 0
+    updated = 0
+    skipped = 0
     with SessionLocal.begin() as session:
         owners = {user.username: user for user in ensure_fixed_accounts(session)}
         owner = owners["zhengyu"]
         tags = {item.name: item for item in session.scalars(select(Tag)).all()}
         tag_names = {
-            str(value)
-            for paper in papers
-            for value in (paper.metadata.venue, paper.metadata.year)
+            str(value) for paper in papers for value in (paper.metadata.venue, paper.metadata.year)
         }
         for name in tag_names:
             tags.setdefault(name, Tag(name=name))
@@ -357,6 +638,23 @@ def upsert_metadata(papers: list[ConferencePaper]) -> None:
                 )
                 asset.versions.append(AssetVersion(version="published", is_current=True))
                 session.add(asset)
+                created += 1
+            else:
+                desired_tags = {str(paper.metadata.venue), str(paper.metadata.year)}
+                changed = any(
+                    (
+                        asset.title != paper.title,
+                        asset.summary != paper.summary,
+                        asset.status != "published",
+                        asset.visibility != Visibility.LAB,
+                        asset.details != details,
+                        {tag.name for tag in asset.tags} != desired_tags,
+                    )
+                )
+                if changed:
+                    updated += 1
+                else:
+                    skipped += 1
             asset.title = paper.title
             asset.summary = paper.summary
             asset.status = "published"
@@ -385,6 +683,7 @@ def upsert_metadata(papers: list[ConferencePaper]) -> None:
                         created_at=datetime.now(UTC),
                     )
                 )
+    return MetadataSyncResult(created=created, updated=updated, skipped=skipped)
 
 
 def write_manifest(papers: list[ConferencePaper], destination: Path) -> None:
@@ -403,7 +702,7 @@ def write_manifest(papers: list[ConferencePaper], destination: Path) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="从官方来源同步会议论文元数据与 PDF。")
+    parser = argparse.ArgumentParser(description="从官方学术来源同步论文元数据与 PDF。")
     parser.add_argument(
         "--venue",
         nargs="+",
@@ -442,25 +741,39 @@ def main() -> None:
         venues=tuple(arguments.venue),
         year=arguments.year,
         limit=arguments.limit,
-        iclr_poster_ids=(
-            tuple(arguments.iclr_poster_id) if arguments.iclr_poster_id else None
-        ),
+        iclr_poster_ids=(tuple(arguments.iclr_poster_id) if arguments.iclr_poster_id else None),
     )
     if arguments.manifest:
         write_manifest(papers, arguments.manifest)
-    failures = []
+    download_result = PdfDownloadResult(downloaded=0, skipped=0, failures=())
     if arguments.download_pdf:
-        failures = download_papers(papers, arguments.archive_root.resolve())
+        download_result = download_papers(papers, arguments.archive_root.resolve())
+    sync_result = None
     if not arguments.skip_database:
-        upsert_metadata(papers)
+        sync_result = upsert_metadata(papers)
     venue_counts = {
-        venue: sum(paper.metadata.venue == venue for paper in papers)
+        venue: sum(paper.metadata.venue == VENUE_LABELS[venue] for paper in papers)
         for venue in arguments.venue
     }
-    summary = "，".join(f"{venue} {count} 篇" for venue, count in venue_counts.items())
+    summary = "，".join(
+        f"{VENUE_LABELS[venue]} {count} 篇" for venue, count in venue_counts.items()
+    )
     print(f"同步完成：{summary}。")
-    if failures:
-        raise RuntimeError("以下论文下载失败：\n" + "\n".join(failures))
+    if sync_result:
+        print(
+            "数据库："
+            f"新增 {sync_result.created}，更新 {sync_result.updated}，"
+            f"跳过 {sync_result.skipped}。"
+        )
+    if arguments.download_pdf:
+        print(
+            "PDF："
+            f"新增下载 {download_result.downloaded}，"
+            f"已验证跳过 {download_result.skipped}，"
+            f"失败 {len(download_result.failures)}。"
+        )
+    if download_result.failures:
+        raise RuntimeError("以下论文下载失败：\n" + "\n".join(download_result.failures))
 
 
 if __name__ == "__main__":

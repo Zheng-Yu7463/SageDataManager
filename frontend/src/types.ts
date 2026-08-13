@@ -27,10 +27,12 @@ export interface PaperMetadata extends Record<string, unknown> {
   citation_key?: string
   entry_type?: 'article' | 'inproceedings' | 'misc' | 'proceedings'
   booktitle?: string
+  journal?: string
   pages?: string
   publisher?: string
   month?: string
   volume?: string
+  issue?: string
 }
 
 export interface AssetSummary {

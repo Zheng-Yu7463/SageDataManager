@@ -124,7 +124,20 @@ ICLR 条目先由虚拟会议页确认收录，再以规范化题名和首位作
 
 `--venue`、`--year` 和 `--limit` 可按需调整。ICLR 非 2026 年同步需要用一个或多个 `--iclr-poster-id` 明确指定会议官网 poster ID；脚本不会猜测收录列表。仅更新元数据时使用 `--no-download-pdf`。
 
-论文目录支持按当前筛选结果批量导出 BibTeX；论文卡片可直接复制单篇 BibTeX，详情页可查看、复制并下载 `.bib`。引用统一由结构化论文元数据生成。同步脚本会尽量从官方来源保存引用键、论文集、页码和出版社；历史论文缺少可选字段时使用稳定引用键与会议论文集名称回退。
+同一个参数化入口也支持 arXiv、bioRxiv 和 PLOS ONE 官方来源：
+
+```bash
+cd backend
+python -m scripts.seed_conference_papers \
+  --venue ARXIV BIORXIV PLOS \
+  --year 2026 \
+  --limit 10 \
+  --download-pdf
+```
+
+arXiv 使用官方 Atom API，bioRxiv 使用官方 API，PLOS ONE 使用 Crossref 官方元数据与出版社 PDF。脚本会验证已存在的 PDF 并跳过重复下载；官方来源临时限流时保留论文元数据并明确报告失败文件，归档扫描后这些论文显示为“暂无数据”。
+
+论文目录支持按当前筛选结果批量导出 BibTeX；论文卡片可直接复制单篇 BibTeX，详情页可查看、复制并下载 `.bib`。引用统一由结构化论文元数据生成。同步脚本会尽量从官方来源保存引用键、论文集或期刊名称、页码和出版社；历史会议论文缺少可选字段时使用稳定引用键与会议论文集名称回退。
 
 ### 管理员账号
 

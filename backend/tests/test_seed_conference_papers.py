@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -17,9 +19,12 @@ def test_normalized_identity_ignores_punctuation_case_and_diacritics() -> None:
     assert normalize_identity_text("Vision–Language Models") == (
         normalize_identity_text("vision language models")
     )
-    assert seed_conference_papers.title_search_query(
-        "VITA: Zero-Shot Value Functions via Test-Time Adaptation"
-    ) == "VITA Zero Shot Value Functions via"
+    assert (
+        seed_conference_papers.title_search_query(
+            "VITA: Zero-Shot Value Functions via Test-Time Adaptation"
+        )
+        == "VITA Zero Shot Value Functions via"
+    )
 
 
 def test_find_iclr_proceedings_page_validates_title_and_first_author(
@@ -114,6 +119,126 @@ def test_citation_pages_combines_first_and_last_page() -> None:
     assert seed_conference_papers.citation_pages(parser) == "101--112"
 
 
+def test_parse_arxiv_feed_builds_preprint_metadata() -> None:
+    payload = b"""<?xml version="1.0" encoding="UTF-8"?>
+    <feed xmlns="http://www.w3.org/2005/Atom">
+      <entry>
+        <id>http://arxiv.org/abs/2608.12308v1</id>
+        <title>Example AI Paper</title>
+        <published>2026-08-12T17:54:33Z</published>
+        <summary>Official abstract.</summary>
+        <link href="https://arxiv.org/pdf/2608.12308v1" type="application/pdf" />
+        <author><name>Ada Lovelace</name></author>
+      </entry>
+    </feed>"""
+
+    paper = seed_conference_papers.parse_arxiv_feed(payload, 1)[0]
+
+    assert paper.slug == "arxiv-2608-12308"
+    assert paper.metadata.source_id == "arxiv:2608.12308"
+    assert paper.metadata.entry_type == "misc"
+    assert str(paper.metadata.pdf_url) == "https://arxiv.org/pdf/2608.12308"
+
+
+def test_parse_biorxiv_response_deduplicates_versions() -> None:
+    item = {
+        "title": "Biology Preprint",
+        "authors": "Lovelace, A.; Hopper, G.",
+        "doi": "10.64898/2026.01.01.123456",
+        "date": "2026-08-01",
+        "version": "2",
+        "category": "bioinformatics",
+        "abstract": "Official abstract.",
+    }
+    payload = json.dumps({"collection": [item, {**item, "version": "1"}]}).encode()
+
+    paper = seed_conference_papers.parse_biorxiv_response(payload, 1)[0]
+
+    assert paper.metadata.authors == ["A. Lovelace", "G. Hopper"]
+    assert paper.metadata.doi == "10.64898/2026.01.01.123456"
+    assert str(paper.metadata.pdf_url).endswith("v2.full.pdf")
+
+
+def test_parse_plos_response_builds_journal_metadata() -> None:
+    payload = json.dumps(
+        {
+            "message": {
+                "items": [
+                    {
+                        "DOI": "10.1371/journal.pone.0353232",
+                        "title": ["PLOS Article"],
+                        "author": [{"given": "Ada", "family": "Lovelace"}],
+                        "abstract": "<jats:p>Official abstract.</jats:p>",
+                        "published": {"date-parts": [[2026, 8, 12]]},
+                        "URL": "https://doi.org/10.1371/journal.pone.0353232",
+                        "volume": "21",
+                        "issue": "8",
+                        "page": "e0353232",
+                        "publisher": "Public Library of Science",
+                        "container-title": ["PLOS One"],
+                    }
+                ]
+            }
+        }
+    ).encode()
+
+    paper = seed_conference_papers.parse_plos_response(payload, 1)[0]
+
+    assert paper.summary == "Official abstract."
+    assert paper.metadata.entry_type == "article"
+    assert paper.metadata.journal == "PLOS One"
+    assert paper.metadata.issue == "8"
+    assert str(paper.metadata.pdf_url).endswith("id=10.1371/journal.pone.0353232&type=printable")
+
+
+def test_collect_papers_routes_open_sources(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[str, int, int]] = []
+    monkeypatch.setattr(
+        seed_conference_papers,
+        "collect_arxiv_papers",
+        lambda year, limit: calls.append(("ARXIV", year, limit)) or [],
+    )
+    monkeypatch.setattr(
+        seed_conference_papers,
+        "collect_biorxiv_papers",
+        lambda year, limit: calls.append(("BIORXIV", year, limit)) or [],
+    )
+    monkeypatch.setattr(
+        seed_conference_papers,
+        "collect_plos_papers",
+        lambda year, limit: calls.append(("PLOS", year, limit)) or [],
+    )
+
+    seed_conference_papers.collect_papers(venues=("ARXIV", "BIORXIV", "PLOS"), year=2026, limit=10)
+
+    assert calls == [
+        ("ARXIV", 2026, 10),
+        ("BIORXIV", 2026, 10),
+        ("PLOS", 2026, 10),
+    ]
+
+
+def test_download_papers_skips_an_existing_valid_pdf(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    paper = conference_paper()
+    destination = tmp_path / "paper" / paper.slug / "manuscript" / "paper.pdf"
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(b"%PDF existing")
+    monkeypatch.setattr(seed_conference_papers, "validate_pdf", lambda path: None)
+    monkeypatch.setattr(
+        seed_conference_papers,
+        "fetch",
+        lambda url: pytest.fail("不应重复下载已经验证的 PDF"),
+    )
+
+    result = seed_conference_papers.download_papers([paper], tmp_path)
+
+    assert result.downloaded == 0
+    assert result.skipped == 1
+    assert result.failures == ()
+
+
 def make_session() -> Session:
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)
@@ -203,14 +328,16 @@ def test_upsert_updates_one_canonical_paper_without_creating_duplicates(
     original = existing_paper(session, conference_paper())
     monkeypatch.setattr(seed_conference_papers, "SessionLocal", sessionmaker(bind=session.bind))
 
-    seed_conference_papers.upsert_metadata([incoming])
-    seed_conference_papers.upsert_metadata([incoming])
+    first_result = seed_conference_papers.upsert_metadata([incoming])
+    second_result = seed_conference_papers.upsert_metadata([incoming])
 
     with Session(session.bind) as verification:
         papers = verification.scalars(select(Asset).where(Asset.type == AssetType.PAPER)).all()
         assert len(papers) == 1
         assert papers[0].id == original.id
         assert papers[0].details["source_id"] == incoming.metadata.source_id
+        assert first_result.updated == 1
+        assert second_result.skipped == 1
 
 
 def test_upsert_allows_same_title_with_a_different_first_author(
@@ -287,6 +414,4 @@ def test_upsert_rolls_back_when_identifiers_point_to_different_papers(
 
     with Session(session.bind) as verification:
         assert verification.scalar(select(func.count()).select_from(Asset)) == before
-        assert verification.scalar(
-            select(Asset).where(Asset.slug == "would-roll-back")
-        ) is None
+        assert verification.scalar(select(Asset).where(Asset.slug == "would-roll-back")) is None

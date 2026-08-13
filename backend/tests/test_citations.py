@@ -82,3 +82,42 @@ def test_bibtex_endpoints_require_admin_and_preserve_filters(
     finally:
         app.dependency_overrides.clear()
         session.close()
+
+
+def test_article_bibtex_uses_journal_instead_of_booktitle() -> None:
+    session = make_session()
+    owner = ensure_fixed_accounts(session)[1]
+    paper = create_asset(
+        session,
+        AssetCreateRequest(
+            type=AssetType.PAPER,
+            slug="journal-article",
+            title="Journal Article",
+            status="published",
+            visibility=Visibility.LAB,
+            details={
+                "venue": "PLOS ONE",
+                "year": 2026,
+                "track": "Research Article",
+                "authors": ["Ada Lovelace"],
+                "source_id": "crossref:10.1371/example",
+                "source_url": "https://doi.org/10.1371/example",
+                "pdf_url": "https://example.com/article.pdf",
+                "entry_type": "article",
+                "journal": "PLOS One",
+                "issue": "8",
+            },
+        ),
+        actor=owner,
+    )
+    session.commit()
+
+    from app.services.citations import build_paper_citation
+
+    citation = build_paper_citation(paper)
+
+    assert "@article{" in citation.bibtex
+    assert "journal = {PLOS One}" in citation.bibtex
+    assert "number = {8}" in citation.bibtex
+    assert "booktitle" not in citation.bibtex
+    session.close()

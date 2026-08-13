@@ -209,14 +209,14 @@ class PaperMetadata(BaseModel):
         max_length=160,
         pattern=r"^[A-Za-z][A-Za-z0-9_:+.-]*$",
     )
-    entry_type: Literal["article", "inproceedings", "misc", "proceedings"] = (
-        "inproceedings"
-    )
+    entry_type: Literal["article", "inproceedings", "misc", "proceedings"] = "inproceedings"
     booktitle: str | None = Field(default=None, max_length=500)
+    journal: str | None = Field(default=None, max_length=500)
     pages: str | None = Field(default=None, max_length=80)
     publisher: str | None = Field(default=None, max_length=300)
     month: str | None = Field(default=None, max_length=40)
     volume: str | None = Field(default=None, max_length=80)
+    issue: str | None = Field(default=None, max_length=80)
 
     @field_validator("venue", "track", "source_id")
     @classmethod
@@ -243,7 +243,14 @@ class PaperMetadata(BaseModel):
         return normalized or None
 
     @field_validator(
-        "citation_key", "booktitle", "pages", "publisher", "month", "volume"
+        "citation_key",
+        "booktitle",
+        "journal",
+        "pages",
+        "publisher",
+        "month",
+        "volume",
+        "issue",
     )
     @classmethod
     def normalize_optional_text(cls, value: str | None) -> str | None:
@@ -416,9 +423,7 @@ class InstanceBrandingUpdateRequest(BaseModel):
         color = value.upper()
         channels = [int(color[index : index + 2], 16) / 255 for index in (1, 3, 5)]
         linear = [
-            channel / 12.92
-            if channel <= 0.04045
-            else ((channel + 0.055) / 1.055) ** 2.4
+            channel / 12.92 if channel <= 0.04045 else ((channel + 0.055) / 1.055) ** 2.4
             for channel in channels
         ]
         luminance = 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]

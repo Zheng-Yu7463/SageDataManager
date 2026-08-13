@@ -495,9 +495,9 @@ onBeforeUnmount(() => controller?.abort())
             </select>
           </label>
           <label v-if="assetType === 'paper'">
-            收录会议
+            发表来源
             <select v-model="filters.venue" @change="applyFilters">
-              <option value="">全部会议</option>
+              <option value="">全部来源</option>
               <option v-for="venue in data?.paper_facets?.venues" :key="venue" :value="venue">{{ venue }}</option>
             </select>
           </label>
@@ -555,7 +555,11 @@ onBeforeUnmount(() => controller?.abort())
         <div class="catalogue-card-icon"><AssetIcon :type="asset.type" :size="22" /></div>
         <div class="catalogue-card-copy">
           <div class="catalogue-title-line">
-            <h2>{{ asset.title }}</h2>
+            <h2>
+              <RouterLink :to="{ name: 'asset-detail', params: { assetId: asset.id }, query: { returnTo: route.fullPath } }">
+                {{ asset.title }}
+              </RouterLink>
+            </h2>
             <span class="status-badge">{{ asset.status }}</span>
           </div>
           <p>{{ asset.summary }}</p>
@@ -571,7 +575,7 @@ onBeforeUnmount(() => controller?.abort())
           </div>
         </div>
         <dl class="catalogue-facts">
-          <div><dt>{{ paperMetadata(asset) ? '会议收录' : '当前版本' }}</dt><dd>{{ paperMetadata(asset) ? `${paperMetadata(asset)!.venue} ${paperMetadata(asset)!.year}` : asset.current_version ?? '—' }}</dd></div>
+          <div><dt>{{ paperMetadata(asset) ? '发表来源' : '当前版本' }}</dt><dd>{{ paperMetadata(asset) ? `${paperMetadata(asset)!.venue} ${paperMetadata(asset)!.year}` : asset.current_version ?? '—' }}</dd></div>
           <div><dt>文件规模</dt><dd>{{ formatBytes(asset.total_size) }}</dd></div>
           <div><dt>数据状态</dt><dd><span class="data-status" :class="{ 'data-status--present': asset.file_count > 0 }"><Database :size="13" />{{ asset.file_count > 0 ? `已有数据 · ${asset.file_count} 个文件` : '暂无数据' }}</span></dd></div>
           <div><dt>负责人</dt><dd><span class="mini-avatar">{{ asset.owner.name.slice(0, 1) }}</span>{{ asset.owner.name }}</dd></div>
