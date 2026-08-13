@@ -53,10 +53,13 @@ Never place a token in this document, source code, URLs, logs, or asset metadata
 4. Create metadata only when no matching asset exists: `POST /api/agent/assets`.
 5. Create an isolated upload task: `POST /api/agent/uploads`.
 6. Upload each file with `PUT` to the returned `file_upload_url_template`.
-   Send the upload token in `X-Sage-Upload-Token`.
+   Send the upload token in `X-Sage-Upload-Token` and use the same personal
+   access token that created the task.
 7. Finalize after every upload succeeds. `POST` to `finalize_url`
    with `{"upload_token":"..."}`.
-8. On `409`, do not overwrite or retry under a different name without user direction.
+   Finalization is idempotent: after a lost response, retry it with the same
+   upload ID and tokens. A completed task rejects additional file uploads.
+8. On a file conflict, do not overwrite or rename the file without user direction.
 
 ## Catalogue policy
 

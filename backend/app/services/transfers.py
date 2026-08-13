@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import os
+import shutil
+import stat
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from mimetypes import guess_type
 from pathlib import Path, PurePosixPath
@@ -14,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.domain.activity import ActivityAction
 from app.domain.enums import HealthStatus
-from app.domain.models import Asset, FileRecord, User
+from app.domain.models import Asset, FileRecord, PersonalAccessToken, UploadTask, User
 from app.domain.schemas import (
     AgentUploadCreateResponse,
     AgentUploadedFileResponse,
@@ -59,6 +62,50 @@ class UploadConflictError(UploadError):
         hidden_count = len(paths) - 8
         suffix = f"\n另有 {hidden_count} 个冲突路径" if hidden_count > 0 else ""
         super().__init__(f"以下归档路径已存在，请先处理冲突：\n{visible_paths}{suffix}")
+
+
+UPLOAD_COMPLETION_MARKER = ".sage-upload-complete"
+
+
+@dataclass
+class OpenStagedFile:
+    relative_path: PurePosixPath
+    descriptor: int
+    parent_descriptor: int
+    name: str
+    metadata: os.stat_result
+
+
+@dataclass
+class PublishedFile:
+    path: Path
+    parent_descriptor: int
+
+
+def _new_upload_task(
+    session: Session,
+    *,
+    upload_id: UUID,
+    asset: Asset,
+    actor: User,
+    access_token: PersonalAccessToken | None,
+    subdirectory: PurePosixPath,
+    expires_at: datetime,
+    transfer_mode: str,
+) -> UploadTask:
+    task = UploadTask(
+        id=upload_id,
+        asset=asset,
+        user_id=actor.id,
+        access_token_id=access_token.id if access_token else None,
+        target_subdirectory=subdirectory.as_posix(),
+        transfer_mode=transfer_mode,
+        status="active",
+        expires_at=expires_at,
+    )
+    session.add(task)
+    session.flush()
+    return task
 
 
 def _validated_subdirectory(asset: Asset, value: str) -> PurePosixPath:
@@ -111,13 +158,26 @@ def generate_upload_command(
     remote_login = f"{ssh_user.strip()}@{ssh_host.strip()}"
     remote_mkdir = f"mkdir -p -- {quote(staging_destination.as_posix())}"
     recursive = "-r " if payload.recursive else ""
+    completion_marker = staging_destination / UPLOAD_COMPLETION_MARKER
+    mark_complete = f"touch -- {quote(completion_marker.as_posix())}"
     command = (
         f"ssh -p {ssh_port} {quote(remote_login)} {quote(remote_mkdir)} && "
         f"scp -P {ssh_port} {recursive}-- {quote(source_path)} "
-        f"{quote(f'{remote_login}:{staging_destination.as_posix()}/')}"
+        f"{quote(f'{remote_login}:{staging_destination.as_posix()}/')} && "
+        f"ssh -p {ssh_port} {quote(remote_login)} {quote(mark_complete)}"
     )
     upload_token, expires_at = create_upload_token(
         upload_id, asset.id, subdirectory.as_posix(), ssh_user.strip()
+    )
+    _new_upload_task(
+        session,
+        upload_id=upload_id,
+        asset=asset,
+        actor=actor or asset.owner,
+        access_token=None,
+        subdirectory=subdirectory,
+        expires_at=expires_at,
+        transfer_mode="scp",
     )
     if actor:
         record_activity(
@@ -145,7 +205,7 @@ def create_agent_upload(
     target_subdirectory: str,
     *,
     actor: User,
-    credential_name: str,
+    access_token: PersonalAccessToken,
 ) -> AgentUploadCreateResponse:
     asset = session.get(Asset, asset_id)
     if not asset or asset.archived_at:
@@ -158,11 +218,21 @@ def create_agent_upload(
     upload_token, expires_at = create_upload_token(
         upload_id, asset.id, subdirectory.as_posix(), actor.username or ""
     )
+    _new_upload_task(
+        session,
+        upload_id=upload_id,
+        asset=asset,
+        actor=actor,
+        access_token=access_token,
+        subdirectory=subdirectory,
+        expires_at=expires_at,
+        transfer_mode="agent",
+    )
     record_activity(
         session,
         asset=asset,
         actor=actor,
-        credential_name=credential_name,
+        credential_name=access_token.name,
         action=ActivityAction.PREPARED_UPLOAD,
         description=f"为 {archive_relative_path} 创建了 AI 上传任务",
     )
@@ -180,17 +250,28 @@ def create_agent_upload(
 
 
 def validate_agent_upload(
+    session: Session,
     upload_id: UUID,
     upload_token: str,
     actor: User,
-) -> None:
+    access_token: PersonalAccessToken,
+) -> UploadTask:
     claims = read_upload_token(upload_token)
+    task = session.get(UploadTask, upload_id)
     if (
         not claims
         or claims.upload_id != upload_id
         or claims.username != (actor.username or "")
+        or not task
+        or task.user_id != actor.id
+        or task.access_token_id != access_token.id
+        or task.asset_id != claims.asset_id
+        or task.target_subdirectory != claims.target_subdirectory
+        or task.transfer_mode != "agent"
+        or task.status != "active"
     ):
         raise UploadTicketError("上传凭据无效或已过期，请重新创建上传任务。")
+    return task
 
 
 def staged_upload_destination(
@@ -208,13 +289,18 @@ def staged_upload_destination(
         or any(len(part) > 255 for part in upload_path.parts)
     ):
         raise UploadContentError("上传文件路径必须是任务内的安全相对路径。")
-    root = storage_root.resolve(strict=True)
+    try:
+        root = storage_root.resolve(strict=True)
+    except (FileNotFoundError, NotADirectoryError) as error:
+        raise UploadContentError("存储根不可用，无法接收文件。") from error
     if not root.is_dir():
         raise UploadContentError("存储根不可用，无法接收文件。")
     staging_root = root / UPLOAD_STAGING_DIRECTORY
     if staging_root.is_symlink():
         raise UploadContentError("上传临时区不是有效目录，无法接收文件。")
     destination = staging_root.joinpath(str(upload_id), *upload_path.parts)
+    if upload_path.parts[0] == UPLOAD_COMPLETION_MARKER:
+        raise UploadContentError("上传文件路径使用了系统保留名称。")
     if destination.exists() or destination.is_symlink():
         raise UploadConflictError([upload_path.as_posix()])
     if _unsafe_destination_parent(destination, root):
@@ -258,14 +344,21 @@ def complete_agent_file_upload(
     )
 
 
-def _staged_files(staging_directory: Path) -> list[Path]:
+def _staged_files(staging_directory: Path, *, completion_marker_required: bool) -> list[Path]:
     if not staging_directory.exists():
         raise UploadNotReadyError("尚未检测到文件，请确认终端传输已完成后重试。")
     if staging_directory.is_symlink() or not staging_directory.is_dir():
         raise UploadContentError("上传临时区不是有效目录，无法入库。")
+    completion_marker = staging_directory / UPLOAD_COMPLETION_MARKER
+    if completion_marker_required and not completion_marker.is_file():
+        raise UploadNotReadyError("传输尚未完成，请等待上传命令执行结束后重试。")
+    if completion_marker.is_symlink():
+        raise UploadContentError("上传完成标记无效，无法入库。")
 
     files: list[Path] = []
     for candidate in staging_directory.rglob("*"):
+        if candidate == completion_marker:
+            continue
         if candidate.is_symlink():
             raise UploadContentError("上传内容含有符号链接，无法入库。")
         if candidate.is_file():
@@ -277,6 +370,68 @@ def _staged_files(staging_directory: Path) -> list[Path]:
     return sorted(files, key=lambda path: path.relative_to(staging_directory).as_posix())
 
 
+def _open_staged_files(
+    staging_directory: Path, staged_files: list[Path]
+) -> list[OpenStagedFile]:
+    opened: list[OpenStagedFile] = []
+    try:
+        for path in staged_files:
+            relative_path = PurePosixPath(path.relative_to(staging_directory).as_posix())
+            parent_descriptor = os.open(
+                staging_directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+            )
+            descriptor: int | None = None
+            try:
+                for directory_name in relative_path.parts[:-1]:
+                    next_descriptor = os.open(
+                        directory_name,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=parent_descriptor,
+                    )
+                    os.close(parent_descriptor)
+                    parent_descriptor = next_descriptor
+                descriptor = os.open(
+                    relative_path.name,
+                    os.O_RDONLY | os.O_NOFOLLOW,
+                    dir_fd=parent_descriptor,
+                )
+                metadata = os.fstat(descriptor)
+                if not stat.S_ISREG(metadata.st_mode):
+                    raise UploadContentError("上传内容含有不支持的文件类型，无法入库。")
+                opened.append(
+                    OpenStagedFile(
+                        relative_path=relative_path,
+                        descriptor=descriptor,
+                        parent_descriptor=parent_descriptor,
+                        name=relative_path.name,
+                        metadata=metadata,
+                    )
+                )
+                descriptor = None
+                parent_descriptor = -1
+            except UploadContentError:
+                raise
+            except OSError as error:
+                raise UploadContentError(
+                    "上传文件路径在入库期间发生变化，请重新上传后重试。"
+                ) from error
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+                if parent_descriptor >= 0:
+                    os.close(parent_descriptor)
+    except Exception:
+        _close_staged_files(opened)
+        raise
+    return opened
+
+
+def _close_staged_files(files: list[OpenStagedFile]) -> None:
+    for source in files:
+        os.close(source.descriptor)
+        os.close(source.parent_descriptor)
+
+
 def _unsafe_destination_parent(destination: Path, storage_root: Path) -> bool:
     parent = storage_root
     for part in destination.relative_to(storage_root).parts[:-1]:
@@ -284,15 +439,6 @@ def _unsafe_destination_parent(destination: Path, storage_root: Path) -> bool:
         if parent.is_symlink() or (parent.exists() and not parent.is_dir()):
             return True
     return False
-
-
-def _remove_empty_staging_directories(staging_directory: Path, staging_root: Path) -> None:
-    directories = [path for path in staging_directory.rglob("*") if path.is_dir()]
-    for directory in sorted(directories, key=lambda path: len(path.parts), reverse=True):
-        directory.rmdir()
-    staging_directory.rmdir()
-    if staging_root.exists() and not any(staging_root.iterdir()):
-        staging_root.rmdir()
 
 
 def _remove_empty_archive_directories(directories: set[Path], storage_root: Path) -> None:
@@ -305,26 +451,68 @@ def _remove_empty_archive_directories(directories: set[Path], storage_root: Path
             continue
 
 
-def _restore_staging_directory(
-    staging_directory: Path,
-    moved_files: list[tuple[Path, Path]],
+def _copy_without_overwrite(
+    source: OpenStagedFile,
+    destination_parent_descriptor: int,
+    destination: Path,
+    relative_path: str,
 ) -> None:
-    staging_directory.mkdir(parents=True, exist_ok=True)
-    for source, destination in reversed(moved_files):
-        source.parent.mkdir(parents=True, exist_ok=True)
-        destination.replace(source)
-
-
-def _move_without_overwrite(source: Path, destination: Path, relative_path: str) -> None:
+    target_descriptor: int | None = None
     try:
-        os.link(source, destination)
+        target_descriptor = os.open(
+            destination.name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            source.metadata.st_mode & 0o777,
+            dir_fd=destination_parent_descriptor,
+        )
     except FileExistsError:
         raise UploadConflictError([relative_path]) from None
     try:
-        source.unlink()
+        with (
+            os.fdopen(os.dup(source.descriptor), "rb") as input_file,
+            os.fdopen(target_descriptor, "wb") as output_file,
+        ):
+            target_descriptor = None
+            shutil.copyfileobj(input_file, output_file)
+            output_file.flush()
+            os.fsync(output_file.fileno())
+        try:
+            current_metadata = os.fstat(source.descriptor)
+            path_metadata = os.stat(
+                source.name,
+                dir_fd=source.parent_descriptor,
+                follow_symlinks=False,
+            )
+        except OSError as error:
+            raise UploadContentError(
+                "上传文件在入库期间发生变化，请重新上传后重试。"
+            ) from error
+        identity = (source.metadata.st_dev, source.metadata.st_ino)
+        current_identity = (current_metadata.st_dev, current_metadata.st_ino)
+        path_identity = (path_metadata.st_dev, path_metadata.st_ino)
+        stable_fields = (
+            source.metadata.st_size,
+            source.metadata.st_mtime_ns,
+            source.metadata.st_ctime_ns,
+        )
+        current_fields = (
+            current_metadata.st_size,
+            current_metadata.st_mtime_ns,
+            current_metadata.st_ctime_ns,
+        )
+        if (
+            identity != current_identity
+            or identity != path_identity
+            or stable_fields != current_fields
+        ):
+            raise UploadContentError("上传文件在入库期间发生变化，请重新上传后重试。")
     except Exception:
-        destination.unlink(missing_ok=True)
+        with suppress(FileNotFoundError):
+            os.unlink(destination.name, dir_fd=destination_parent_descriptor)
         raise
+    finally:
+        if target_descriptor is not None:
+            os.close(target_descriptor)
 
 
 def finalize_upload(
@@ -334,25 +522,33 @@ def finalize_upload(
     upload_token: str,
     *,
     actor: User,
-    credential_name: str | None = None,
+    access_token: PersonalAccessToken | None = None,
 ) -> UploadFinalizeResponse:
     claims = read_upload_token(upload_token)
+    task = session.scalar(select(UploadTask).where(UploadTask.id == upload_id).with_for_update())
     if (
         not claims
         or claims.upload_id != upload_id
         or claims.username != (actor.username or "")
+        or not task
+        or task.user_id != actor.id
+        or task.access_token_id != (access_token.id if access_token else None)
+        or task.asset_id != claims.asset_id
+        or task.target_subdirectory != claims.target_subdirectory
     ):
         raise UploadTicketError("上传凭据无效或已过期，请重新生成上传命令。")
+    if task.status == "completed" and task.result:
+        return UploadFinalizeResponse.model_validate(task.result)
 
     asset = session.scalar(
         select(Asset).where(Asset.id == claims.asset_id).with_for_update()
     )
     if not asset or asset.archived_at:
         raise UploadTicketError("目标资产不存在或已归档，请重新生成上传命令。")
-    subdirectory = _validated_subdirectory(asset, claims.target_subdirectory)
+    subdirectory = _validated_subdirectory(asset, task.target_subdirectory)
     try:
         root = storage_root.resolve(strict=True)
-    except FileNotFoundError as error:
+    except (FileNotFoundError, NotADirectoryError) as error:
         raise UploadContentError("存储根不可用，无法完成入库。") from error
     if not root.is_dir():
         raise UploadContentError("存储根不可用，无法完成入库。")
@@ -361,85 +557,136 @@ def finalize_upload(
     staging_directory = staging_root / str(upload_id)
     if staging_root.is_symlink():
         raise UploadContentError("上传临时区不是有效目录，无法入库。")
-    staged_files = _staged_files(staging_directory)
+    staged_files = _staged_files(
+        staging_directory,
+        completion_marker_required=task.transfer_mode == "scp",
+    )
+    opened_files = _open_staged_files(staging_directory, staged_files)
     archive_directory = root.joinpath(asset.type.value, asset.slug, *subdirectory.parts)
     destinations = [
-        archive_directory / source.relative_to(staging_directory) for source in staged_files
+        archive_directory.joinpath(*source.relative_path.parts) for source in opened_files
     ]
     relative_paths = [destination.relative_to(root).as_posix() for destination in destinations]
 
-    database_conflicts = set(
-        session.scalars(
-            select(FileRecord.relative_path).where(FileRecord.relative_path.in_(relative_paths))
-        ).all()
-    )
-    conflicts = sorted(
-        relative_path
-        for destination, relative_path in zip(destinations, relative_paths, strict=True)
-        if (
-            destination.exists()
-            or destination.is_symlink()
-            or _unsafe_destination_parent(destination, root)
-            or relative_path in database_conflicts
+    try:
+        database_conflicts = set(
+            session.scalars(
+                select(FileRecord.relative_path).where(FileRecord.relative_path.in_(relative_paths))
+            ).all()
         )
-    )
-    if conflicts:
-        raise UploadConflictError(conflicts)
+        conflicts = sorted(
+            relative_path
+            for destination, relative_path in zip(destinations, relative_paths, strict=True)
+            if (
+                destination.exists()
+                or destination.is_symlink()
+                or _unsafe_destination_parent(destination, root)
+                or relative_path in database_conflicts
+            )
+        )
+        if conflicts:
+            raise UploadConflictError(conflicts)
+    except Exception:
+        _close_staged_files(opened_files)
+        raise
 
-    moved_files: list[tuple[Path, Path]] = []
+    published_files: list[PublishedFile] = []
     created_archive_directories: set[Path] = set()
     total_size = 0
     try:
-        for source, destination in zip(staged_files, destinations, strict=True):
-            missing_directories = []
-            parent = destination.parent
-            while parent != root and not parent.exists():
-                missing_directories.append(parent)
-                parent = parent.parent
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            created_archive_directories.update(missing_directories)
+        for source, destination in zip(opened_files, destinations, strict=True):
             relative_path = destination.relative_to(root).as_posix()
-            _move_without_overwrite(source, destination, relative_path)
-            moved_files.append((source, destination))
+            parent_descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                parent_path = root
+                for directory_name in destination.relative_to(root).parts[:-1]:
+                    parent_path /= directory_name
+                    try:
+                        os.mkdir(directory_name, dir_fd=parent_descriptor)
+                        created_archive_directories.add(parent_path)
+                    except FileExistsError:
+                        pass
+                    next_descriptor = os.open(
+                        directory_name,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=parent_descriptor,
+                    )
+                    os.close(parent_descriptor)
+                    parent_descriptor = next_descriptor
+                rollback_descriptor = os.dup(parent_descriptor)
+                try:
+                    _copy_without_overwrite(
+                        source,
+                        parent_descriptor,
+                        destination,
+                        relative_path,
+                    )
+                except Exception:
+                    os.close(rollback_descriptor)
+                    raise
+                published_files.append(
+                    PublishedFile(path=destination, parent_descriptor=rollback_descriptor)
+                )
+            finally:
+                os.close(parent_descriptor)
 
-        for destination, relative_path in zip(destinations, relative_paths, strict=True):
-            stat = destination.stat()
-            total_size += stat.st_size
+        for published, relative_path in zip(published_files, relative_paths, strict=True):
+            metadata = os.stat(
+                published.path.name,
+                dir_fd=published.parent_descriptor,
+                follow_symlinks=False,
+            )
+            total_size += metadata.st_size
             session.add(
                 FileRecord(
                     asset=asset,
                     relative_path=relative_path,
-                    file_name=destination.name,
-                    file_kind=file_kind(destination),
-                    mime_type=guess_type(destination.name)[0],
-                    file_size=stat.st_size,
+                    file_name=published.path.name,
+                    file_kind=file_kind(published.path),
+                    mime_type=guess_type(published.path.name)[0],
+                    file_size=metadata.st_size,
                     health_status=HealthStatus.HEALTHY,
-                    modified_at=datetime.fromtimestamp(stat.st_mtime, UTC),
+                    modified_at=datetime.fromtimestamp(metadata.st_mtime, UTC),
                 )
             )
         record_activity(
             session,
             asset=asset,
             actor=actor,
-            credential_name=credential_name,
+            credential_name=access_token.name if access_token else None,
             action=ActivityAction.COMPLETED_UPLOAD,
             description=(
                 f"向 {asset.type.value}/{asset.slug}/{subdirectory.as_posix()} "
                 f"入库了 {len(destinations)} 个文件"
             ),
         )
+        result = UploadFinalizeResponse(
+            asset_id=asset.id,
+            imported_file_count=len(destinations),
+            total_size=total_size,
+            relative_paths=relative_paths,
+        )
+        task.status = "completed"
+        task.result = result.model_dump(mode="json")
+        task.completed_at = datetime.now(UTC)
         session.flush()
-        _remove_empty_staging_directories(staging_directory, staging_root)
         session.commit()
     except Exception:
         session.rollback()
-        _restore_staging_directory(staging_directory, moved_files)
+        for published in reversed(published_files):
+            with suppress(FileNotFoundError):
+                os.unlink(published.path.name, dir_fd=published.parent_descriptor)
         _remove_empty_archive_directories(created_archive_directories, root)
         raise
+    finally:
+        _close_staged_files(opened_files)
+        for published in published_files:
+            os.close(published.parent_descriptor)
 
-    return UploadFinalizeResponse(
-        asset_id=asset.id,
-        imported_file_count=len(destinations),
-        total_size=total_size,
-        relative_paths=relative_paths,
-    )
+    try:
+        shutil.rmtree(staging_directory)
+        if staging_root.exists() and not any(staging_root.iterdir()):
+            staging_root.rmdir()
+    except OSError:
+        pass
+    return result

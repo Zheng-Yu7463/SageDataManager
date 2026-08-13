@@ -190,7 +190,7 @@ def agent_create_upload(
             payload.asset_id,
             payload.target_subdirectory,
             actor=principal.user,
-            credential_name=principal.token.name,
+            access_token=principal.token,
         )
         session.commit()
         return result
@@ -221,7 +221,13 @@ async def agent_upload_file(
     if declared_size is not None and declared_size > settings.agent_upload_max_bytes:
         raise HTTPException(status_code=413, detail="上传文件超过服务器限制。")
     try:
-        validate_agent_upload(upload_id, x_sage_upload_token, principal.user)
+        validate_agent_upload(
+            session,
+            upload_id,
+            x_sage_upload_token,
+            principal.user,
+            principal.token,
+        )
         destination, parts_directory = staged_upload_destination(
             settings.storage_root, upload_id, relative_path
         )
@@ -268,7 +274,7 @@ def agent_finalize_upload(
             upload_id,
             payload.upload_token,
             actor=principal.user,
-            credential_name=principal.token.name,
+            access_token=principal.token,
         )
     except UploadTicketError as error:
         session.rollback()

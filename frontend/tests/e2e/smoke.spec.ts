@@ -65,6 +65,104 @@ test('管理员可登录并进入安全上传闭环', async ({ page }) => {
   await expect(page.getByRole('button', { name: '检测并入库' })).toBeVisible()
 })
 
+test('上传入库成功后目录刷新失败仍保留成功结果', async ({ page }) => {
+  await page.route('**/api/dashboard', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        counts: { paper: 0, dataset: 0, literature: 1, project: 0, model: 0 },
+        total_storage_bytes: 0,
+        healthy_files: 0,
+        missing_files: 0,
+        recent_assets: [],
+        recent_activities: [],
+        popular_tags: [],
+      }),
+    })
+  })
+  await signInWithMockAccount(page)
+  let catalogueReads = 0
+  const asset = {
+    id: '82828282-8282-8282-8282-828282828282',
+    type: 'literature',
+    slug: 'test-literature',
+    title: '测试文献',
+    summary: '用于验证上传完成后的目录同步语义。',
+    status: 'published',
+    visibility: 'lab',
+    owner: { id: '83838383-8383-8383-8383-838383838383', name: '测试用户', avatar_url: null },
+    details: {
+      venue: 'ACL', year: 2026, track: 'Conference Paper', authors: ['Ada Lovelace'],
+      source_id: 'test-literature', source_url: 'https://example.com/test', pdf_url: 'https://example.com/test.pdf',
+    },
+    tags: ['ACL'],
+    current_version: null,
+    total_size: 0,
+    file_count: 0,
+    upload_directories: [{ name: 'original', label: '原始文件' }],
+    default_upload_directory: 'original',
+    updated_at: '2026-08-14T03:00:00Z',
+  }
+  await page.route('**/api/assets?*', async (route) => {
+    catalogueReads += 1
+    if (catalogueReads === 1) {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          items: [asset], total: 1, page: 1, page_size: 20,
+          publication_facets: { venues: ['ACL'], years: [2026] },
+        }),
+      })
+      return
+    }
+    await route.fulfill({
+      status: 503,
+      contentType: 'application/json',
+      body: JSON.stringify({ detail: '目录暂不可用' }),
+    })
+  })
+  await page.route('**/api/archive/upload-command', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        upload_id: '81818181-8181-8181-8181-818181818181',
+        asset_id: '82828282-8282-8282-8282-828282828282',
+        asset_title: '测试文献',
+        archive_relative_path: 'literature/test/original',
+        staging_relative_path: '.uploads/81818181-8181-8181-8181-818181818181',
+        upload_token: 'upload-token',
+        expires_at: '2026-08-15T03:00:00Z',
+        command: 'scp paper.pdf archive',
+      }),
+    })
+  })
+  let finalizeRequests = 0
+  await page.route('**/api/archive/uploads/*/finalize', async (route) => {
+    finalizeRequests += 1
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        asset_id: '82828282-8282-8282-8282-828282828282',
+        imported_file_count: 1,
+        total_size: 2048,
+        relative_paths: ['literature/test/original/paper.pdf'],
+      }),
+    })
+  })
+
+  await page.goto('/literature?view=grid')
+  await page.getByRole('button', { name: '上传文件' }).first().click()
+  await page.getByLabel('本机待上传路径').fill('/tmp/paper.pdf')
+  await page.getByRole('button', { name: '生成上传命令' }).click()
+  await page.getByRole('button', { name: '检测并入库' }).click()
+
+  await expect(page.getByText('文件已完成入库')).toBeVisible()
+  await expect(page.getByText('文件已入库，但目录暂时无法刷新。')).toBeVisible()
+  await expect(page.getByText('literature/test/original/paper.pdf')).toBeVisible()
+  await expect(page.getByRole('button', { name: '检测并入库' })).toHaveCount(0)
+  expect(finalizeRequests).toBe(1)
+})
+
 test('资产详情提供可折叠的文件浏览器', async ({ page }) => {
   await signIn(page)
   await page.goto('/literature?view=grid')

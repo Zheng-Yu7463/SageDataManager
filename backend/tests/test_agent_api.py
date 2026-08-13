@@ -431,6 +431,22 @@ def test_agent_can_upload_and_finalize_a_file(tmp_path: Path, monkeypatch) -> No
         assert finalized.json()["relative_paths"] == [
             "literature/agent-upload-paper/original/official/paper.pdf"
         ]
+        replayed = client.post(
+            task_data["finalize_url"],
+            headers=bearer(plaintext),
+            json={"upload_token": task_data["upload_token"]},
+        )
+        rejected_upload = client.put(
+            f"/api/agent/uploads/{task_data['upload_id']}/files/late.pdf",
+            headers={
+                **bearer(plaintext),
+                "X-Sage-Upload-Token": task_data["upload_token"],
+            },
+            content=b"late content",
+        )
+        assert replayed.status_code == 200
+        assert replayed.json() == finalized.json()
+        assert rejected_upload.status_code == 403
         assert (
             tmp_path / "literature/agent-upload-paper/original/official/paper.pdf"
         ).read_bytes().startswith(b"%PDF")
@@ -439,6 +455,78 @@ def test_agent_can_upload_and_finalize_a_file(tmp_path: Path, monkeypatch) -> No
         activities = session.scalars(select(Activity).order_by(Activity.created_at)).all()
         assert activities[-2].credential_name == "literature-sync"
         assert activities[-1].credential_name == "literature-sync"
+        assert sum(activity.action == "completed_upload" for activity in activities) == 1
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
+def test_agent_upload_task_is_bound_to_the_creating_access_token(
+    tmp_path: Path, monkeypatch
+) -> None:
+    session = make_session()
+    user, asset = create_user_and_asset(session)
+    monkeypatch.setattr(settings, "auth_session_secret", "agent-test-secret")
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    first_token = create_token(session, user, ["files:upload"], name="first-agent")
+    second_token = create_token(session, user, ["files:upload"], name="second-agent")
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        client = TestClient(app)
+        task = client.post(
+            "/api/agent/uploads",
+            headers=bearer(first_token),
+            json={"asset_id": str(asset.id), "target_subdirectory": "original"},
+        ).json()
+
+        response = client.put(
+            f"/api/agent/uploads/{task['upload_id']}/files/paper.pdf",
+            headers={
+                **bearer(second_token),
+                "X-Sage-Upload-Token": task["upload_token"],
+            },
+            content=b"content",
+        )
+
+        assert response.status_code == 403
+        assert not (tmp_path / ".uploads").exists()
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
+def test_agent_upload_reports_an_unavailable_storage_root(
+    tmp_path: Path, monkeypatch
+) -> None:
+    session = make_session()
+    user, asset = create_user_and_asset(session)
+    monkeypatch.setattr(settings, "auth_session_secret", "agent-test-secret")
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    plaintext = create_token(session, user, ["files:upload"])
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        client = TestClient(app)
+        task = client.post(
+            "/api/agent/uploads",
+            headers=bearer(plaintext),
+            json={"asset_id": str(asset.id), "target_subdirectory": "original"},
+        ).json()
+        missing_root = tmp_path / "missing-storage"
+        monkeypatch.setattr(settings, "storage_root", missing_root)
+
+        response = client.put(
+            f"/api/agent/uploads/{task['upload_id']}/files/paper.pdf",
+            headers={
+                **bearer(plaintext),
+                "X-Sage-Upload-Token": task["upload_token"],
+            },
+            content=b"content",
+        )
+
+        assert response.status_code == 409
+        assert "存储根不可用" in response.json()["detail"]
+        assert not missing_root.exists()
+        assert not (tmp_path / ".uploads").exists()
     finally:
         app.dependency_overrides.clear()
         session.close()

@@ -109,6 +109,7 @@ const uploadDialog = ref<HTMLElement | null>(null)
 const uploadGenerating = ref(false)
 const uploadFinalizing = ref(false)
 const uploadError = ref('')
+const uploadRefreshError = ref('')
 const uploadCopied = ref(false)
 const uploadResult = ref<UploadCommandResult | null>(null)
 const uploadFinalizeResult = ref<UploadFinalizeResult | null>(null)
@@ -240,10 +241,12 @@ async function load() {
       page.value = lastPage
       syncCatalogueRoute()
     }
+    return true
   } catch (reason) {
-    if (controller !== requestController) return
-    if (reason instanceof DOMException && reason.name === 'AbortError') return
+    if (controller !== requestController) return false
+    if (reason instanceof DOMException && reason.name === 'AbortError') return false
     error.value = reason instanceof Error ? reason.message : '无法读取资产目录'
+    return false
   } finally {
     if (controller === requestController) loading.value = false
   }
@@ -395,6 +398,7 @@ function openUpload(asset: AssetSummary) {
     recursive: false,
   }
   uploadError.value = ''
+  uploadRefreshError.value = ''
   uploadCopied.value = false
   uploadResult.value = null
   uploadFinalizeResult.value = null
@@ -406,9 +410,10 @@ function closeUpload() {
 }
 
 async function generateUploadCommand() {
-  if (!uploadAsset.value || !upload.value.sourcePath.trim()) return
+  if (uploadGenerating.value || !uploadAsset.value || !upload.value.sourcePath.trim()) return
   uploadGenerating.value = true
   uploadError.value = ''
+  uploadRefreshError.value = ''
   uploadCopied.value = false
   try {
     uploadResult.value = await getUploadCommand({
@@ -434,22 +439,30 @@ function reconfigureUpload() {
 }
 
 async function finalizeCurrentUpload() {
-  if (!uploadResult.value) return
+  if (uploadFinalizing.value || !uploadResult.value) return
   uploadFinalizing.value = true
   uploadError.value = ''
+  uploadRefreshError.value = ''
   try {
     uploadFinalizeResult.value = await finalizeUpload(
       uploadResult.value.upload_id,
       uploadResult.value.upload_token,
     )
-    await load()
-    const refreshedAsset = data.value?.items.find((asset) => asset.id === uploadFinalizeResult.value?.asset_id)
-    if (refreshedAsset) uploadAsset.value = refreshedAsset
     uploadPhase.value = 'success'
   } catch (reason) {
     uploadError.value = reason instanceof Error ? reason.message : '无法检测并入库，请稍后重试'
+    return
   } finally {
     uploadFinalizing.value = false
+  }
+  const refreshed = await load()
+  if (refreshed) {
+    const refreshedAsset = data.value?.items.find(
+      (asset) => asset.id === uploadFinalizeResult.value?.asset_id,
+    )
+    if (refreshedAsset) uploadAsset.value = refreshedAsset
+  } else {
+    uploadRefreshError.value = '文件已入库，但目录暂时无法刷新。'
   }
 }
 
@@ -785,6 +798,7 @@ onBeforeUnmount(() => {
             <div><strong>文件已完成入库</strong><p>已索引 {{ uploadFinalizeResult.imported_file_count }} 个文件 · {{ formatBytes(uploadFinalizeResult.total_size) }}</p></div>
           </section>
           <div class="upload-imported-paths"><span>已写入</span><code v-for="path in uploadFinalizeResult.relative_paths.slice(0, 4)" :key="path">{{ path }}</code><small v-if="uploadFinalizeResult.relative_paths.length > 4">另有 {{ uploadFinalizeResult.relative_paths.length - 4 }} 个文件</small></div>
+          <p v-if="uploadRefreshError" class="registration-error upload-error-block" role="alert">{{ uploadRefreshError }}</p>
           <footer><button class="button button--primary" type="button" @click="closeUpload"><Check :size="16" />完成</button></footer>
         </template>
       </form>

@@ -55,8 +55,10 @@ def test_empty_sqlite_database_upgrades_to_head(tmp_path: Path) -> None:
             index["name"] for index in inspector.get_indexes("activities")
         }
         asset_indexes = {index["name"] for index in inspector.get_indexes("assets")}
+        upload_task_checks = inspector.get_check_constraints("upload_tasks")
+        upload_task_foreign_keys = inspector.get_foreign_keys("upload_tasks")
 
-    assert revision == "20260814_0017"
+    assert revision == "20260814_0018"
     assert {"operation_id", "operation_role"} <= activity_columns
     assert any(
         key["constrained_columns"] == ["claimed_asset_id"]
@@ -85,6 +87,15 @@ def test_empty_sqlite_database_upgrades_to_head(tmp_path: Path) -> None:
         "ix_activities_primary_action_created_id",
     } <= activity_indexes
     assert "ix_assets_archived_at_id" in asset_indexes
+    assert any(
+        constraint["name"] == "ck_upload_tasks_status"
+        for constraint in upload_task_checks
+    )
+    assert {key["referred_table"] for key in upload_task_foreign_keys} == {
+        "assets",
+        "personal_access_tokens",
+        "users",
+    }
 
 
 def test_publication_identity_migration_backfills_existing_records(tmp_path: Path) -> None:
@@ -195,6 +206,6 @@ def test_publication_identity_migration_can_retry_after_duplicate_preflight(
 
     with engine.connect() as connection:
         assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == (
-            "20260814_0017"
+            "20260814_0018"
         )
         assert sa.inspect(connection).has_table("publication_identity_keys")

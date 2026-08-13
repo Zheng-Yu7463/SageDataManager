@@ -13,6 +13,7 @@ from app.domain.models import Activity, Asset, FileRecord, User
 from app.domain.schemas import UploadCommandRequest
 from app.services.archive import scan_storage
 from app.services.transfers import (
+    UPLOAD_COMPLETION_MARKER,
     UploadCommandError,
     UploadConflictError,
     UploadContentError,
@@ -75,6 +76,10 @@ def staging_directory(storage_root: Path, upload_id: UUID) -> Path:
     return storage_root / ".uploads" / str(upload_id)
 
 
+def mark_upload_complete(storage_root: Path, upload_id: UUID) -> None:
+    (staging_directory(storage_root, upload_id) / UPLOAD_COMPLETION_MARKER).touch()
+
+
 @pytest.fixture(autouse=True)
 def upload_secret(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "auth_session_secret", "upload-test-secret")
@@ -129,6 +134,7 @@ def test_finalize_upload_reports_empty_staging_directory(tmp_path: Path) -> None
     asset = create_asset(session)
     prepared = prepare_upload(session, asset)
     staging_directory(tmp_path, prepared.upload_id).mkdir(parents=True)
+    mark_upload_complete(tmp_path, prepared.upload_id)
 
     with pytest.raises(UploadNotReadyError, match="尚未检测到文件"):
         finalize_upload(
@@ -140,6 +146,28 @@ def test_finalize_upload_reports_empty_staging_directory(tmp_path: Path) -> None
         )
 
 
+def test_finalize_upload_requires_scp_completion_marker(tmp_path: Path) -> None:
+    session = make_session()
+    asset = create_asset(session)
+    prepared = prepare_upload(session, asset)
+    staged = staging_directory(tmp_path, prepared.upload_id) / "partial.csv"
+    staged.parent.mkdir(parents=True)
+    staged.write_text("still transferring")
+
+    with pytest.raises(UploadNotReadyError, match="传输尚未完成"):
+        finalize_upload(
+            session,
+            tmp_path,
+            prepared.upload_id,
+            prepared.upload_token,
+            actor=asset.owner,
+        )
+
+    assert staged.exists()
+    assert not (tmp_path / "dataset").exists()
+    assert session.scalar(select(func.count()).select_from(FileRecord)) == 0
+
+
 def test_finalize_upload_moves_and_indexes_a_file(tmp_path: Path) -> None:
     session = make_session()
     asset = create_asset(session)
@@ -147,6 +175,7 @@ def test_finalize_upload_moves_and_indexes_a_file(tmp_path: Path) -> None:
     staged = staging_directory(tmp_path, prepared.upload_id) / "samples.csv"
     staged.parent.mkdir(parents=True)
     staged.write_text("sample,value\nA,1\n")
+    mark_upload_complete(tmp_path, prepared.upload_id)
 
     result = finalize_upload(
         session,
@@ -182,6 +211,7 @@ def test_finalize_upload_preserves_uploaded_directory_structure(tmp_path: Path) 
     (staged_root / "experiment-a/results").mkdir(parents=True)
     (staged_root / "experiment-a/README.md").write_text("experiment")
     (staged_root / "experiment-a/results/metrics.json").write_text('{"score": 1}')
+    mark_upload_complete(tmp_path, prepared.upload_id)
 
     result = finalize_upload(
         session,
@@ -206,6 +236,7 @@ def test_finalize_upload_rejects_symlink_without_moving_files(tmp_path: Path) ->
     staged_root.mkdir(parents=True)
     (staged_root / "valid.csv").write_text("value\n1\n")
     (staged_root / "linked.csv").symlink_to(staged_root / "valid.csv")
+    mark_upload_complete(tmp_path, prepared.upload_id)
 
     with pytest.raises(UploadContentError, match="符号链接"):
         finalize_upload(
@@ -229,6 +260,7 @@ def test_finalize_upload_blocks_all_filesystem_conflicts_before_move(tmp_path: P
     staged_root.mkdir(parents=True)
     (staged_root / "existing.csv").write_text("new")
     (staged_root / "new.csv").write_text("new")
+    mark_upload_complete(tmp_path, prepared.upload_id)
     destination = tmp_path / "dataset/soil-samples-2026/raw/2026-08/existing.csv"
     destination.parent.mkdir(parents=True)
     destination.write_text("original")
@@ -248,7 +280,7 @@ def test_finalize_upload_blocks_all_filesystem_conflicts_before_move(tmp_path: P
     assert not destination.with_name("new.csv").exists()
 
 
-def test_finalize_upload_does_not_overwrite_a_file_created_after_preflight(
+def test_finalize_upload_rejects_source_replaced_with_symlink_after_preflight(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     session = make_session()
@@ -256,18 +288,24 @@ def test_finalize_upload_does_not_overwrite_a_file_created_after_preflight(
     prepared = prepare_upload(session, asset)
     staged = staging_directory(tmp_path, prepared.upload_id) / "samples.csv"
     staged.parent.mkdir(parents=True)
-    staged.write_text("contender")
-    destination = tmp_path / "dataset/soil-samples-2026/raw/2026-08/samples.csv"
-    original_link = os.link
+    staged.write_text("approved")
+    mark_upload_complete(tmp_path, prepared.upload_id)
+    external = tmp_path / "outside.csv"
+    external.write_text("outside secret")
+    original_open = os.open
+    replaced = False
 
-    def competing_link(source: Path, target: Path) -> None:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("winner")
-        original_link(source, target)
+    def replace_before_open(path, flags, *args, **kwargs):
+        nonlocal replaced
+        if path == "samples.csv" and kwargs.get("dir_fd") is not None and not replaced:
+            replaced = True
+            staged.unlink()
+            staged.symlink_to(external)
+        return original_open(path, flags, *args, **kwargs)
 
-    monkeypatch.setattr("app.services.transfers.os.link", competing_link)
+    monkeypatch.setattr("app.services.transfers.os.open", replace_before_open)
 
-    with pytest.raises(UploadConflictError, match="samples.csv"):
+    with pytest.raises(UploadContentError, match="路径在入库期间发生变化"):
         finalize_upload(
             session,
             tmp_path,
@@ -276,8 +314,7 @@ def test_finalize_upload_does_not_overwrite_a_file_created_after_preflight(
             actor=asset.owner,
         )
 
-    assert destination.read_text() == "winner"
-    assert staged.read_text() == "contender"
+    assert not (tmp_path / "dataset").exists()
     assert session.scalar(select(func.count()).select_from(FileRecord)) == 0
 
 
@@ -288,6 +325,7 @@ def test_finalize_upload_blocks_database_path_conflict(tmp_path: Path) -> None:
     staged = staging_directory(tmp_path, prepared.upload_id) / "samples.csv"
     staged.parent.mkdir(parents=True)
     staged.write_text("new")
+    mark_upload_complete(tmp_path, prepared.upload_id)
     session.add(
         FileRecord(
             asset=asset,
@@ -319,6 +357,7 @@ def test_finalize_upload_rejects_destination_parent_symlink(tmp_path: Path) -> N
     staged = staging_directory(tmp_path, prepared.upload_id) / "samples.csv"
     staged.parent.mkdir(parents=True)
     staged.write_text("new")
+    mark_upload_complete(tmp_path, prepared.upload_id)
     external = tmp_path / "external"
     external.mkdir()
     (tmp_path / "dataset").symlink_to(external, target_is_directory=True)
@@ -345,6 +384,7 @@ def test_finalize_upload_rolls_back_moved_files_when_indexing_fails(
     staged = staging_directory(tmp_path, prepared.upload_id) / "samples.csv"
     staged.parent.mkdir(parents=True)
     staged.write_text("new")
+    mark_upload_complete(tmp_path, prepared.upload_id)
 
     def fail_flush(*args, **kwargs):
         raise RuntimeError("database unavailable")

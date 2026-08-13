@@ -134,6 +134,46 @@ class Asset(Base):
     publication_identity_keys: Mapped[list[PublicationIdentityKey]] = relationship(
         back_populates="asset", cascade="all, delete-orphan"
     )
+    upload_tasks: Mapped[list[UploadTask]] = relationship(
+        back_populates="asset", cascade="all, delete-orphan"
+    )
+
+
+class UploadTask(Base):
+    __tablename__ = "upload_tasks"
+    __table_args__ = (
+        CheckConstraint("status IN ('active', 'completed')", name="ck_upload_tasks_status"),
+        CheckConstraint(
+            "transfer_mode IN ('scp', 'agent')", name="ck_upload_tasks_transfer_mode"
+        ),
+        CheckConstraint(
+            "(transfer_mode = 'agent' AND access_token_id IS NOT NULL) OR "
+            "(transfer_mode = 'scp' AND access_token_id IS NULL)",
+            name="ck_upload_tasks_credential",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
+    asset_id: Mapped[UUID] = mapped_column(
+        ForeignKey("assets.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    access_token_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("personal_access_tokens.id", ondelete="CASCADE"), index=True
+    )
+    target_subdirectory: Mapped[str] = mapped_column(String(400), nullable=False)
+    transfer_mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    asset: Mapped[Asset] = relationship(back_populates="upload_tasks")
 
 
 class PublicationIdentityKey(Base):
