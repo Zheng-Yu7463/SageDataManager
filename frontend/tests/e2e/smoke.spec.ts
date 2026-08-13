@@ -48,6 +48,41 @@ async function signInWithMockAccount(page: Page) {
   await expect(page.getByRole('button', { name: '账户菜单：测试管理员' })).toBeVisible()
 }
 
+async function mockEmptyDashboard(page: Page) {
+  await page.route('**/api/dashboard', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        counts: { paper: 0, dataset: 0, literature: 0, project: 0, model: 0 },
+        total_storage_bytes: 0,
+        healthy_files: 0,
+        missing_files: 0,
+        recent_assets: [],
+        recent_activities: [],
+        popular_tags: [],
+      }),
+    })
+  })
+}
+
+async function mockEmptySettingsCollections(page: Page) {
+  await page.route('**/api/auth/admin-accounts', async (route) => {
+    await route.fulfill({ contentType: 'application/json', body: '[]' })
+  })
+  await page.route('**/api/auth/access-tokens', async (route) => {
+    await route.fulfill({ contentType: 'application/json', body: '[]' })
+  })
+}
+
+async function mockEmptyCatalogue(page: Page) {
+  await page.route('**/api/assets?*', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ items: [], total: 0, page: 1, page_size: 20, publication_facets: null }),
+    })
+  })
+}
+
 async function navigateTo(page: Page, linkName: string | RegExp) {
   const menuButton = page.getByRole('button', { name: '打开导航' })
   if (await menuButton.isVisible()) await menuButton.click()
@@ -402,7 +437,6 @@ test('页面导航同步浏览器标题与滚动位置', async ({ page }) => {
 })
 
 test('品牌设置保存后立即更新全站标识', async ({ page }) => {
-  await signIn(page)
   await page.route('**/api/settings/branding', async (route) => {
     if (route.request().method() !== 'PATCH') {
       await route.continue()
@@ -421,7 +455,10 @@ test('品牌设置保存后立即更新全站标识', async ({ page }) => {
       }),
     })
   })
-  await navigateTo(page, '系统设置')
+  await mockEmptyDashboard(page)
+  await mockEmptySettingsCollections(page)
+  await signInWithMockAccount(page)
+  await page.goto('/settings')
   await page.getByLabel('产品名称').fill('Atlas')
   await page.getByLabel('产品副标题').fill('DATA MANAGER')
   await page.getByLabel('组织名称').fill('Atlas Institute')
@@ -432,6 +469,44 @@ test('品牌设置保存后立即更新全站标识', async ({ page }) => {
   await expect(page.getByText('品牌设置已应用')).toBeVisible()
   await expect(page.locator('.brand').getByText('Atlas', { exact: true })).toBeVisible()
   await expect(page).toHaveTitle('系统设置 · Atlas')
+})
+
+test('品牌写操作共享同一个事务状态', async ({ page }) => {
+  let releaseBrandingUpdate!: () => void
+  const brandingUpdateGate = new Promise<void>((resolve) => { releaseBrandingUpdate = resolve })
+  await page.route('**/api/settings/branding', async (route) => {
+    if (route.request().method() !== 'PATCH') {
+      await route.continue()
+      return
+    }
+    await brandingUpdateGate
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        product_name: 'SAGE',
+        product_subtitle: 'RESEARCH ARCHIVE',
+        organization_name: 'SAGE Lab',
+        slogan: '科学 · 数据 · 成长 · 卓越',
+        slogan_secondary: 'Science · Archive · Growth · Excellence',
+        primary_color: '#2E7351',
+        logo_url: null,
+      }),
+    })
+  })
+  await mockEmptyDashboard(page)
+  await mockEmptySettingsCollections(page)
+  await signInWithMockAccount(page)
+  await page.goto('/settings')
+
+  await page.getByRole('button', { name: '保存品牌设置' }).click()
+  await expect(page.getByRole('button', { name: '正在保存' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '上传图片' })).toBeDisabled()
+  await expect(page.getByLabel('选择实例 Logo 图片')).toBeDisabled()
+
+  releaseBrandingUpdate()
+  await expect(page.getByText('品牌设置已应用')).toBeVisible()
+  await expect(page.getByRole('button', { name: '保存品牌设置' })).toBeEnabled()
+  await expect(page.getByRole('button', { name: '上传图片' })).toBeEnabled()
 })
 
 test('设置页令牌加载失败不影响管理员账号事实', async ({ page }) => {
@@ -990,7 +1065,8 @@ test('搜索页归一化非法和越界页码', async ({ page }) => {
 })
 
 test('批量导入文件选择器支持页面声明的三种格式', async ({ page }) => {
-  await signIn(page)
+  await mockEmptyDashboard(page)
+  await signInWithMockAccount(page)
   await page.goto('/import-assets')
   const acceptedTypes = await page.locator('.import-file-picker input').getAttribute('accept')
 
@@ -1061,7 +1137,8 @@ test('批量导入支持粘贴 YAML 并定位结构化校验错误', async ({ pa
 })
 
 test('CSV 导入支持 BOM、转义引号和跨行字段', async ({ page }) => {
-  await signIn(page)
+  await mockEmptyDashboard(page)
+  await signInWithMockAccount(page)
   await page.goto('/import-assets')
   await page.locator('.import-file-picker input').setInputFiles({
     name: 'assets.csv',
@@ -1085,8 +1162,45 @@ test('CSV 导入支持 BOM、转义引号和跨行字段', async ({ page }) => {
   await expect(page.getByText('CSV 第 2 行 details 必须是 JSON 对象。')).toBeVisible()
 })
 
+test('较慢的旧文件读取不会覆盖最新选择', async ({ page }) => {
+  await mockEmptyDashboard(page)
+  await signInWithMockAccount(page)
+  await page.goto('/import-assets')
+  await page.evaluate(() => {
+    const pendingReads = new Map<string, (content: string) => void>()
+    Object.defineProperty(window, '__resolveImportFile', {
+      configurable: true,
+      value: (name: string, content: string) => pendingReads.get(name)?.(content),
+    })
+    File.prototype.text = function () {
+      return new Promise<string>((resolve) => pendingReads.set(this.name, resolve))
+    }
+  })
+  const fileInput = page.locator('.import-file-picker input')
+
+  await fileInput.setInputFiles({ name: 'older.json', mimeType: 'application/json', buffer: Buffer.from('{}') })
+  await expect(page.getByRole('button', { name: '正在读取文件' })).toBeDisabled()
+  await fileInput.setInputFiles({ name: 'latest.yaml', mimeType: 'text/yaml', buffer: Buffer.from('') })
+  await page.evaluate(() => {
+    const resolveImportFile = (window as unknown as { __resolveImportFile: (name: string, content: string) => void }).__resolveImportFile
+    resolveImportFile('latest.yaml', 'assets:\n  - type: dataset\n    slug: latest\n    title: Latest')
+  })
+
+  await expect(page.getByLabel('导入数据内容')).toHaveValue(/slug: latest/)
+  await expect(page.getByRole('button', { name: 'YAML' })).toHaveAttribute('aria-pressed', 'true')
+  await page.evaluate(() => {
+    const resolveImportFile = (window as unknown as { __resolveImportFile: (name: string, content: string) => void }).__resolveImportFile
+    resolveImportFile('older.json', '[{"type":"dataset","slug":"older","title":"Older"}]')
+  })
+  await expect(page.getByLabel('导入数据内容')).toHaveValue(/slug: latest/)
+  await expect(page.getByLabel('导入数据内容')).not.toHaveValue(/slug":"older/)
+})
+
 test('搜索与品牌文件控件提供稳定的可访问名称', async ({ page }) => {
-  await signIn(page)
+  await mockEmptyDashboard(page)
+  await mockEmptyCatalogue(page)
+  await mockEmptySettingsCollections(page)
+  await signInWithMockAccount(page)
   await page.goto('/literature')
   await expect(page.getByRole('textbox', { name: '搜索文献' })).toBeVisible()
 

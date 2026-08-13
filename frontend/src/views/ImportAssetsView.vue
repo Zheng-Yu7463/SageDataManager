@@ -21,10 +21,12 @@ const source = ref(`[
   }
 ]`)
 const importing = ref(false)
+const readingImportFile = ref(false)
 const sourceFormat = ref<'json' | 'yaml'>('json')
 const error = ref('')
 const created = ref<string[]>([])
 const { pageEyebrow } = useBranding()
+let importFileSelection = 0
 
 function parseAssets(): AssetCreateInput[] {
   const parsed: unknown = JSON.parse(source.value)
@@ -66,17 +68,24 @@ function parseCsv(text: string): AssetCreateInput[] {
 }
 
 async function readImportFile(event: Event) {
-  const file = (event.target as HTMLInputElement).files?.[0]
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
   if (!file) return
+  const selection = ++importFileSelection
+  input.value = ''
+  readingImportFile.value = true
   try {
     const content = await file.text()
+    if (selection !== importFileSelection) return
     sourceFormat.value = /\.ya?ml$/i.test(file.name) ? 'yaml' : 'json'
     source.value = file.name.toLowerCase().endsWith('.csv') ? JSON.stringify(parseCsv(content), null, 2) : content
     error.value = ''
   } catch (reason) {
+    if (selection !== importFileSelection) return
     error.value = reason instanceof Error ? reason.message : '无法读取导入文件'
+  } finally {
+    if (selection === importFileSelection) readingImportFile.value = false
   }
-  ;(event.target as HTMLInputElement).value = ''
 }
 
 async function submit() {
@@ -105,7 +114,7 @@ async function submit() {
 <template>
   <div class="page import-page">
     <header class="page-heading"><div><p class="eyebrow">{{ pageEyebrow('METADATA INTAKE') }}</p><h1>批量导入资产</h1><p>导入仅登记元数据。文件请在资产创建后通过对应行的安全上传入口传输并完成检测入库。</p></div></header>
-    <section class="import-grid"><article class="panel import-panel"><header class="panel-heading"><div><span class="section-number">01</span><div><h2>导入 JSON、CSV 或 YAML</h2><p>最多 100 条</p></div></div><FileJson :size="20" /></header><div class="import-source-controls"><div class="format-switch" role="group" aria-label="导入内容格式"><button type="button" :aria-pressed="sourceFormat === 'json'" :class="{ active: sourceFormat === 'json' }" :disabled="importing" @click="sourceFormat = 'json'">JSON</button><button type="button" :aria-pressed="sourceFormat === 'yaml'" :class="{ active: sourceFormat === 'yaml' }" :disabled="importing" @click="sourceFormat = 'yaml'">YAML</button></div><label class="import-file-picker"><FileSpreadsheet :size="16" />从导入文件载入<input type="file" accept=".json,.csv,.yaml,.yml,application/json,text/csv,text/yaml" :disabled="importing" @change="readImportFile" /></label></div><textarea v-model="source" aria-label="导入数据内容" spellcheck="false" :disabled="importing"></textarea><p class="import-note">JSON 支持数组或 <code>{ "assets": [...] }</code>。CSV 必填列为 <code>type,slug,title</code>；可选 tags 用 <code>|</code> 分隔，details 为 JSON 对象。YAML 支持同样的数组或 <code>assets:</code> 结构。</p><p v-if="error" class="import-error" role="alert"><CircleAlert :size="16" />{{ error }}</p><button class="button button--primary" :disabled="importing" @click="submit"><Upload :size="16" />{{ importing ? '正在导入' : '验证并导入' }}</button></article><aside class="panel import-side"><header class="panel-heading"><div><span class="section-number">02</span><div><h2>安全规则</h2><p>Atomic import</p></div></div></header><ul><li>先校验整批内容、字段与 slug。</li><li>发现重复 slug 时不会创建任何记录。</li><li>不会读取、移动或上传本机文件。</li><li>成功后进入分类页生成 SCP 指令。</li></ul><div v-if="created.length" class="import-success"><CheckCircle2 :size="21" /><strong>已创建 {{ created.length }} 条资产</strong><p>{{ created.join('、') }}</p></div></aside></section>
+    <section class="import-grid"><article class="panel import-panel"><header class="panel-heading"><div><span class="section-number">01</span><div><h2>导入 JSON、CSV 或 YAML</h2><p>最多 100 条</p></div></div><FileJson :size="20" /></header><div class="import-source-controls"><div class="format-switch" role="group" aria-label="导入内容格式"><button type="button" :aria-pressed="sourceFormat === 'json'" :class="{ active: sourceFormat === 'json' }" :disabled="importing || readingImportFile" @click="sourceFormat = 'json'">JSON</button><button type="button" :aria-pressed="sourceFormat === 'yaml'" :class="{ active: sourceFormat === 'yaml' }" :disabled="importing || readingImportFile" @click="sourceFormat = 'yaml'">YAML</button></div><label class="import-file-picker"><FileSpreadsheet :size="16" />{{ readingImportFile ? '正在读取文件' : '从导入文件载入' }}<input type="file" accept=".json,.csv,.yaml,.yml,application/json,text/csv,text/yaml" :disabled="importing" @change="readImportFile" /></label></div><textarea v-model="source" aria-label="导入数据内容" spellcheck="false" :disabled="importing || readingImportFile"></textarea><p class="import-note">JSON 支持数组或 <code>{ "assets": [...] }</code>。CSV 必填列为 <code>type,slug,title</code>；可选 tags 用 <code>|</code> 分隔，details 为 JSON 对象。YAML 支持同样的数组或 <code>assets:</code> 结构。</p><p v-if="error" class="import-error" role="alert"><CircleAlert :size="16" />{{ error }}</p><button class="button button--primary" :disabled="importing || readingImportFile" @click="submit"><Upload :size="16" />{{ importing ? '正在导入' : readingImportFile ? '正在读取文件' : '验证并导入' }}</button></article><aside class="panel import-side"><header class="panel-heading"><div><span class="section-number">02</span><div><h2>安全规则</h2><p>Atomic import</p></div></div></header><ul><li>先校验整批内容、字段与 slug。</li><li>发现重复 slug 时不会创建任何记录。</li><li>不会读取、移动或上传本机文件。</li><li>成功后进入分类页生成 SCP 指令。</li></ul><div v-if="created.length" class="import-success"><CheckCircle2 :size="21" /><strong>已创建 {{ created.length }} 条资产</strong><p>{{ created.join('、') }}</p></div></aside></section>
   </div>
 </template>
 

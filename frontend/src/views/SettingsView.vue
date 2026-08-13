@@ -38,8 +38,10 @@ const revokeDialog = ref<HTMLElement | null>(null)
 const revoking = ref(false)
 const revokeError = ref('')
 const tokenHistoryOpen = ref(false)
-const brandingSaving = ref(false)
-const logoUpdating = ref(false)
+const brandingOperation = ref<'saving' | 'uploading-logo' | 'removing-logo' | null>(null)
+const brandingUpdating = computed(() => brandingOperation.value !== null)
+const brandingSaving = computed(() => brandingOperation.value === 'saving')
+const logoUpdating = computed(() => brandingOperation.value === 'uploading-logo' || brandingOperation.value === 'removing-logo')
 const brandingMessage = ref('')
 const brandingError = ref('')
 const logoInput = ref<HTMLInputElement | null>(null)
@@ -251,7 +253,8 @@ async function toggleAccount(account: AccountSummary) {
 }
 
 async function saveBranding() {
-  brandingSaving.value = true
+  if (brandingUpdating.value) return
+  brandingOperation.value = 'saving'
   brandingError.value = ''
   brandingMessage.value = ''
   try {
@@ -262,14 +265,14 @@ async function saveBranding() {
   } catch (reason) {
     brandingError.value = reason instanceof Error ? reason.message : '无法保存品牌设置'
   } finally {
-    brandingSaving.value = false
+    brandingOperation.value = null
   }
 }
 
 async function selectLogo(event: Event) {
   const file = (event.target as HTMLInputElement).files?.[0]
-  if (!file) return
-  logoUpdating.value = true
+  if (!file || brandingUpdating.value) return
+  brandingOperation.value = 'uploading-logo'
   brandingError.value = ''
   brandingMessage.value = ''
   try {
@@ -278,13 +281,14 @@ async function selectLogo(event: Event) {
   } catch (reason) {
     brandingError.value = reason instanceof Error ? reason.message : '无法上传 Logo'
   } finally {
-    logoUpdating.value = false
+    brandingOperation.value = null
     if (logoInput.value) logoInput.value.value = ''
   }
 }
 
 async function restoreDefaultLogo() {
-  logoUpdating.value = true
+  if (brandingUpdating.value) return
+  brandingOperation.value = 'removing-logo'
   brandingError.value = ''
   brandingMessage.value = ''
   try {
@@ -293,7 +297,7 @@ async function restoreDefaultLogo() {
   } catch (reason) {
     brandingError.value = reason instanceof Error ? reason.message : '无法恢复默认标志'
   } finally {
-    logoUpdating.value = false
+    brandingOperation.value = null
   }
 }
 
@@ -330,9 +334,9 @@ onMounted(load)
           </div>
           <div class="branding-controls">
             <label class="color-field">品牌主色<span><input v-model="brandingForm.primary_color" type="color" /><input v-model="brandingForm.primary_color" required maxlength="7" pattern="#[0-9A-Fa-f]{6}" aria-label="品牌主色色值" /></span></label>
-            <div class="logo-control"><span>实例 Logo</span><div><input ref="logoInput" class="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp" aria-label="选择实例 Logo 图片" @change="selectLogo" /><button class="button button--outline" type="button" :disabled="logoUpdating" @click="logoInput?.click()"><ImageUp :size="15" />{{ logoUpdating ? '处理中' : '上传图片' }}</button><button v-if="branding.logo_url" class="button button--quiet" type="button" :disabled="logoUpdating" @click="restoreDefaultLogo"><RotateCcw :size="15" />恢复默认</button></div><small>PNG、JPEG 或 WebP，最大 1 MB</small></div>
+            <div class="logo-control"><span>实例 Logo</span><div><input ref="logoInput" class="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp" aria-label="选择实例 Logo 图片" :disabled="brandingUpdating" @change="selectLogo" /><button class="button button--outline" type="button" :disabled="brandingUpdating" @click="logoInput?.click()"><ImageUp :size="15" />{{ logoUpdating ? '处理中' : '上传图片' }}</button><button v-if="branding.logo_url" class="button button--quiet" type="button" :disabled="brandingUpdating" @click="restoreDefaultLogo"><RotateCcw :size="15" />恢复默认</button></div><small>PNG、JPEG 或 WebP，最大 1 MB</small></div>
           </div>
-          <div class="branding-feedback"><p v-if="brandingError" class="settings-error" role="alert">{{ brandingError }}</p><p v-else-if="brandingMessage" class="settings-success" role="status"><Check :size="14" />{{ brandingMessage }}</p><button class="button button--primary" :disabled="brandingSaving" type="submit"><Save :size="16" />{{ brandingSaving ? '正在保存' : '保存品牌设置' }}</button></div>
+          <div class="branding-feedback"><p v-if="brandingError" class="settings-error" role="alert">{{ brandingError }}</p><p v-else-if="brandingMessage" class="settings-success" role="status"><Check :size="14" />{{ brandingMessage }}</p><button class="button button--primary" :disabled="brandingUpdating" type="submit"><Save :size="16" />{{ brandingSaving ? '正在保存' : '保存品牌设置' }}</button></div>
         </form>
         <aside class="brand-preview" :style="{ '--preview-color': brandingForm.primary_color }" aria-label="品牌预览">
           <span>LIVE PREVIEW</span>
