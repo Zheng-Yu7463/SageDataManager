@@ -58,10 +58,18 @@ def update_branding(
     actor: User,
 ) -> InstanceBrandingResponse:
     record = get_branding_record(session)
+    next_values = payload.model_dump()
+    current_values = (
+        DEFAULT_BRANDING
+        if record is None
+        else {key: getattr(record, key) for key in DEFAULT_BRANDING}
+    )
+    if next_values == current_values:
+        return branding_response(session)
     if record is None:
         record = InstanceBranding(id=1, **DEFAULT_BRANDING)
         session.add(record)
-    for field, value in payload.model_dump().items():
+    for field, value in next_values.items():
         setattr(record, field, value)
     record.updated_at = datetime.now(UTC)
     record_activity(
@@ -118,6 +126,12 @@ def update_branding_logo(
         raise BrandingLogoError("仅支持可完整解码的静态 PNG、JPEG 或 WebP 图片。") from None
 
     record = get_branding_record(session)
+    if (
+        record is not None
+        and record.logo_data == content
+        and record.logo_mime_type == normalized_mime
+    ):
+        return branding_response(session)
     if record is None:
         record = InstanceBranding(id=1, **DEFAULT_BRANDING)
         session.add(record)
@@ -136,9 +150,10 @@ def update_branding_logo(
 
 def remove_branding_logo(session: Session, *, actor: User) -> InstanceBrandingResponse:
     record = get_branding_record(session)
-    if record is None:
-        record = InstanceBranding(id=1, **DEFAULT_BRANDING)
-        session.add(record)
+    if record is None or (
+        record.logo_data is None and record.logo_mime_type is None
+    ):
+        return branding_response(session)
     record.logo_data = None
     record.logo_mime_type = None
     record.updated_at = datetime.now(UTC)

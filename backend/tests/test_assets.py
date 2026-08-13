@@ -1,3 +1,5 @@
+from datetime import UTC, datetime
+
 import pytest
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.dialects import postgresql
@@ -468,6 +470,66 @@ def test_asset_metadata_can_be_updated_archived_and_restored() -> None:
     assert (
         session.scalar(select(Activity.action).order_by(Activity.created_at.desc())) == "restored"
     )
+
+
+def test_asset_metadata_update_ignores_semantically_equivalent_replays() -> None:
+    session = make_session()
+    result = create_asset(session, payload())
+    session.commit()
+    actor = session.get(User, result.owner.id)
+    asset = session.get(Asset, result.id)
+    assert actor is not None
+    assert asset is not None
+    original_updated_at = asset.updated_at
+    original_activity_count = session.scalar(select(func.count()).select_from(Activity))
+
+    replayed = update_asset(
+        session,
+        result.id,
+        AssetUpdateRequest(
+            title=f"  {asset.title}  ",
+            summary=f"  {asset.summary}  ",
+            status=f"  {asset.status}  ",
+            visibility=asset.visibility,
+            tags=["田野", "生态", "田野"],
+            details=dict(asset.details),
+        ),
+        actor=actor,
+    )
+    session.commit()
+
+    assert replayed.title == asset.title
+    assert session.get(Asset, result.id).updated_at == original_updated_at
+    assert session.scalar(select(func.count()).select_from(Activity)) == original_activity_count
+
+
+def test_tag_only_asset_update_advances_updated_at() -> None:
+    session = make_session()
+    result = create_asset(session, payload())
+    actor = session.get(User, result.owner.id)
+    asset = session.get(Asset, result.id)
+    assert actor is not None
+    assert asset is not None
+    previous_updated_at = datetime(2025, 1, 1, tzinfo=UTC)
+    asset.updated_at = previous_updated_at
+    session.commit()
+    persisted_previous_updated_at = session.get(Asset, result.id).updated_at
+
+    updated = update_asset(
+        session,
+        result.id,
+        AssetUpdateRequest(tags=["only-new-tag"]),
+        actor=actor,
+    )
+    session.commit()
+
+    assert updated.tags == ["only-new-tag"]
+    assert session.get(Asset, result.id).updated_at > persisted_previous_updated_at
+    assert session.scalar(
+        select(func.count()).select_from(Activity).where(
+            Activity.action == "updated_metadata"
+        )
+    ) == 1
 
 
 def test_asset_list_filters_status_visibility_and_file_presence() -> None:

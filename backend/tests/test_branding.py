@@ -80,7 +80,16 @@ def test_branding_is_public_and_updates_require_admin(monkeypatch) -> None:
 
         assert updated.status_code == 200
         assert updated.json() == {**payload, "logo_url": None}
-        assert session.get(InstanceBranding, 1).product_name == "Atlas"
+        record = session.get(InstanceBranding, 1)
+        assert record.product_name == "Atlas"
+        original_updated_at = record.updated_at
+        replayed = client.patch(
+            "/api/settings/branding",
+            json={**payload, "product_name": "  Atlas  ", "primary_color": "#245b78"},
+            headers={"X-Sage-Session": create_session_token("zhengyu")},
+        )
+        assert replayed.status_code == 200
+        assert session.get(InstanceBranding, 1).updated_at == original_updated_at
         assert session.query(Activity).filter_by(action="updated_branding").count() == 1
     finally:
         app.dependency_overrides.clear()
@@ -214,18 +223,51 @@ def test_branding_logo_url_is_content_addressed(monkeypatch) -> None:
         first_url = client.put(
             "/api/settings/branding/logo", content=first_content, headers=headers
         ).json()["logo_url"]
+        first_updated_at = session.get(InstanceBranding, 1).updated_at
         repeated_url = client.put(
             "/api/settings/branding/logo", content=first_content, headers=headers
         ).json()["logo_url"]
+        repeated_updated_at = session.get(InstanceBranding, 1).updated_at
         second_url = client.put(
             "/api/settings/branding/logo", content=second_content, headers=headers
         ).json()["logo_url"]
+        second_updated_at = session.get(InstanceBranding, 1).updated_at
 
         assert repeated_url == first_url
+        assert repeated_updated_at == first_updated_at
         assert second_url != first_url
+        assert second_updated_at > first_updated_at
+        assert session.query(Activity).filter_by(action="updated_branding").count() == 2
         assert client.get(first_url).status_code == 404
         assert client.get(second_url).content == second_content
         assert client.get("/api/settings/branding/logo/not-a-digest").status_code == 422
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
+def test_removing_absent_branding_logo_is_idempotent(monkeypatch) -> None:
+    session = make_session()
+    session.add(
+        User(
+            username="zhengyu",
+            name="郑宇",
+            email="zhengyu@sage.lab",
+            role="admin",
+            is_active=True,
+        )
+    )
+    session.commit()
+    monkeypatch.setattr(settings, "auth_session_secret", "test-session-secret")
+    headers = {"X-Sage-Session": create_session_token("zhengyu")}
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        response = TestClient(app).delete("/api/settings/branding/logo", headers=headers)
+
+        assert response.status_code == 200
+        assert response.json()["logo_url"] is None
+        assert session.get(InstanceBranding, 1) is None
+        assert session.query(Activity).filter_by(action="updated_branding").count() == 0
     finally:
         app.dependency_overrides.clear()
         session.close()

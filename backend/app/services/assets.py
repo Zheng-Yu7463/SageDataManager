@@ -102,8 +102,12 @@ def asset_summary(asset: Asset) -> AssetSummary:
     )
 
 
+def _tag_names(tag_values: list[str]) -> list[str]:
+    return sorted({tag.strip() for tag in tag_values if tag.strip()})
+
+
 def _tags(session: Session, tag_values: list[str]) -> list[Tag]:
-    names = sorted({tag.strip() for tag in tag_values if tag.strip()})
+    names = _tag_names(tag_values)
     existing = {
         tag.name: tag for tag in session.scalars(select(Tag).where(Tag.name.in_(names))).all()
     }
@@ -241,18 +245,28 @@ def update_asset(
             raise AssetMetadataError(str(error)) from error
         if duplicate:
             raise AssetMetadataError("该出版物已经收录，请检查 DOI 或官方来源标识。")
-    if payload.title is not None:
-        asset.title = next_title
-    if payload.summary is not None:
-        asset.summary = payload.summary.strip()
-    if payload.status is not None:
-        asset.status = payload.status.strip()
-    if payload.visibility is not None:
-        asset.visibility = payload.visibility
-    if payload.tags is not None:
-        asset.tags = _tags(session, payload.tags)
-    if payload.details is not None:
-        asset.details = next_details
+    next_summary = payload.summary.strip() if payload.summary is not None else asset.summary
+    next_status = payload.status.strip() if payload.status is not None else asset.status
+    next_visibility = payload.visibility if payload.visibility is not None else asset.visibility
+    current_tags = sorted(tag.name for tag in asset.tags)
+    next_tags = _tag_names(payload.tags) if payload.tags is not None else current_tags
+    if (
+        next_title == asset.title
+        and next_summary == asset.summary
+        and next_status == asset.status
+        and next_visibility == asset.visibility
+        and next_tags == current_tags
+        and next_details == asset.details
+    ):
+        return asset_summary(asset)
+    asset.title = next_title
+    asset.summary = next_summary
+    asset.status = next_status
+    asset.visibility = next_visibility
+    if next_tags != current_tags:
+        asset.tags = _tags(session, next_tags)
+    asset.details = next_details
+    asset.updated_at = datetime.now(UTC)
     record_activity(
         session,
         asset=asset,

@@ -329,9 +329,19 @@ def test_agent_can_read_and_update_existing_metadata_with_audit_identity(monkeyp
         )
         assert updated.status_code == 200
         assert updated.json()["summary"] == "Updated by an authorized metadata agent."
-        activity = session.scalars(
+        updated_at = session.get(Asset, asset.id).updated_at
+        replayed = client.patch(
+            f"/api/agent/assets/{asset.id}",
+            headers=bearer(plaintext),
+            json={"summary": "Updated by an authorized metadata agent."},
+        )
+        assert replayed.status_code == 200
+        assert session.get(Asset, asset.id).updated_at == updated_at
+        activities = session.scalars(
             select(Activity).where(Activity.action == "updated_metadata")
-        ).one()
+        ).all()
+        assert len(activities) == 1
+        activity = activities[0]
         assert activity.credential_name == "metadata-updater"
         assert activity.actor_id == user.id
     finally:

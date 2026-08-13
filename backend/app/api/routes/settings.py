@@ -30,9 +30,13 @@ def patch_branding(
     session: SessionDependency,
     current_user: AdminDependency,
 ) -> InstanceBrandingResponse:
-    result = update_branding(session, payload, actor=current_user)
-    session.commit()
-    return result
+    try:
+        result = update_branding(session, payload, actor=current_user)
+        session.commit()
+        return result
+    except Exception:
+        session.rollback()
+        raise
 
 
 @router.get("/branding/logo/{content_digest}")
@@ -88,6 +92,9 @@ async def put_branding_logo(
     except BrandingLogoError as error:
         session.rollback()
         raise HTTPException(status_code=422, detail=str(error)) from None
+    except Exception:
+        session.rollback()
+        raise
 
 
 @router.delete("/branding/logo")
@@ -95,6 +102,10 @@ def delete_branding_logo(
     session: SessionDependency,
     current_user: AdminDependency,
 ) -> InstanceBrandingResponse:
-    result = remove_branding_logo(session, actor=current_user)
-    session.commit()
-    return result
+    try:
+        result = remove_branding_logo(session, actor=current_user)
+        session.commit()
+        return result
+    except Exception:
+        session.rollback()
+        raise
