@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from mimetypes import guess_type
 from pathlib import Path, PurePosixPath
@@ -42,6 +44,10 @@ class UploadNotReadyError(UploadError):
 
 
 class UploadContentError(UploadError):
+    pass
+
+
+class UploadTooLargeError(UploadContentError):
     pass
 
 
@@ -215,6 +221,21 @@ def staged_upload_destination(
     if _unsafe_destination_parent(destination, root):
         raise UploadContentError("上传文件的父目录不可用。")
     return destination, staging_root / UPLOAD_PARTS_DIRECTORY
+
+
+@contextmanager
+def temporary_upload_path(parts_directory: Path) -> Iterator[Path]:
+    parts_directory.mkdir(parents=True, exist_ok=True)
+    temporary_file = parts_directory / str(uuid4())
+    try:
+        yield temporary_file
+    finally:
+        temporary_file.unlink(missing_ok=True)
+        for directory in (parts_directory, parts_directory.parent):
+            try:
+                directory.rmdir()
+            except OSError:
+                break
 
 
 def complete_agent_file_upload(

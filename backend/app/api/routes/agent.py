@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Annotated
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
 from sqlalchemy.orm import Session
@@ -42,10 +41,12 @@ from app.services.transfers import (
     UploadContentError,
     UploadNotReadyError,
     UploadTicketError,
+    UploadTooLargeError,
     complete_agent_file_upload,
     create_agent_upload,
     finalize_upload,
     staged_upload_destination,
+    temporary_upload_path,
     validate_agent_upload,
 )
 
@@ -219,41 +220,38 @@ async def agent_upload_file(
         raise HTTPException(status_code=400, detail="Content-Length 无效。") from None
     if declared_size is not None and declared_size > settings.agent_upload_max_bytes:
         raise HTTPException(status_code=413, detail="上传文件超过服务器限制。")
-    temporary_file: Path | None = None
     try:
         validate_agent_upload(upload_id, x_sage_upload_token, principal.user)
         destination, parts_directory = staged_upload_destination(
             settings.storage_root, upload_id, relative_path
         )
-        parts_directory.mkdir(parents=True, exist_ok=True)
-        temporary_file = parts_directory / str(uuid4())
-        received = 0
-        with temporary_file.open("xb") as output:
-            async for chunk in request.stream():
-                received += len(chunk)
-                if received > settings.agent_upload_max_bytes:
-                    raise UploadContentError("上传文件超过服务器限制。")
-                output.write(chunk)
-        if received == 0:
-            raise UploadContentError("不能上传空文件。")
-        result = complete_agent_file_upload(
-            upload_id, relative_path, temporary_file, destination
-        )
-        temporary_file = None
+        with temporary_upload_path(parts_directory) as temporary_file:
+            received = 0
+            with temporary_file.open("xb") as output:
+                async for chunk in request.stream():
+                    received += len(chunk)
+                    if received > settings.agent_upload_max_bytes:
+                        raise UploadTooLargeError("上传文件超过服务器限制。")
+                    output.write(chunk)
+            if received == 0:
+                raise UploadContentError("不能上传空文件。")
+            result = complete_agent_file_upload(
+                upload_id, relative_path, temporary_file, destination
+            )
         session.commit()
         return result
     except UploadTicketError as error:
         session.rollback()
         raise HTTPException(status_code=403, detail=str(error)) from None
+    except UploadTooLargeError as error:
+        session.rollback()
+        raise HTTPException(status_code=413, detail=str(error)) from None
     except (UploadContentError, UploadConflictError, ValueError) as error:
         session.rollback()
         raise HTTPException(status_code=409, detail=str(error)) from None
     except Exception:
         session.rollback()
         raise
-    finally:
-        if temporary_file and temporary_file.exists():
-            temporary_file.unlink()
 
 
 @router.post("/uploads/{upload_id}/finalize")

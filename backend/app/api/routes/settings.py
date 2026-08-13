@@ -65,7 +65,7 @@ async def put_branding_logo(
     content_length = request.headers.get("content-length")
     if content_length and content_length.isdigit() and int(content_length) > MAX_LOGO_BYTES:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail="Logo 文件必须小于 1 MB。",
         )
     content = bytearray()

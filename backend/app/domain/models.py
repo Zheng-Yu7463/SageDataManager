@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -23,6 +23,10 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 from app.domain.enums import AssetType, HealthStatus, Visibility
+
+
+def utc_now() -> datetime:
+    return datetime.now(UTC)
 
 asset_tags = Table(
     "asset_tags",
@@ -67,7 +71,7 @@ class PersonalAccessToken(Base):
     secret_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     scopes: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, index=True
+        DateTime(timezone=True), default=utc_now, index=True
     )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -89,7 +93,7 @@ class InstanceBranding(Base):
     logo_data: Mapped[bytes | None] = mapped_column(LargeBinary)
     logo_mime_type: Mapped[str | None] = mapped_column(String(40))
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now
     )
 
 
@@ -107,9 +111,9 @@ class Asset(Base):
     )
     owner_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
     details: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow, index=True
+        DateTime(timezone=True), default=utc_now, onupdate=utc_now, index=True
     )
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -133,7 +137,7 @@ class AssetVersion(Base):
     version: Mapped[str] = mapped_column(String(80))
     release_notes: Mapped[str] = mapped_column(Text, default="")
     is_current: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     asset: Mapped[Asset] = relationship(back_populates="versions")
 
@@ -176,7 +180,7 @@ class ScanRun(Base):
     files_skipped: Mapped[int] = mapped_column(BigInteger, default=0)
     message: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, index=True
+        DateTime(timezone=True), default=utc_now, index=True
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -220,7 +224,7 @@ class Activity(Base):
     action: Mapped[str] = mapped_column(String(80))
     description: Mapped[str] = mapped_column(String(500))
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow, index=True
+        DateTime(timezone=True), default=utc_now, index=True
     )
 
     asset: Mapped[Asset | None] = relationship()
@@ -238,9 +242,9 @@ class UnclaimedFile(Base):
     file_size: Mapped[int] = mapped_column(BigInteger, default=0)
     modified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     first_seen_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), default=datetime.utcnow
+        DateTime(timezone=True), default=utc_now
     )
-    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     claimed_asset_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("assets.id", ondelete="SET NULL"), index=True
     )

@@ -410,6 +410,7 @@ def test_agent_can_upload_and_finalize_a_file(tmp_path: Path, monkeypatch) -> No
         )
         assert upload.status_code == 200
         assert upload.json()["relative_path"] == "paper.pdf"
+        assert not (tmp_path / ".uploads" / ".parts").exists()
 
         finalized = client.post(
             task_data["finalize_url"],
@@ -464,6 +465,7 @@ def test_agent_upload_rejects_path_escape_and_empty_files(tmp_path: Path, monkey
         assert escaped.status_code in {404, 409}
         assert empty.status_code == 409
         assert not (tmp_path / "escape.pdf").exists()
+        assert not (tmp_path / ".uploads").exists()
     finally:
         app.dependency_overrides.clear()
         session.close()
@@ -495,7 +497,41 @@ def test_agent_upload_rejects_files_over_the_configured_limit(
             content=b"12345",
         )
         assert response.status_code == 413
-        assert not (tmp_path / ".uploads" / task["upload_id"] / "oversized.pdf").exists()
+        assert not (tmp_path / ".uploads").exists()
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
+def test_agent_upload_cleans_partial_file_when_stream_exceeds_limit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    session = make_session()
+    user, asset = create_user_and_asset(session)
+    monkeypatch.setattr(settings, "auth_session_secret", "agent-test-secret")
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    monkeypatch.setattr(settings, "agent_upload_max_bytes", 4)
+    plaintext = create_token(session, user, ["files:upload"])
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        client = TestClient(app)
+        task = client.post(
+            "/api/agent/uploads",
+            headers=bearer(plaintext),
+            json={"asset_id": str(asset.id), "target_subdirectory": "original"},
+        ).json()
+        response = client.put(
+            f"/api/agent/uploads/{task['upload_id']}/files/oversized.pdf",
+            headers={
+                **bearer(plaintext),
+                "X-Sage-Upload-Token": task["upload_token"],
+                "Transfer-Encoding": "chunked",
+            },
+            content=(chunk for chunk in [b"123", b"45"]),
+        )
+
+        assert response.status_code == 413
+        assert not (tmp_path / ".uploads").exists()
     finally:
         app.dependency_overrides.clear()
         session.close()
