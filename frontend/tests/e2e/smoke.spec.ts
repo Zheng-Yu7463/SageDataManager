@@ -62,6 +62,27 @@ test('总览与目录保持稳定布局', async ({ page }) => {
   expect(layout.cards).toBeGreaterThan(0)
 })
 
+test('窄屏顶栏与目录保持在视口内', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 760 })
+  await signIn(page)
+  await page.goto('/literature?view=grid')
+  await expect(page.getByRole('heading', { name: '文献目录' })).toBeVisible()
+
+  const assertNoHorizontalOverflow = async () => {
+    const layout = await page.evaluate(() => ({
+      viewportWidth: document.documentElement.clientWidth,
+      documentWidth: document.documentElement.scrollWidth,
+    }))
+    expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth)
+  }
+
+  await assertNoHorizontalOverflow()
+  const assetWithFiles = page.locator('.catalogue-card').filter({ hasText: /已有数据/ }).first()
+  await assetWithFiles.getByRole('link', { name: /查看详情/ }).click()
+  await expect(page.getByRole('heading', { name: '文件浏览' })).toBeVisible()
+  await assertNoHorizontalOverflow()
+})
+
 test('账户菜单明确区分资料与退出操作', async ({ page }) => {
   await signIn(page)
   const accountMenu = page.getByRole('button', { name: /账户菜单/ })
