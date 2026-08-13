@@ -6,7 +6,6 @@ import json
 import re
 import subprocess
 import tempfile
-import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from html.parser import HTMLParser
@@ -21,6 +20,7 @@ from app.domain.enums import AssetType, Visibility
 from app.domain.models import Activity, Asset, AssetVersion, Tag
 from app.domain.schemas import PaperMetadata
 from app.services.accounts import ensure_fixed_accounts
+from app.services.paper_identity import normalize_identity_text, resolve_paper
 
 DEFAULT_ICLR_POSTER_IDS = (
     "10006831",
@@ -133,11 +133,6 @@ def fetch(url: str) -> bytes:
         return destination.read()
 
 
-def normalized_identity(value: str) -> str:
-    decomposed = unicodedata.normalize("NFKD", value)
-    return "".join(character.casefold() for character in decomposed if character.isalnum())
-
-
 def citation_author_name(value: str) -> str:
     family_name, separator, given_name = value.partition(",")
     if not separator:
@@ -159,7 +154,7 @@ def find_iclr_proceedings_page(title: str, first_author: str) -> tuple[str, Pape
         urljoin(ICLR_PROCEEDINGS_ROOT, href)
         for href, link_text in search_parser.links
         if "-Abstract-Conference.html" in href
-        and normalized_identity(link_text) == normalized_identity(title)
+        and normalize_identity_text(link_text) == normalize_identity_text(title)
     ]
     if len(candidates) != 1:
         raise ValueError(f"ICLR proceedings 未找到唯一同题名论文：{title}")
@@ -169,11 +164,11 @@ def find_iclr_proceedings_page(title: str, first_author: str) -> tuple[str, Pape
     publication_parser.feed(fetch(publication_url).decode("utf-8"))
     publication_title = publication_parser.meta.get("citation_title", [""])[0]
     publication_authors = publication_parser.meta.get("citation_author", [])
-    if normalized_identity(publication_title) != normalized_identity(title):
+    if normalize_identity_text(publication_title) != normalize_identity_text(title):
         raise ValueError(f"ICLR proceedings 题名校验失败：{title}")
-    if not publication_authors or normalized_identity(
+    if not publication_authors or normalize_identity_text(
         citation_author_name(publication_authors[0])
-    ) != normalized_identity(first_author):
+    ) != normalize_identity_text(first_author):
         raise ValueError(f"ICLR proceedings 首位作者校验失败：{title}")
     return publication_url, publication_parser
 
@@ -349,14 +344,9 @@ def upsert_metadata(papers: list[ConferencePaper]) -> None:
         }
         for name in tag_names:
             tags.setdefault(name, Tag(name=name))
-        existing = {
-            asset.details.get("source_id"): asset
-            for asset in session.scalars(select(Asset).where(Asset.type == AssetType.PAPER))
-            if asset.details.get("source_id")
-        }
         for paper in papers:
             details = paper.metadata.model_dump(mode="json", exclude_none=True)
-            asset = existing.get(paper.metadata.source_id)
+            asset = resolve_paper(session, title=paper.title, details=details)
             is_new = asset is None
             if asset is None:
                 asset = Asset(

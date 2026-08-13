@@ -25,6 +25,12 @@ from app.domain.schemas import (
     normalized_asset_details,
 )
 from app.services.activities import activity_summary
+from app.services.paper_identity import (
+    PaperIdentityConflictError,
+    paper_identities_match,
+    paper_identity,
+    resolve_paper,
+)
 from app.services.upload_directories import UPLOAD_DIRECTORY_OPTIONS
 
 
@@ -58,42 +64,6 @@ class AssetMetadataError(Exception):
     def __init__(self, message: str):
         self.message = message
         super().__init__(message)
-
-
-def _normalized_title(title: str) -> str:
-    return "".join(character.lower() for character in title if character.isalnum())
-
-
-def _paper_identity(details: dict, title: str) -> tuple[str, str, str]:
-    doi = str(details.get("doi", "")).removeprefix("https://doi.org/").strip().lower()
-    source_id = str(details.get("source_id", "")).strip().lower()
-    authors = details.get("authors") or []
-    first_author = str(authors[0]).strip().lower() if authors else ""
-    return doi, source_id, f"{_normalized_title(title)}::{first_author}"
-
-
-def _papers_are_duplicates(
-    first: tuple[str, str, str], second: tuple[str, str, str]
-) -> bool:
-    return bool(
-        (first[0] and first[0] == second[0])
-        or (first[1] and first[1] == second[1])
-        or first[2] == second[2]
-    )
-
-
-def _find_duplicate_paper(
-    session: Session, *, title: str, details: dict, exclude_asset_id: UUID | None = None
-) -> Asset | None:
-    identity = _paper_identity(details, title)
-    statement = select(Asset).where(Asset.type == AssetType.PAPER)
-    if exclude_asset_id:
-        statement = statement.where(Asset.id != exclude_asset_id)
-    for asset in session.scalars(statement):
-        candidate = _paper_identity(asset.details, asset.title)
-        if _papers_are_duplicates(identity, candidate):
-            return asset
-    return None
 
 
 def asset_summary(asset: Asset) -> AssetSummary:
@@ -135,10 +105,13 @@ def create_asset(
 ) -> AssetSummary:
     if session.scalar(select(Asset.id).where(Asset.slug == payload.slug)):
         raise AssetSlugConflictError
-    if payload.type == AssetType.PAPER and _find_duplicate_paper(
-        session, title=payload.title, details=payload.details
-    ):
-        raise AssetMetadataError("该论文已经收录，请按官方来源标识更新现有记录。")
+    if payload.type == AssetType.PAPER:
+        try:
+            duplicate = resolve_paper(session, title=payload.title, details=payload.details)
+        except PaperIdentityConflictError as error:
+            raise AssetMetadataError(str(error)) from error
+        if duplicate:
+            raise AssetMetadataError("该论文已经收录，请按官方来源标识更新现有记录。")
 
     owner = actor
     if payload.owner_email:
@@ -192,18 +165,21 @@ def import_assets(
     if existing:
         raise BatchAssetImportError(f"以下 slug 已存在：{', '.join(sorted(existing))}")
     paper_identities = [
-        _paper_identity(item.details, item.title)
+        paper_identity(item.title, item.details)
         for item in payload.assets
         if item.type == AssetType.PAPER
     ]
     for index, identity in enumerate(paper_identities):
-        if any(_papers_are_duplicates(identity, other) for other in paper_identities[:index]):
+        if any(paper_identities_match(identity, other) for other in paper_identities[:index]):
             raise BatchAssetImportError("导入内容中含有重复论文。")
     for item in payload.assets:
-        if item.type == AssetType.PAPER and _find_duplicate_paper(
-            session, title=item.title, details=item.details
-        ):
-            raise BatchAssetImportError(f"论文已收录：{item.title}")
+        if item.type == AssetType.PAPER:
+            try:
+                duplicate = resolve_paper(session, title=item.title, details=item.details)
+            except PaperIdentityConflictError as error:
+                raise BatchAssetImportError(str(error)) from error
+            if duplicate:
+                raise BatchAssetImportError(f"论文已收录：{item.title}")
     return [create_asset(session, item, actor=actor) for item in payload.assets]
 
 
@@ -231,13 +207,18 @@ def update_asset(
         )
     except ValueError as error:
         raise AssetMetadataError("论文元数据不完整或格式无效。") from error
-    if asset.type == AssetType.PAPER and _find_duplicate_paper(
-        session,
-        title=next_title,
-        details=next_details,
-        exclude_asset_id=asset.id,
-    ):
-        raise AssetMetadataError("该论文已经收录，请检查 DOI 或官方来源标识。")
+    if asset.type == AssetType.PAPER:
+        try:
+            duplicate = resolve_paper(
+                session,
+                title=next_title,
+                details=next_details,
+                exclude_asset_id=asset.id,
+            )
+        except PaperIdentityConflictError as error:
+            raise AssetMetadataError(str(error)) from error
+        if duplicate:
+            raise AssetMetadataError("该论文已经收录，请检查 DOI 或官方来源标识。")
     if payload.title is not None:
         asset.title = next_title
     if payload.summary is not None:
