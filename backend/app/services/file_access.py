@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from os import stat_result
 from pathlib import Path, PurePosixPath
 from uuid import UUID
 
@@ -51,6 +53,15 @@ def can_preview(mime_type: str | None) -> bool:
     return mime_type in PREVIEW_MIME_TYPES or mime_type in PREVIEW_IMAGE_MIME_TYPES
 
 
+def _matches_indexed_snapshot(record: FileRecord, current: stat_result) -> bool:
+    if record.modified_at is None or record.file_size != current.st_size:
+        return False
+    indexed_modified_at = record.modified_at
+    if indexed_modified_at.tzinfo is None:
+        indexed_modified_at = indexed_modified_at.replace(tzinfo=UTC)
+    return indexed_modified_at.astimezone(UTC) == datetime.fromtimestamp(current.st_mtime, UTC)
+
+
 def _file_record(session: Session, file_id: UUID) -> FileRecord:
     record = session.scalar(
         select(FileRecord)
@@ -96,6 +107,12 @@ def prepare_file_delivery(
     except (OSError, ValueError):
         raise FileUnavailableError from None
     if not resolved_path.is_file():
+        raise FileUnavailableError
+    try:
+        current = resolved_path.stat()
+    except OSError:
+        raise FileUnavailableError from None
+    if not _matches_indexed_snapshot(record, current):
         raise FileUnavailableError
 
     action = (
