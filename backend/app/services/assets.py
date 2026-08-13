@@ -1,13 +1,13 @@
 import re
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import Text, and_, case, cast, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.db.constraints import violates_constraint
-from app.domain.activity import ActivityAction
+from app.domain.activity import ActivityAction, ActivityOperationRole
 from app.domain.enums import AssetType, Visibility
 from app.domain.models import Asset, AssetRelation, AssetVersion, FileRecord, Tag, User
 from app.domain.schemas import (
@@ -666,12 +666,16 @@ def add_asset_relation(
         if violates_constraint(error, ASSET_RELATION_UNIQUE_CONSTRAINT):
             raise AssetRelationError("相同的关联已存在。") from error
         raise
-    record_activity(
+    _record_relation_activities(
         session,
-        asset=source,
+        source=source,
+        target=target,
         actor=actor,
         action=ActivityAction.LINKED_ASSET,
-        description=f"关联了资产「{target.title}」：{relation_type}",
+        source_description=f"建立了指向资产「{target.title}」的关联：{relation_type}",
+        target_description=(
+            f"资产「{source.title}」建立了指向本资产的关联：{relation_type}"
+        ),
     )
     return RelatedAssetSummary(
         relation_id=relation.id,
@@ -697,23 +701,57 @@ def remove_asset_relation(
     )
     if not relation:
         raise AssetRelationError("关联不存在或不能从当前资产移除。")
-    other_asset_id = (
-        relation.target_asset_id
-        if relation.source_asset_id == asset_id
-        else relation.source_asset_id
-    )
-    target = session.get(Asset, other_asset_id)
-    source = session.get(Asset, asset_id)
-    if not source:
-        raise AssetRelationError("当前资产不存在或已归档。")
-    description = f"移除了与资产「{target.title if target else '已删除资产'}」的关联"
+    source = session.get(Asset, relation.source_asset_id)
+    target = session.get(Asset, relation.target_asset_id)
+    if not source or not target:
+        raise AssetRelationError("关联资产不存在，无法移除关联。")
     session.delete(relation)
+    _record_relation_activities(
+        session,
+        source=source,
+        target=target,
+        actor=actor,
+        action=ActivityAction.UNLINKED_ASSET,
+        source_description=(
+            f"解除了指向资产「{target.title}」的关联：{relation.relation_type}"
+        ),
+        target_description=(
+            f"资产「{source.title}」解除了指向本资产的关联：{relation.relation_type}"
+        ),
+    )
+
+
+def _record_relation_activities(
+    session: Session,
+    *,
+    source: Asset,
+    target: Asset,
+    actor: User,
+    action: ActivityAction,
+    source_description: str,
+    target_description: str,
+) -> None:
+    operation_id = uuid4()
+    created_at = datetime.now(UTC)
     record_activity(
         session,
         asset=source,
         actor=actor,
-        action=ActivityAction.UNLINKED_ASSET,
-        description=description,
+        action=action,
+        description=source_description,
+        operation_id=operation_id,
+        operation_role=ActivityOperationRole.SOURCE,
+        created_at=created_at,
+    )
+    record_activity(
+        session,
+        asset=target,
+        actor=actor,
+        action=action,
+        description=target_description,
+        operation_id=operation_id,
+        operation_role=ActivityOperationRole.TARGET,
+        created_at=created_at,
     )
 
 

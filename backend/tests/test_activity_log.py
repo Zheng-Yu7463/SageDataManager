@@ -1,5 +1,7 @@
+from uuid import uuid4
+
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -7,7 +9,7 @@ from app.core.config import settings
 from app.db.base import Base
 from app.db.session import get_session
 from app.domain.activity import ActivityAction
-from app.domain.models import User
+from app.domain.models import Activity, User
 from app.main import app
 from app.services.activities import record_activity
 from app.services.security import create_session_token
@@ -77,6 +79,47 @@ def test_activity_facets_include_actual_actions_and_unknown_history(monkeypatch)
         assert facets["downloaded_file"]["label"] == "下载文件"
         assert facets["legacy_event"]["label"] == "其他操作（legacy event）"
         assert all(item["action_label"] for item in payload["items"])
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
+def test_activity_log_exposes_one_primary_projection_per_relation_operation(
+    monkeypatch,
+) -> None:
+    session = make_session()
+    actor = User(username="zhengyu", name="郑宇", email="zhengyu@sage.lab", role="admin")
+    session.add(actor)
+    session.flush()
+    operation_id = uuid4()
+    for role in ("source", "target"):
+        record_activity(
+            session,
+            actor=actor,
+            action="linked_asset",
+            description=f"{role} projection",
+            operation_id=operation_id,
+            operation_role=role,
+        )
+    session.commit()
+    monkeypatch.setattr(settings, "auth_session_secret", "test-session-secret")
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        response = TestClient(app).get(
+            "/api/dashboard/activities?page_size=100",
+            headers={"X-Sage-Session": create_session_token("zhengyu")},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["total"] == 1
+        assert [item["description"] for item in payload["items"]] == [
+            "source projection"
+        ]
+        assert payload["facets"] == [
+            {"value": "linked_asset", "label": "建立关联", "count": 1}
+        ]
+        assert session.scalar(select(func.count()).select_from(Activity)) == 2
     finally:
         app.dependency_overrides.clear()
         session.close()

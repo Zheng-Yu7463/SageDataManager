@@ -614,12 +614,73 @@ def test_asset_relation_can_be_created_and_removed() -> None:
     assert detail is not None
     assert detail.related_assets[0].relation_id == relation.relation_id
     assert detail.related_assets[0].title == "土壤分析笔记"
+    linked = session.scalars(
+        select(Activity).where(Activity.action == "linked_asset")
+    ).all()
+    assert {activity.asset_id for activity in linked} == {source.id, target.id}
+    assert len({activity.operation_id for activity in linked}) == 1
+    assert linked[0].operation_id is not None
+    assert {activity.operation_role for activity in linked} == {"source", "target"}
+    assert len({activity.created_at for activity in linked}) == 1
+    assert {activity.asset_id: activity.description for activity in linked} == {
+        source.id: "建立了指向资产「土壤分析笔记」的关联：documents",
+        target.id: "资产「土壤样本观测数据集」建立了指向本资产的关联：documents",
+    }
 
     remove_asset_relation(session, target.id, relation.relation_id, actor=actor)
 
     refreshed = get_asset(session, source.id)
     assert refreshed is not None
     assert refreshed.related_assets == []
+    unlinked = session.scalars(
+        select(Activity).where(Activity.action == "unlinked_asset")
+    ).all()
+    assert {activity.asset_id for activity in unlinked} == {source.id, target.id}
+    assert len({activity.operation_id for activity in unlinked}) == 1
+    assert unlinked[0].operation_id is not None
+    assert {activity.operation_role for activity in unlinked} == {"source", "target"}
+    assert len({activity.created_at for activity in unlinked}) == 1
+    assert {activity.asset_id: activity.description for activity in unlinked} == {
+        source.id: "解除了指向资产「土壤分析笔记」的关联：documents",
+        target.id: "资产「土壤样本观测数据集」解除了指向本资产的关联：documents",
+    }
+    for asset in (source, target):
+        detail = get_asset(session, asset.id)
+        assert detail is not None
+        actions = [activity.action for activity in detail.recent_activities]
+        assert actions[:2] == ["unlinked_asset", "linked_asset"]
+
+
+def test_asset_relation_can_be_removed_when_an_endpoint_is_archived() -> None:
+    session = make_session()
+    source = create_asset(session, payload())
+    target = create_asset(
+        session,
+        payload().model_copy(
+            update={"slug": "archived-relation-target", "title": "归档关系目标"}
+        ),
+    )
+    actor = session.get(User, source.owner.id)
+    assert actor is not None
+    relation = add_asset_relation(
+        session,
+        source.id,
+        AssetRelationCreateRequest(target_asset_id=target.id, relation_type="documents"),
+        actor=actor,
+    )
+    target_model = session.get(Asset, target.id)
+    assert target_model is not None
+    target_model.archived_at = datetime.now(UTC)
+    session.flush()
+
+    remove_asset_relation(session, source.id, relation.relation_id, actor=actor)
+    session.flush()
+
+    assert session.get(AssetRelation, relation.relation_id) is None
+    unlinked = session.scalars(
+        select(Activity).where(Activity.action == "unlinked_asset")
+    ).all()
+    assert {activity.asset_id for activity in unlinked} == {source.id, target.id}
 
 
 def test_asset_relation_identity_is_unique_but_direction_and_type_are_distinct() -> None:

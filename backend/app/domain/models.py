@@ -224,6 +224,8 @@ class Activity(Base):
     asset_title_snapshot: Mapped[str | None] = mapped_column(String(500))
     asset_type_snapshot: Mapped[str | None] = mapped_column(String(30))
     credential_name: Mapped[str | None] = mapped_column(String(100))
+    operation_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), index=True)
+    operation_role: Mapped[str] = mapped_column(String(20), nullable=False, default="single")
     action: Mapped[str] = mapped_column(String(80))
     description: Mapped[str] = mapped_column(String(500))
     created_at: Mapped[datetime] = mapped_column(

@@ -4,7 +4,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.domain.activity import activity_label
+from app.domain.activity import ActivityOperationRole, activity_label
 from app.domain.models import Activity, Asset, User
 from app.domain.schemas import ActivityFacet, ActivitySummary
 
@@ -17,6 +17,8 @@ def record_activity(
     asset: Asset | None = None,
     actor: User | None = None,
     credential_name: str | None = None,
+    operation_id: UUID | None = None,
+    operation_role: ActivityOperationRole = ActivityOperationRole.SINGLE,
     created_at: datetime | None = None,
 ) -> Activity:
     activity = Activity(
@@ -26,6 +28,8 @@ def record_activity(
         asset_title_snapshot=asset.title if asset else None,
         asset_type_snapshot=asset.type.value if asset else None,
         credential_name=credential_name,
+        operation_id=operation_id,
+        operation_role=operation_role,
         action=action,
         description=description,
     )
@@ -55,6 +59,7 @@ def recent_activity_summaries(
     *,
     limit: int,
     asset_id: UUID | None = None,
+    primary_only: bool = False,
 ) -> list[ActivitySummary]:
     partition = (
         Activity.asset_id,
@@ -86,6 +91,8 @@ def recent_activity_summaries(
     )
     if asset_id is not None:
         ranked = ranked.where(Activity.asset_id == asset_id)
+    if primary_only:
+        ranked = ranked.where(Activity.operation_role != ActivityOperationRole.TARGET)
     ranked_activity = ranked.subquery()
     rows = session.execute(
         select(ranked_activity)
@@ -114,6 +121,7 @@ def recent_activity_summaries(
 def activity_facets(session: Session) -> list[ActivityFacet]:
     rows = session.execute(
         select(Activity.action, func.count(Activity.id))
+        .where(Activity.operation_role != ActivityOperationRole.TARGET)
         .group_by(Activity.action)
         .order_by(Activity.action.asc())
     ).all()

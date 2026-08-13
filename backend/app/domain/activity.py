@@ -20,6 +20,12 @@ class ActivityAction(StrEnum):
     IMPORTED_PUBLICATION = "imported_publication"
 
 
+class ActivityOperationRole(StrEnum):
+    SINGLE = "single"
+    SOURCE = "source"
+    TARGET = "target"
+
+
 ACTIVITY_LABELS = {
     ActivityAction.CREATED: "登记资产",
     ActivityAction.UPDATED_METADATA: "更新元数据",

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from app.api.dependencies import AdminDependency, require_admin
 from app.db.session import get_session
+from app.domain.activity import ActivityOperationRole
 from app.domain.enums import AssetType, HealthStatus
 from app.domain.models import Activity, Asset, FileRecord, Tag, asset_tags
 from app.domain.schemas import ActivityListResponse, DashboardSummary
@@ -55,7 +56,7 @@ def dashboard(session: SessionDependency) -> DashboardSummary:
         .limit(5)
     ).all()
 
-    activity_summaries = recent_activity_summaries(session, limit=6)
+    activity_summaries = recent_activity_summaries(session, limit=6, primary_only=True)
 
     popular_tags = session.execute(
         select(Tag.name, func.count(asset_tags.c.asset_id).label("usage_count"))
@@ -86,7 +87,7 @@ def activities(
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=30, ge=1, le=100),
 ) -> ActivityListResponse:
-    filters = [Activity.id.is_not(None)]
+    filters = [Activity.operation_role != ActivityOperationRole.TARGET]
     if action:
         filters.append(Activity.action == action)
     total = session.scalar(select(func.count()).select_from(Activity).where(*filters)) or 0
