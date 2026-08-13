@@ -5,6 +5,7 @@ from shlex import quote
 
 from sqlalchemy.orm import Session
 
+from app.domain.activity import ActivityAction
 from app.domain.models import Activity, Asset, User
 from app.domain.schemas import UploadCommandRequest, UploadCommandResponse
 from app.services.upload_directories import upload_directory_names
@@ -62,7 +63,7 @@ def generate_upload_command(
             Activity(
                 asset=asset,
                 actor=actor,
-                action="prepared_upload",
+                action=ActivityAction.PREPARED_UPLOAD,
                 description=f"为 {archive_relative_path} 生成了 SCP 上传指令",
             )
         )

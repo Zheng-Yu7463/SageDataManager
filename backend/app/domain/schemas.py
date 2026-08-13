@@ -77,6 +77,15 @@ class AssetListResponse(BaseModel):
     paper_facets: PaperCatalogueFacets | None = None
 
 
+class AssetChoiceSummary(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    type: AssetType
+    slug: str
+    title: str
+
+
 class RelatedAssetSummary(BaseModel):
     relation_id: UUID
     id: UUID
@@ -93,6 +102,7 @@ class ActivitySummary(BaseModel):
     asset_type: AssetType | None
     actor_name: str | None
     action: str
+    action_label: str
     description: str
     created_at: datetime
 
@@ -120,8 +130,15 @@ class ScanRunSummary(BaseModel):
     completed_at: datetime | None
 
 
+class ActivityFacet(BaseModel):
+    value: str
+    label: str
+    count: int
+
+
 class ActivityListResponse(BaseModel):
     items: list[ActivitySummary]
+    facets: list[ActivityFacet]
     total: int
     page: int
     page_size: int

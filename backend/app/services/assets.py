@@ -5,10 +5,11 @@ from uuid import UUID
 from sqlalchemy import Text, and_, case, cast, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
+from app.domain.activity import ActivityAction
 from app.domain.enums import AssetType, Visibility
 from app.domain.models import Activity, Asset, AssetRelation, AssetVersion, FileRecord, Tag, User
 from app.domain.schemas import (
-    ActivitySummary,
+    AssetChoiceSummary,
     AssetCreateRequest,
     AssetDetail,
     AssetRelationCreateRequest,
@@ -23,6 +24,7 @@ from app.domain.schemas import (
     UploadDirectoryOption,
     normalized_asset_details,
 )
+from app.services.activities import activity_summary
 from app.services.upload_directories import UPLOAD_DIRECTORY_OPTIONS
 
 
@@ -172,7 +174,7 @@ def create_asset(
         Activity(
             asset=asset,
             actor=actor or owner,
-            action="created",
+            action=ActivityAction.CREATED,
             description=f"登记了{asset.title}",
         )
     )
@@ -250,7 +252,10 @@ def update_asset(
         asset.details = next_details
     session.add(
         Activity(
-            asset=asset, actor=actor, action="updated_metadata", description="更新了资产基础信息"
+            asset=asset,
+            actor=actor,
+            action=ActivityAction.UPDATED_METADATA,
+            description="更新了资产基础信息",
         )
     )
     session.flush()
@@ -287,7 +292,7 @@ def add_asset_version(
         Activity(
             asset=asset,
             actor=actor,
-            action="added_version",
+            action=ActivityAction.ADDED_VERSION,
             description=f"登记了版本 {version_name}{current_label}",
         )
     )
@@ -308,7 +313,14 @@ def archive_asset(session: Session, asset_id: UUID, *, actor: User) -> AssetSumm
     if not asset:
         raise AssetNotFoundError
     asset.archived_at = datetime.now(UTC)
-    session.add(Activity(asset=asset, actor=actor, action="archived", description="归档了该资产"))
+    session.add(
+        Activity(
+            asset=asset,
+            actor=actor,
+            action=ActivityAction.ARCHIVED,
+            description="归档了该资产",
+        )
+    )
     session.flush()
     return asset_summary(asset)
 
@@ -327,7 +339,14 @@ def restore_asset(session: Session, asset_id: UUID, *, actor: User) -> AssetSumm
     if not asset:
         raise AssetNotFoundError
     asset.archived_at = None
-    session.add(Activity(asset=asset, actor=actor, action="restored", description="恢复了该资产"))
+    session.add(
+        Activity(
+            asset=asset,
+            actor=actor,
+            action=ActivityAction.RESTORED,
+            description="恢复了该资产",
+        )
+    )
     session.flush()
     return asset_summary(asset)
 
@@ -376,6 +395,22 @@ def list_assets(
         statement = statement.order_by(Asset.updated_at.desc(), Asset.id.asc())
     statement = statement.offset((page - 1) * page_size).limit(page_size)
     return [asset_summary(item) for item in session.scalars(statement).all()], total
+
+
+def list_asset_choices(
+    session: Session, *, query: str | None, limit: int
+) -> list[AssetChoiceSummary]:
+    statement = select(Asset).where(Asset.archived_at.is_(None))
+    if query and query.strip():
+        pattern = _contains_pattern(" ".join(query.split()))
+        statement = statement.where(
+            or_(
+                Asset.title.ilike(pattern, escape="\\"),
+                Asset.slug.ilike(pattern, escape="\\"),
+            )
+        )
+    statement = statement.order_by(Asset.title.asc(), Asset.id.asc()).limit(limit)
+    return [AssetChoiceSummary.model_validate(asset) for asset in session.scalars(statement)]
 
 
 def _search_terms(query: str | None) -> list[str]:
@@ -604,7 +639,7 @@ def add_asset_relation(
         Activity(
             asset=source,
             actor=actor,
-            action="linked_asset",
+            action=ActivityAction.LINKED_ASSET,
             description=f"关联了资产「{target.title}」：{relation_type}",
         )
     )
@@ -641,7 +676,12 @@ def remove_asset_relation(
     description = f"移除了与资产「{target.title if target else '已删除资产'}」的关联"
     session.delete(relation)
     session.add(
-        Activity(asset_id=asset_id, actor=actor, action="unlinked_asset", description=description)
+        Activity(
+            asset_id=asset_id,
+            actor=actor,
+            action=ActivityAction.UNLINKED_ASSET,
+            description=description,
+        )
     )
 
 
@@ -688,7 +728,7 @@ def get_asset(session: Session, asset_id: UUID) -> AssetDetail | None:
         select(Activity)
         .where(Activity.asset_id == asset.id)
         .options(selectinload(Activity.actor))
-        .order_by(Activity.created_at.desc())
+        .order_by(Activity.created_at.desc(), Activity.id.asc())
         .limit(20)
     ).all()
 
@@ -716,16 +756,7 @@ def get_asset(session: Session, asset_id: UUID) -> AssetDetail | None:
             )
         ],
         recent_activities=[
-            ActivitySummary(
-                id=activity.id,
-                asset_id=asset.id,
-                asset_title=asset.title,
-                asset_type=asset.type,
-                actor_name=activity.actor.name if activity.actor else None,
-                action=activity.action,
-                description=activity.description,
-                created_at=activity.created_at,
-            )
+            activity_summary(activity)
             for activity in activities
         ],
     )

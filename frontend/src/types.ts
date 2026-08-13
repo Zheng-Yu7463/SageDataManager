@@ -87,6 +87,13 @@ export interface AssetListResponse {
   } | null
 }
 
+export interface AssetChoiceSummary {
+  id: string
+  type: AssetType
+  slug: string
+  title: string
+}
+
 export interface AssetCreateInput {
   type: AssetType
   slug: string
@@ -164,11 +171,18 @@ export interface ActivitySummary {
   asset_type: AssetType | null
   actor_name: string | null
   action: string
+  action_label: string
   description: string
   created_at: string
 }
+export interface ActivityFacet {
+  value: string
+  label: string
+  count: number
+}
 export interface ActivityListResponse {
   items: ActivitySummary[]
+  facets: ActivityFacet[]
   total: number
   page: number
   page_size: number

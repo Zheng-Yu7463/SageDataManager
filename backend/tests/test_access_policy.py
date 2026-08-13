@@ -50,6 +50,7 @@ def test_management_reads_require_an_active_administrator(
     app.dependency_overrides[get_session] = lambda: session
     protected_paths = [
         "/api/assets",
+        "/api/assets/choices?query=data",
         f"/api/assets/{asset.id}",
         "/api/dashboard",
         "/api/archive/health",

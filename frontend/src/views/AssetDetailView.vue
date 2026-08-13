@@ -195,25 +195,6 @@ function healthLabel(status: string) {
   return { healthy: '健康', missing: '缺失', unverified: '待校验', changed: '已变更' }[status] ?? status
 }
 
-const activityLabels: Record<string, string> = {
-  added_version: '登记版本',
-  archived: '归档资产',
-  claimed_file: '认领文件',
-  created: '登记资产',
-  downloaded_file: '下载文件',
-  imported_publication: '收录论文',
-  linked_asset: '建立关联',
-  prepared_upload: '生成上传指令',
-  previewed_file: '预览文件',
-  restored: '恢复资产',
-  unlinked_asset: '解除关联',
-  updated_metadata: '更新元数据',
-}
-
-function activityLabel(action: string) {
-  return activityLabels[action] ?? action.replaceAll('_', ' ')
-}
-
 function canPreview(file: FileSummary) {
   return !!file.mime_type && previewableMimeTypes.has(file.mime_type)
 }
@@ -505,7 +486,7 @@ onBeforeUnmount(() => {
           <header class="panel-heading"><div><span class="section-number">{{ paper ? '06' : '05' }}</span><div><h2>归档活动</h2><p>Catalogue history</p></div></div></header>
           <div class="detail-section-body">
             <ol v-if="data.recent_activities.length" class="detail-timeline">
-              <li v-for="activity in data.recent_activities" :key="activity.id"><History :size="17" /><div><strong>{{ activityLabel(activity.action) }}</strong><p>{{ activity.actor_name ?? '系统' }} · {{ activity.description }}</p></div><time>{{ formatDate(activity.created_at) }}</time></li>
+              <li v-for="activity in data.recent_activities" :key="activity.id"><History :size="17" /><div><strong>{{ activity.action_label }}</strong><p>{{ activity.actor_name ?? '系统' }} · {{ activity.description }}</p></div><time>{{ formatDate(activity.created_at) }}</time></li>
             </ol>
             <p v-else class="detail-empty">暂无归档活动。</p>
           </div>

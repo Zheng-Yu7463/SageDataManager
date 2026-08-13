@@ -8,7 +8,8 @@ from app.api.dependencies import AdminDependency, require_admin
 from app.db.session import get_session
 from app.domain.enums import AssetType, HealthStatus
 from app.domain.models import Activity, Asset, FileRecord, Tag, asset_tags
-from app.domain.schemas import ActivityListResponse, ActivitySummary, DashboardSummary
+from app.domain.schemas import ActivityListResponse, DashboardSummary
+from app.services.activities import activity_facets, activity_summary
 from app.services.assets import asset_summary
 
 router = APIRouter(
@@ -56,19 +57,7 @@ def dashboard(session: SessionDependency) -> DashboardSummary:
         .order_by(Activity.created_at.desc())
         .limit(6)
     ).all()
-    activity_summaries = [
-        ActivitySummary(
-            id=item.id,
-            asset_id=item.asset_id,
-            asset_title=item.asset.title if item.asset else None,
-            asset_type=item.asset.type if item.asset else None,
-            actor_name=item.actor.name if item.actor else None,
-            action=item.action,
-            description=item.description,
-            created_at=item.created_at,
-        )
-        for item in activities
-    ]
+    activity_summaries = [activity_summary(item) for item in activities]
 
     popular_tags = session.execute(
         select(Tag.name, func.count(asset_tags.c.asset_id).label("usage_count"))
@@ -105,24 +94,13 @@ def activities(
         select(Activity)
         .where(*filters)
         .options(selectinload(Activity.asset), selectinload(Activity.actor))
-        .order_by(Activity.created_at.desc())
+        .order_by(Activity.created_at.desc(), Activity.id.asc())
         .offset((page - 1) * page_size)
         .limit(page_size)
     ).all()
     return ActivityListResponse(
-        items=[
-            ActivitySummary(
-                id=item.id,
-                asset_id=item.asset_id,
-                asset_title=item.asset.title if item.asset else None,
-                asset_type=item.asset.type if item.asset else None,
-                actor_name=item.actor.name if item.actor else None,
-                action=item.action,
-                description=item.description,
-                created_at=item.created_at,
-            )
-            for item in rows
-        ],
+        items=[activity_summary(item) for item in rows],
+        facets=activity_facets(session),
         total=total,
         page=page,
         page_size=page_size,

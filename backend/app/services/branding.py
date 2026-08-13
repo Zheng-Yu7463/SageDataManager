@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
+from app.domain.activity import ActivityAction
 from app.domain.models import Activity, InstanceBranding, User
 from app.domain.schemas import InstanceBrandingResponse, InstanceBrandingUpdateRequest
 
@@ -60,7 +61,11 @@ def update_branding(
         setattr(record, field, value)
     record.updated_at = datetime.now(UTC)
     session.add(
-        Activity(actor=actor, action="updated_branding", description="更新了系统品牌设置")
+        Activity(
+            actor=actor,
+            action=ActivityAction.UPDATED_BRANDING,
+            description="更新了系统品牌设置",
+        )
     )
     session.flush()
     return branding_response(session)
@@ -93,7 +98,13 @@ def update_branding_logo(
     record.logo_data = content
     record.logo_mime_type = normalized_mime
     record.updated_at = datetime.now(UTC)
-    session.add(Activity(actor=actor, action="updated_branding", description="更新了系统 Logo"))
+    session.add(
+        Activity(
+            actor=actor,
+            action=ActivityAction.UPDATED_BRANDING,
+            description="更新了系统 Logo",
+        )
+    )
     session.flush()
     return branding_response(session)
 
@@ -106,6 +117,12 @@ def remove_branding_logo(session: Session, *, actor: User) -> InstanceBrandingRe
     record.logo_data = None
     record.logo_mime_type = None
     record.updated_at = datetime.now(UTC)
-    session.add(Activity(actor=actor, action="updated_branding", description="恢复了默认系统标志"))
+    session.add(
+        Activity(
+            actor=actor,
+            action=ActivityAction.UPDATED_BRANDING,
+            description="恢复了默认系统标志",
+        )
+    )
     session.flush()
     return branding_response(session)

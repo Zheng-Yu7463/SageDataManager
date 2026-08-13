@@ -23,6 +23,7 @@ from app.services.assets import (
     get_asset,
     import_assets,
     list_archived_assets,
+    list_asset_choices,
     list_assets,
     list_paper_catalogue_facets,
     remove_asset_relation,
@@ -365,6 +366,30 @@ def test_asset_pagination_has_a_stable_unique_order() -> None:
 
     assert first_read == second_read
     assert len(first_read) == len(set(first_read)) == 5
+
+
+def test_asset_choices_search_beyond_catalogue_page_and_exclude_archived() -> None:
+    session = make_session()
+    created = []
+    for index in range(105):
+        item = payload().model_copy(
+            update={
+                "slug": f"candidate-{index:03d}",
+                "title": f"候选资产 {index:03d}",
+            }
+        )
+        created.append(create_asset(session, item))
+    archived = session.get(Asset, created[-1].id)
+    archived.archived_at = archived.updated_at
+    session.commit()
+
+    matches = list_asset_choices(session, query="candidate-103", limit=20)
+    archived_matches = list_asset_choices(session, query="candidate-104", limit=20)
+
+    assert len(matches) == 1
+    assert matches[0].slug == "candidate-103"
+    assert matches[0].model_dump().keys() == {"id", "type", "slug", "title"}
+    assert archived_matches == []
 
 
 def test_paper_catalogue_facets_follow_active_paper_metadata() -> None:

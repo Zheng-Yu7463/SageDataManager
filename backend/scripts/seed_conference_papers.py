@@ -16,6 +16,7 @@ from urllib.parse import urlencode, urljoin
 from sqlalchemy import select
 
 from app.db.session import SessionLocal
+from app.domain.activity import ActivityAction
 from app.domain.enums import AssetType, Visibility
 from app.domain.models import Activity, Asset, AssetVersion, Tag
 from app.domain.schemas import PaperMetadata
@@ -380,7 +381,7 @@ def upsert_metadata(papers: list[ConferencePaper]) -> None:
                     session.scalar(
                         select(Activity.id).where(
                             Activity.asset_id == asset.id,
-                            Activity.action == "imported_publication",
+                            Activity.action == ActivityAction.IMPORTED_PUBLICATION,
                         )
                     )
                 )
@@ -389,7 +390,7 @@ def upsert_metadata(papers: list[ConferencePaper]) -> None:
                     Activity(
                         asset=asset,
                         actor=owner,
-                        action="imported_publication",
+                        action=ActivityAction.IMPORTED_PUBLICATION,
                         description=f"从 {paper.metadata.venue} 官方来源同步论文元数据",
                         created_at=datetime.now(UTC),
                     )

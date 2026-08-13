@@ -164,6 +164,67 @@ test('目录筛选浮层支持键盘和外部关闭', async ({ page }) => {
   expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth)
 })
 
+test('待认领文件必须搜索并明确选择目标资产', async ({ page }) => {
+  await signIn(page)
+  await page.route('**/api/archive/unclaimed', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify([{
+        id: '11111111-1111-1111-1111-111111111111',
+        relative_path: 'incoming/unassigned.pdf',
+        file_name: 'unassigned.pdf',
+        file_kind: 'document',
+        mime_type: 'application/pdf',
+        file_size: 2048,
+        modified_at: null,
+        first_seen_at: '2026-08-13T04:00:00Z',
+        last_seen_at: '2026-08-13T04:00:00Z',
+      }]),
+    })
+  })
+  await page.route('**/api/assets/choices?*', async (route) => {
+    const query = new URL(route.request().url()).searchParams.get('query')
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(query === 'target-149' ? [{
+        id: '22222222-2222-2222-2222-222222222222',
+        type: 'dataset',
+        slug: 'target-149',
+        title: '第 150 项资产',
+      }] : []),
+    })
+  })
+
+  await page.goto('/unclaimed-files')
+  await page.getByRole('button', { name: '认领' }).click()
+  const confirm = page.getByRole('button', { name: '确认认领' })
+  await expect(confirm).toBeDisabled()
+
+  await page.getByLabel('归属资产').fill('target-149')
+  await expect(page.getByRole('option', { name: /第 150 项资产/ })).toBeVisible()
+  await page.getByRole('option', { name: /第 150 项资产/ }).click()
+  await expect(confirm).toBeEnabled()
+  await expect(page.getByText('target-149')).toBeVisible()
+
+  await page.getByLabel('归属资产').fill('different-target')
+  await expect(confirm).toBeDisabled()
+
+  const layout = await page.evaluate(() => ({
+    viewportWidth: document.documentElement.clientWidth,
+    documentWidth: document.documentElement.scrollWidth,
+  }))
+  expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth)
+})
+
+test('操作日志使用服务端活动标签和筛选项', async ({ page }) => {
+  await signIn(page)
+  await page.goto('/activity-log')
+  const filter = page.getByLabel('操作类型')
+
+  await expect(filter.locator('option[value="file_accessed"]')).toHaveCount(0)
+  await expect(page.locator('.activity-table')).not.toContainText(/downloaded_file|previewed_file|updated_branding/)
+})
+
 test('详情页返回到原目录状态', async ({ page }) => {
   await signIn(page)
   await page.goto('/papers?venue=ICLR&view=grid')

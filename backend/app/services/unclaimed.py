@@ -8,6 +8,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.domain.activity import ActivityAction
 from app.domain.enums import HealthStatus
 from app.domain.models import Activity, Asset, FileRecord, UnclaimedFile, User
 from app.domain.schemas import FileClaimResult, FileSummary, UnclaimedFileSummary
@@ -136,7 +137,7 @@ def claim_unclaimed_file(
             Activity(
                 asset=asset,
                 actor=actor,
-                action="claimed_file",
+                action=ActivityAction.CLAIMED_FILE,
                 description=f"认领了文件 {record.file_name}",
             )
         )

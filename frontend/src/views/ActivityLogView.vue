@@ -59,15 +59,7 @@ onMounted(load)
         操作类型
         <select v-model="action" @change="filter">
           <option value="">全部操作</option>
-          <option value="created">创建资产</option>
-          <option value="updated_metadata">更新元数据</option>
-          <option value="prepared_upload">生成上传指令</option>
-          <option value="archived">归档资产</option>
-          <option value="restored">恢复资产</option>
-          <option value="added_version">登记版本</option>
-          <option value="linked_asset">建立关联</option>
-          <option value="unlinked_asset">解除关联</option>
-          <option value="file_accessed">文件访问</option>
+          <option v-for="facet in data?.facets" :key="facet.value" :value="facet.value">{{ facet.label }}（{{ facet.count }}）</option>
         </select>
       </label>
       <span v-if="data">共 {{ data.total }} 条记录</span>
@@ -89,7 +81,7 @@ onMounted(load)
         <div class="activity-copy">
           <strong>{{ item.description }}</strong>
           <p>
-            {{ item.actor_name ?? '系统' }} · {{ item.action }}
+            {{ item.actor_name ?? '系统' }} · {{ item.action_label }}
             <template v-if="item.asset_title"> · {{ item.asset_title }}</template>
           </p>
         </div>
@@ -110,7 +102,7 @@ onMounted(load)
 <style scoped>
 .activity-filter { display: flex; margin-bottom: 12px; padding: 14px 18px; align-items: end; justify-content: space-between; gap: 12px; }
 .activity-filter label { display: grid; color: #526158; font-size: 11px; font-weight: 700; gap: 6px; }
-.activity-filter select { min-width: 180px; min-height: 36px; padding: 0 10px; color: var(--ink); background: #fff; border: 1px solid var(--line); border-radius: 5px; }
+.activity-page :deep(.page-heading > .button), .activity-filter select { min-height: 44px; }.activity-filter select { min-width: 180px; padding: 0 10px; color: var(--ink); background: #fff; border: 1px solid var(--line); border-radius: 5px; }
 .activity-filter > span { color: #68766d; font-size: 11px; }
 .activity-table { overflow: hidden; }
 .activity-table article { display: grid; min-height: 70px; padding: 12px 18px; align-items: center; grid-template-columns: 30px minmax(0, 1fr) auto auto; gap: 12px; border-bottom: 1px solid var(--line); }

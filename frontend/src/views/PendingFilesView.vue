@@ -1,19 +1,25 @@
 <script setup lang="ts">
-import { Check, CircleAlert, FileQuestion, RefreshCw, X } from '@lucide/vue'
+import { Check, CircleAlert, FileQuestion, RefreshCw, Search, X } from '@lucide/vue'
+import { useDebounceFn } from '@vueuse/core'
 import { computed, onMounted, ref } from 'vue'
 
-import { claimUnclaimedFile, getAssets, getUnclaimedFiles } from '@/api/client'
+import { claimUnclaimedFile, getAssetChoices, getUnclaimedFiles } from '@/api/client'
+import { assetMeta } from '@/catalogue'
 import { useOverlayFocus } from '@/composables/useOverlayFocus'
 import { useBranding } from '@/composables/useBranding'
-import type { AssetSummary, UnclaimedFileSummary } from '@/types'
+import type { AssetChoiceSummary, UnclaimedFileSummary } from '@/types'
 
 const files = ref<UnclaimedFileSummary[]>([])
-const assets = ref<AssetSummary[]>([])
+const assetChoices = ref<AssetChoiceSummary[]>([])
 const activeFile = ref<UnclaimedFileSummary | null>(null)
 const claimDialog = ref<HTMLElement | null>(null)
 const selectedAssetId = ref('')
+const assetQuery = ref('')
+const choicesLoading = ref(false)
+const choicesError = ref('')
 const submitting = ref(false)
 const claimError = ref('')
+let choicesController: AbortController | undefined
 
 const loading = ref(true)
 const error = ref('')
@@ -40,19 +46,38 @@ function formatBytes(value: number) {
   return `${(value / 1024 ** index).toFixed(index > 1 ? 1 : 0)} ${units[index]}`
 }
 
-async function loadAssets() {
+async function loadAssetChoices() {
+  choicesController?.abort()
+  const controller = new AbortController()
+  choicesController = controller
+  choicesLoading.value = true
+  choicesError.value = ''
   try {
-    const result = await getAssets(undefined, { pageSize: 100 })
-    assets.value = result.items
-  } catch {
-    assets.value = []
+    assetChoices.value = await getAssetChoices(assetQuery.value.trim(), controller.signal)
+  } catch (reason) {
+    if (reason instanceof DOMException && reason.name === 'AbortError') return
+    assetChoices.value = []
+    choicesError.value = reason instanceof Error ? reason.message : '无法读取资产候选项'
+  } finally {
+    if (choicesController === controller) choicesLoading.value = false
   }
+}
+
+const searchAssetChoices = useDebounceFn(() => { void loadAssetChoices() }, 250)
+
+function updateAssetQuery() {
+  selectedAssetId.value = ''
+  searchAssetChoices()
 }
 
 function openClaim(file: UnclaimedFileSummary) {
   activeFile.value = file
-  selectedAssetId.value = assets.value[0]?.id ?? ''
+  selectedAssetId.value = ''
+  assetQuery.value = ''
+  assetChoices.value = []
+  choicesError.value = ''
   claimError.value = ''
+  void loadAssetChoices()
 }
 
 function closeClaim() {
@@ -74,7 +99,7 @@ async function claim() {
   }
 }
 
-onMounted(() => { void load(); void loadAssets() })
+onMounted(load)
 </script>
 
 <template>
@@ -98,12 +123,13 @@ onMounted(() => { void load(); void loadAssets() })
         <p class="eyebrow">ASSIGN TO REGISTERED ASSET</p>
         <h2 id="claim-title">认领「{{ activeFile.file_name }}」</h2>
         <p>原始文件会保留在 <code>{{ activeFile.relative_path }}</code>，系统只建立与资产的归档关联。</p>
-        <label class="claim-select-label" for="claim-asset">归属资产</label>
-        <select id="claim-asset" v-model="selectedAssetId" class="claim-select" :disabled="submitting || !assets.length" autofocus>
-          <option value="" disabled>请选择已登记资产</option>
-          <option v-for="asset in assets" :key="asset.id" :value="asset.id">{{ asset.title }} · {{ asset.type }}</option>
-        </select>
-        <p v-if="!assets.length" class="claim-error" role="alert">当前无法读取可认领的资产，请刷新页面后重试。</p>
+        <label class="claim-select-label" for="claim-asset-search">归属资产</label>
+        <div class="claim-search"><Search :size="17" /><input id="claim-asset-search" v-model="assetQuery" autofocus :disabled="submitting" placeholder="搜索资产标题或 slug" autocomplete="off" @input="updateAssetQuery" /><span v-if="choicesLoading" class="tiny-spinner"></span></div>
+        <div class="claim-choices" role="listbox" aria-label="资产候选项">
+          <button v-for="asset in assetChoices" :key="asset.id" type="button" role="option" :aria-selected="selectedAssetId === asset.id" :class="{ selected: selectedAssetId === asset.id }" @click="selectedAssetId = asset.id"><span><strong>{{ asset.title }}</strong><small>{{ asset.slug }}</small></span><em>{{ assetMeta[asset.type].label }}</em><Check v-if="selectedAssetId === asset.id" :size="16" /></button>
+          <p v-if="!choicesLoading && !choicesError && !assetChoices.length">没有匹配的已登记资产。</p>
+        </div>
+        <p v-if="choicesError" class="claim-error" role="alert">{{ choicesError }} <button type="button" @click="loadAssetChoices">重试</button></p>
         <p v-else-if="claimError" class="claim-error" role="alert">{{ claimError }}</p>
         <footer><button class="button button--outline" :disabled="submitting" @click="closeClaim">取消</button><button class="button button--primary" :disabled="submitting || !selectedAssetId" @click="claim"><Check :size="16" />{{ submitting ? '正在认领' : '确认认领' }}</button></footer>
       </section>
@@ -120,9 +146,9 @@ onMounted(() => { void load(); void loadAssets() })
 .pending-row strong { display: block; overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .pending-row p { margin: 4px 0 0; overflow: hidden; color: #748178; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .pending-row span, .pending-row time { color: #68766d; font-size: 11px; white-space: nowrap; }
-.button--compact { min-width: 58px; min-height: 32px; padding: 0 11px; white-space: nowrap; font-size: 11px; }
+.pending-files-page :deep(.page-heading > .button), .button--compact { min-height: 44px; }.button--compact { min-width: 58px; padding: 0 11px; white-space: nowrap; font-size: 11px; }
 .claim-backdrop { position: fixed; z-index: 40; inset: 0; display: grid; padding: 20px; place-items: center; background: rgba(23, 34, 26, .48); }
 .claim-dialog { position: relative; width: min(100%, 500px); padding: 28px; background: #fdfefb; border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 20px 50px rgba(24, 37, 29, .22); }
-.claim-dialog h2 { margin: 5px 0 12px; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 22px; font-weight: 500; }.claim-dialog > p { color: #718077; font-size: 12px; line-height: 1.65; }.claim-dialog code { color: #56705d; font-size: 11px; }.claim-close { position: absolute; top: 13px; right: 13px; display: grid; width: 31px; height: 31px; color: #68776d; place-items: center; background: transparent; border: 0; border-radius: 50%; cursor: pointer; }.claim-close:hover { background: #eef2ed; }.claim-select-label { display: block; margin: 20px 0 7px; color: #526056; font-size: 12px; font-weight: 700; }.claim-select { width: 100%; height: 40px; padding: 0 10px; color: var(--ink); background: #fff; border: 1px solid var(--line); border-radius: 5px; }.claim-error { margin: 10px 0 0; color: #a6633b !important; }.claim-dialog footer { display: flex; margin-top: 23px; justify-content: flex-end; gap: 9px; }
+.claim-dialog h2 { margin: 5px 0 12px; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 22px; font-weight: 500; }.claim-dialog > p { color: #718077; font-size: 12px; line-height: 1.65; }.claim-dialog code { color: #56705d; font-size: 11px; }.claim-close { position: absolute; top: 13px; right: 13px; display: grid; width: 44px; height: 44px; color: #68776d; place-items: center; background: transparent; border: 0; border-radius: 50%; cursor: pointer; }.claim-close:hover { background: #eef2ed; }.claim-select-label { display: block; margin: 20px 0 7px; color: #526056; font-size: 12px; font-weight: 700; }.claim-search { display: flex; min-height: 44px; padding: 0 11px; align-items: center; gap: 8px; color: #748178; background: #fff; border: 1px solid var(--line); border-radius: 5px; }.claim-search:focus-within { border-color: var(--sage); box-shadow: 0 0 0 3px var(--sage-soft); }.claim-search input { min-width: 0; flex: 1; background: transparent; border: 0; outline: 0; }.claim-choices { display: grid; max-height: 230px; margin-top: 8px; overflow-y: auto; background: #fff; border: 1px solid var(--line); border-radius: 5px; }.claim-choices > button { display: grid; min-height: 52px; padding: 8px 10px; align-items: center; color: var(--ink); text-align: left; background: transparent; border: 0; border-bottom: 1px solid #e8ece6; grid-template-columns: minmax(0, 1fr) auto 18px; gap: 8px; cursor: pointer; }.claim-choices > button:last-of-type { border-bottom: 0; }.claim-choices > button:hover, .claim-choices > button.selected { background: var(--sage-soft); }.claim-choices span { min-width: 0; }.claim-choices strong, .claim-choices small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.claim-choices strong { font-size: 12px; }.claim-choices small { margin-top: 3px; color: #758179; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 10px; }.claim-choices em { color: #617068; font-size: 10px; font-style: normal; }.claim-choices > p { margin: 0; padding: 20px 12px; color: #748178; text-align: center; font-size: 11px; }.claim-error { margin: 10px 0 0; color: #a6633b !important; }.claim-error button { color: inherit; text-decoration: underline; background: transparent; border: 0; cursor: pointer; }.claim-dialog footer { display: flex; margin-top: 23px; justify-content: flex-end; gap: 9px; }
 @media (max-width: 600px) { .pending-row { padding: 13px 14px; grid-template-columns: 25px minmax(0, 1fr) auto; gap: 9px; }.pending-row span, .pending-row time { display: none; }.claim-dialog { padding: 24px 20px; } }
 </style>

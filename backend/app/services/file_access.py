@@ -7,6 +7,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.domain.activity import ActivityAction
 from app.domain.enums import HealthStatus
 from app.domain.models import Activity, Asset, FileRecord, User
 
@@ -97,7 +98,11 @@ def prepare_file_delivery(
     if not resolved_path.is_file():
         raise FileUnavailableError
 
-    action = "previewed_file" if mode == "preview" else "downloaded_file"
+    action = (
+        ActivityAction.PREVIEWED_FILE
+        if mode == "preview"
+        else ActivityAction.DOWNLOADED_FILE
+    )
     action_label = "预览" if mode == "preview" else "下载"
     session.add(
         Activity(

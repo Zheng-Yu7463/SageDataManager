@@ -6,6 +6,7 @@ import type {
   AccountSummary,
   AccountUpdateInput,
   AssetDetail,
+  AssetChoiceSummary,
   AssetCreateInput,
   BatchAssetImportResult,
   AssetUpdateInput,
@@ -105,6 +106,11 @@ export function getAssets(
   if (options.venue) params.set('venue', options.venue)
   if (options.year !== undefined) params.set('year', String(options.year))
   return request<AssetListResponse>(`/api/assets?${params}`, signal)
+}
+
+export function getAssetChoices(query: string, signal?: AbortSignal) {
+  const params = new URLSearchParams({ query, limit: '20' })
+  return request<AssetChoiceSummary[]>(`/api/assets/choices?${params}`, signal)
 }
 
 export function getAsset(assetId: string, signal?: AbortSignal) {

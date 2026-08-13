@@ -10,6 +10,7 @@ from app.api.dependencies import AdminDependency, require_admin
 from app.db.session import get_session
 from app.domain.enums import AssetType, Visibility
 from app.domain.schemas import (
+    AssetChoiceSummary,
     AssetCreateRequest,
     AssetDetail,
     AssetListResponse,
@@ -39,6 +40,7 @@ from app.services.assets import (
     get_asset,
     import_assets,
     list_archived_assets,
+    list_asset_choices,
     list_assets,
     list_paper_catalogue_facets,
     list_papers_for_citation_export,
@@ -58,6 +60,15 @@ router = APIRouter(
     dependencies=[Depends(require_admin)],
 )
 SessionDependency = Annotated[Session, Depends(get_session)]
+
+
+@router.get("/choices")
+def asset_choices(
+    session: SessionDependency,
+    query: str | None = Query(default=None, max_length=200),
+    limit: int = Query(default=20, ge=1, le=50),
+) -> list[AssetChoiceSummary]:
+    return list_asset_choices(session, query=query, limit=limit)
 
 
 @router.get("")

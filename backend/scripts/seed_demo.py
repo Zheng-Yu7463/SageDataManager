@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import delete
 
 from app.db.session import SessionLocal
+from app.domain.activity import ActivityAction
 from app.domain.enums import AssetType, HealthStatus, Visibility
 from app.domain.models import Activity, Asset, AssetRelation, AssetVersion, FileRecord, Tag, User
 from app.services.accounts import ensure_fixed_accounts
@@ -126,7 +127,11 @@ def main() -> None:
                 Activity(
                     asset=asset,
                     actor=owner,
-                    action="archived" if index > 1 else "updated",
+                    action=(
+                        ActivityAction.ARCHIVED
+                        if index > 1
+                        else ActivityAction.UPDATED_METADATA
+                    ),
                     description="更新了归档元数据" if index else "提交了最终论文版本",
                     created_at=updated_at,
                 )
