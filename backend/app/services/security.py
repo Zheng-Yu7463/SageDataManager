@@ -13,9 +13,7 @@ from app.core.config import settings
 
 @dataclass(frozen=True)
 class FileAccessClaims:
-    file_id: UUID
-    mode: str
-    username: str
+    grant_id: UUID
 
 
 @dataclass(frozen=True)
@@ -61,19 +59,17 @@ def read_session_token(token: str) -> str | None:
         return None
 
 
-def create_file_access_token(file_id: UUID, mode: str, username: str) -> tuple[str, datetime]:
-    expires_at = datetime.now(UTC) + timedelta(seconds=settings.file_access_ttl_seconds)
+def create_file_access_token(grant_id: UUID, expires_at: datetime) -> str:
     payload = _encode(
         json.dumps(
             {
-                "file_id": str(file_id),
-                "mode": mode,
-                "username": username,
+                "kind": "file_access",
+                "grant_id": str(grant_id),
                 "exp": expires_at.timestamp(),
             }
         ).encode()
     )
-    return f"{payload}.{_sign(payload)}", expires_at
+    return f"{payload}.{_sign(payload)}"
 
 
 def read_file_access_token(token: str) -> FileAccessClaims | None:
@@ -83,16 +79,13 @@ def read_file_access_token(token: str) -> FileAccessClaims | None:
             return None
         value = json.loads(_decode(payload))
         if (
-            not isinstance(value.get("file_id"), str)
-            or value.get("mode") not in {"download", "preview"}
-            or not isinstance(value.get("username"), str)
+            value.get("kind") != "file_access"
+            or not isinstance(value.get("grant_id"), str)
             or datetime.now(UTC).timestamp() >= value["exp"]
         ):
             return None
-        return FileAccessClaims(
-            file_id=UUID(value["file_id"]), mode=value["mode"], username=value["username"]
-        )
-    except (ValueError, json.JSONDecodeError, TypeError):
+        return FileAccessClaims(grant_id=UUID(value["grant_id"]))
+    except (ValueError, json.JSONDecodeError, TypeError, KeyError):
         return None
 
 

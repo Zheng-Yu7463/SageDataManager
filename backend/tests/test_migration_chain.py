@@ -38,8 +38,12 @@ def test_empty_sqlite_database_upgrades_to_head(tmp_path: Path) -> None:
         unclaimed_foreign_keys = inspector.get_foreign_keys("unclaimed_files")
         file_unique_constraints = inspector.get_unique_constraints("asset_files")
         relation_unique_constraints = inspector.get_unique_constraints("asset_relations")
+        file_access_checks = inspector.get_check_constraints("file_access_grants")
+        file_access_columns = {
+            column["name"] for column in inspector.get_columns("file_access_grants")
+        }
 
-    assert revision == "20260814_0014"
+    assert revision == "20260814_0015"
     assert {"operation_id", "operation_role"} <= activity_columns
     assert any(
         key["constrained_columns"] == ["claimed_asset_id"]
@@ -54,3 +58,8 @@ def test_empty_sqlite_database_upgrades_to_head(tmp_path: Path) -> None:
         constraint["name"] == "uq_asset_relations_identity"
         for constraint in relation_unique_constraints
     )
+    assert any(
+        constraint["name"] == "ck_file_access_grants_mode"
+        for constraint in file_access_checks
+    )
+    assert "first_accessed_at" in file_access_columns

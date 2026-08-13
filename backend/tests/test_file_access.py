@@ -1,6 +1,7 @@
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,7 +13,7 @@ from app.core.config import settings
 from app.db.base import Base
 from app.db.session import get_session
 from app.domain.enums import AssetType, HealthStatus, Visibility
-from app.domain.models import Activity, Asset, FileRecord, User
+from app.domain.models import Activity, Asset, FileAccessGrant, FileRecord, User
 from app.main import app
 from app.services.archive import scan_storage
 from app.services.file_access import (
@@ -146,17 +147,14 @@ def test_rescan_refreshes_the_snapshot_and_restores_delivery(tmp_path: Path) -> 
     assert session.scalar(select(Activity.action)) == "downloaded_file"
 
 
-def test_file_ticket_is_bound_to_file_mode_and_account(tmp_path: Path) -> None:
-    session = make_session()
-    actor, record = create_file_record(session, tmp_path)
-    token, _ = create_file_access_token(record.id, "preview", actor.username or "")
+def test_file_access_token_contains_only_the_grant_identity() -> None:
+    grant_id = uuid4()
+    token = create_file_access_token(grant_id, datetime.now(UTC) + timedelta(minutes=2))
 
     claims = read_file_access_token(token)
 
     assert claims is not None
-    assert claims.file_id == record.id
-    assert claims.mode == "preview"
-    assert claims.username == "zhengyu"
+    assert claims.grant_id == grant_id
 
 
 def test_file_content_endpoint_streams_original_pdf_bytes(
@@ -193,7 +191,63 @@ def test_file_content_endpoint_streams_original_pdf_bytes(
         assert content_response.headers["content-type"] == "application/pdf"
         assert content_response.headers["content-disposition"].startswith("attachment;")
         assert "paper.pdf" in content_response.headers["content-disposition"]
-        assert session.scalar(select(Activity.action)) == "downloaded_file"
+        replay_response = client.get(ticket_response.json()["content_url"])
+        assert replay_response.status_code == 200
+        assert replay_response.content == pdf_content
+        range_response = client.get(
+            ticket_response.json()["content_url"], headers={"Range": "bytes=0-9"}
+        )
+        assert range_response.status_code == 206
+        assert range_response.content == pdf_content[:10]
+        assert range_response.headers["content-range"] == f"bytes 0-9/{len(pdf_content)}"
+        assert session.scalars(select(Activity.action)).all() == ["downloaded_file"]
+        grant = session.scalar(select(FileAccessGrant))
+        assert grant is not None
+        assert grant.first_accessed_at is not None
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
+def test_file_access_grant_cannot_be_used_for_another_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = make_session()
+    actor, record = create_file_record(session, tmp_path)
+    other_path = tmp_path / "dataset/soil-samples/other.txt"
+    other_path.write_bytes(b"other controlled content")
+    other_stat = other_path.stat()
+    other_record = FileRecord(
+        asset_id=record.asset_id,
+        relative_path="dataset/soil-samples/other.txt",
+        file_name="other.txt",
+        file_kind="document",
+        mime_type="text/plain",
+        file_size=other_stat.st_size,
+        health_status=HealthStatus.HEALTHY,
+        modified_at=datetime.fromtimestamp(other_stat.st_mtime, UTC),
+    )
+    session.add(other_record)
+    session.commit()
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    monkeypatch.setattr(settings, "auth_session_secret", "test-session-secret")
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        client = TestClient(app)
+        ticket_response = client.post(
+            f"/api/files/{record.id}/tickets",
+            json={"mode": "preview"},
+            headers={"X-Sage-Session": create_session_token(actor.username or "")},
+        )
+        ticket = ticket_response.json()["content_url"].split("ticket=", 1)[1]
+
+        response = client.get(f"/api/files/{other_record.id}/content?ticket={ticket}")
+
+        assert response.status_code == 403
+        assert session.scalars(select(Activity)).all() == []
+        grant = session.scalar(select(FileAccessGrant))
+        assert grant is not None
+        assert grant.first_accessed_at is None
     finally:
         app.dependency_overrides.clear()
         session.close()
@@ -210,23 +264,34 @@ def test_file_content_endpoint_rejects_changes_after_ticket_creation(
     app.dependency_overrides[get_session] = lambda: session
     try:
         client = TestClient(app)
+        destination = tmp_path / record.relative_path
         ticket_response = client.post(
             f"/api/files/{record.id}/tickets",
             json={"mode": "download"},
             headers={"X-Sage-Session": create_session_token(actor.username or "")},
         )
-        (tmp_path / record.relative_path).write_bytes(b"changed after ticket creation")
+        destination.write_bytes(b"changed after ticket creation")
 
         content_response = client.get(ticket_response.json()["content_url"])
 
         assert content_response.status_code == 409
         assert content_response.json()["detail"] == "文件当前不可用，请先重新扫描归档。"
         assert session.scalars(select(Activity)).all() == []
+        assert session.scalar(select(FileAccessGrant.id)) is not None
+
+        scan_storage(session, tmp_path)
+        session.commit()
+        retry_response = client.get(ticket_response.json()["content_url"])
+
+        assert retry_response.status_code == 200
+        assert retry_response.content == b"changed after ticket creation"
+        assert session.scalars(select(Activity.action)).all() == ["downloaded_file"]
+        grant = session.scalar(select(FileAccessGrant))
+        assert grant is not None
+        assert grant.first_accessed_at is not None
     finally:
         app.dependency_overrides.clear()
         session.close()
-
-
 
 def test_asset_detail_endpoint_returns_file_records(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from os import stat_result
 from pathlib import Path, PurePosixPath
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from app.domain.activity import ActivityAction
 from app.domain.enums import HealthStatus
-from app.domain.models import Asset, FileRecord, User
+from app.domain.models import Asset, FileAccessGrant, FileRecord, User
 from app.services.activities import record_activity
 
 PREVIEW_MIME_TYPES = {
@@ -40,6 +40,10 @@ class FileUnavailableError(FileAccessError):
 
 
 class FilePreviewUnavailableError(FileAccessError):
+    pass
+
+
+class FileAccessGrantInvalidError(FileAccessError):
     pass
 
 
@@ -82,6 +86,59 @@ def verify_file_access(session: Session, file_id: UUID, mode: str) -> None:
         raise FilePreviewUnavailableError
 
 
+def issue_file_access_grant(
+    session: Session,
+    file_id: UUID,
+    mode: str,
+    *,
+    actor: User,
+    ttl_seconds: int,
+) -> FileAccessGrant:
+    verify_file_access(session, file_id, mode)
+    now = datetime.now(UTC)
+    session.execute(
+        delete(FileAccessGrant).where(FileAccessGrant.expires_at <= now)
+    )
+    grant = FileAccessGrant(
+        file_id=file_id,
+        user_id=actor.id,
+        mode=mode,
+        expires_at=now + timedelta(seconds=ttl_seconds),
+    )
+    session.add(grant)
+    session.flush()
+    return grant
+
+
+def authorize_file_access_grant(
+    session: Session, grant_id: UUID, file_id: UUID
+) -> tuple[User, str, bool]:
+    first_access = session.execute(
+        update(FileAccessGrant)
+        .where(
+            FileAccessGrant.id == grant_id,
+            FileAccessGrant.file_id == file_id,
+            FileAccessGrant.expires_at > datetime.now(UTC),
+            FileAccessGrant.first_accessed_at.is_(None),
+        )
+        .values(first_accessed_at=datetime.now(UTC))
+        .returning(FileAccessGrant.user_id, FileAccessGrant.mode)
+    ).one_or_none()
+    grant = first_access or session.execute(
+        select(FileAccessGrant.user_id, FileAccessGrant.mode).where(
+            FileAccessGrant.id == grant_id,
+            FileAccessGrant.file_id == file_id,
+            FileAccessGrant.expires_at > datetime.now(UTC),
+        )
+    ).one_or_none()
+    if not grant:
+        raise FileAccessGrantInvalidError
+    actor = session.get(User, grant.user_id)
+    if not actor or not actor.is_active or actor.role != "admin":
+        raise FileAccessGrantInvalidError
+    return actor, grant.mode, first_access is not None
+
+
 def prepare_file_delivery(
     session: Session,
     storage_root: Path,
@@ -89,6 +146,7 @@ def prepare_file_delivery(
     mode: str,
     *,
     actor: User,
+    audit_access: bool = True,
 ) -> ProtectedFileDelivery:
     record = _file_record(session, file_id)
     if mode == "preview" and not can_preview(record.mime_type):
@@ -116,22 +174,23 @@ def prepare_file_delivery(
     if not _matches_indexed_snapshot(record, current):
         raise FileUnavailableError
 
-    action = (
-        ActivityAction.PREVIEWED_FILE
-        if mode == "preview"
-        else ActivityAction.DOWNLOADED_FILE
-    )
-    action_label = "预览" if mode == "preview" else "下载"
-    asset = session.get(Asset, record.asset_id)
-    if not asset:
-        raise FileUnavailableError
-    record_activity(
-        session,
-        asset=asset,
-        actor=actor,
-        action=action,
-        description=f"{action_label}了文件 {record.file_name}",
-    )
+    if audit_access:
+        action = (
+            ActivityAction.PREVIEWED_FILE
+            if mode == "preview"
+            else ActivityAction.DOWNLOADED_FILE
+        )
+        action_label = "预览" if mode == "preview" else "下载"
+        asset = session.get(Asset, record.asset_id)
+        if not asset:
+            raise FileUnavailableError
+        record_activity(
+            session,
+            asset=asset,
+            actor=actor,
+            action=action,
+            description=f"{action_label}了文件 {record.file_name}",
+        )
     disposition = "inline" if mode == "preview" else "attachment"
     return ProtectedFileDelivery(
         path=resolved_path,

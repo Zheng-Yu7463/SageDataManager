@@ -8,6 +8,7 @@ from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    CheckConstraint,
     Column,
     DateTime,
     Enum,
@@ -165,6 +166,25 @@ class FileRecord(Base):
     modified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     asset: Mapped[Asset] = relationship(back_populates="files")
+
+
+class FileAccessGrant(Base):
+    __tablename__ = "file_access_grants"
+    __table_args__ = (
+        CheckConstraint("mode IN ('download', 'preview')", name="ck_file_access_grants_mode"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    file_id: Mapped[UUID] = mapped_column(
+        ForeignKey("asset_files.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    mode: Mapped[str] = mapped_column(String(20), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    first_accessed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class ScanRun(Base):
