@@ -146,35 +146,46 @@ function buildFileBrowserRows(asset: AssetDetail) {
 
 const fileBrowserRows = computed(() => (data.value ? buildFileBrowserRows(data.value) : []))
 
+async function loadCitation(asset: AssetDetail, requestController: AbortController) {
+  citationLoading.value = true
+  try {
+    const nextCitation = await getPublicationCitation(asset.id, requestController.signal)
+    if (controller !== requestController) return
+    citation.value = nextCitation
+  } catch (reason) {
+    if (controller !== requestController) return
+    if (reason instanceof DOMException && reason.name === 'AbortError') return
+    citationError.value = reason instanceof Error ? reason.message : '无法读取 BibTeX'
+  } finally {
+    if (controller === requestController) citationLoading.value = false
+  }
+}
+
 async function load() {
   controller?.abort()
-  controller = new AbortController()
+  const requestController = new AbortController()
+  controller = requestController
   loading.value = true
   error.value = ''
+  data.value = null
+  citation.value = null
+  citationLoading.value = false
+  citationError.value = ''
   try {
-    const next = await getAsset(String(route.params.assetId), controller.signal)
+    const next = await getAsset(String(route.params.assetId), requestController.signal)
+    if (controller !== requestController) return
     data.value = next
     expandedDirectories.value = new Set(directoryPaths(next))
     setPageTitle(next.title)
-    citation.value = null
-    citationError.value = ''
     if (['paper', 'literature'].includes(next.type) && isPublicationMetadata(next.details)) {
-      citationLoading.value = true
-      try {
-        citation.value = await getPublicationCitation(next.id, controller.signal)
-      } catch (reason) {
-        if (!(reason instanceof DOMException && reason.name === 'AbortError')) {
-          citationError.value = reason instanceof Error ? reason.message : '无法读取 BibTeX'
-        }
-      } finally {
-        citationLoading.value = false
-      }
+      void loadCitation(next, requestController)
     }
   } catch (reason) {
+    if (controller !== requestController) return
     if (reason instanceof DOMException && reason.name === 'AbortError') return
     error.value = reason instanceof Error ? reason.message : '无法读取资产详情'
   } finally {
-    loading.value = false
+    if (controller === requestController) loading.value = false
   }
 }
 

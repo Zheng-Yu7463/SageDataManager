@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { CircleAlert, RefreshCw, ScrollText } from '@lucide/vue'
-import { onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
 
 import { getActivities } from '@/api/client'
 import { assetMeta } from '@/catalogue'
@@ -13,6 +13,7 @@ const error = ref('')
 const action = ref('')
 const page = ref(1)
 const { pageEyebrow } = useBranding()
+let controller: AbortController | undefined
 
 function formatDate(value: string) {
   return new Intl.DateTimeFormat('zh-CN', {
@@ -22,15 +23,23 @@ function formatDate(value: string) {
 }
 
 async function load(nextPage = page.value) {
+  controller?.abort()
+  const requestController = new AbortController()
+  controller = requestController
+  const requestedAction = action.value
   loading.value = true
   error.value = ''
   page.value = nextPage
   try {
-    data.value = await getActivities(page.value, action.value || undefined)
+    const result = await getActivities(nextPage, requestedAction || undefined, requestController.signal)
+    if (controller !== requestController) return
+    data.value = result
   } catch (reason) {
+    if (controller !== requestController) return
+    if (reason instanceof DOMException && reason.name === 'AbortError') return
     error.value = reason instanceof Error ? reason.message : '无法读取操作日志'
   } finally {
-    loading.value = false
+    if (controller === requestController) loading.value = false
   }
 }
 
@@ -39,6 +48,7 @@ function filter() {
 }
 
 onMounted(load)
+onBeforeUnmount(() => controller?.abort())
 </script>
 
 <template>

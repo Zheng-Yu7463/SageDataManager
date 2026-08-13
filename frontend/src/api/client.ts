@@ -87,10 +87,10 @@ export function getDashboard(signal?: AbortSignal) {
   return request<DashboardSummary>('/api/dashboard', signal)
 }
 
-export function getActivities(page = 1, action?: string) {
+export function getActivities(page = 1, action?: string, signal?: AbortSignal) {
   const params = new URLSearchParams({ page: String(page), page_size: '30' })
   if (action) params.set('action', action)
-  return request<ActivityListResponse>(`/api/dashboard/activities?${params}`)
+  return request<ActivityListResponse>(`/api/dashboard/activities?${params}`, signal)
 }
 
 export function getAssets(
