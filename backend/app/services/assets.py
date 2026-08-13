@@ -248,14 +248,19 @@ def update_asset(
     return asset_summary(asset)
 
 
-def add_asset_version(
-    session: Session, asset_id: UUID, payload: AssetVersionCreateRequest, *, actor: User
-) -> AssetVersionSummary:
-    asset = session.scalar(
+def asset_for_version_update_statement(asset_id: UUID):
+    return (
         select(Asset)
         .where(Asset.id == asset_id, Asset.archived_at.is_(None))
         .options(selectinload(Asset.versions))
+        .with_for_update()
     )
+
+
+def add_asset_version(
+    session: Session, asset_id: UUID, payload: AssetVersionCreateRequest, *, actor: User
+) -> AssetVersionSummary:
+    asset = session.scalar(asset_for_version_update_statement(asset_id))
     if not asset:
         raise AssetNotFoundError
     version_name = payload.version.strip()

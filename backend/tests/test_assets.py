@@ -1,5 +1,6 @@
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -17,10 +18,12 @@ from app.services.assets import (
     AssetMetadataError,
     AssetRelationError,
     AssetSlugConflictError,
+    AssetVersionError,
     BatchAssetImportError,
     add_asset_relation,
     add_asset_version,
     archive_asset,
+    asset_for_version_update_statement,
     create_asset,
     get_asset,
     import_assets,
@@ -651,6 +654,57 @@ def test_asset_version_can_be_added_and_marked_current() -> None:
     assert (
         session.scalar(select(Activity.action).order_by(Activity.created_at.desc()))
         == "added_version"
+    )
+
+
+def test_version_updates_lock_the_asset_aggregate_and_preserve_one_current() -> None:
+    session = make_session()
+    result = create_asset(session, payload())
+    actor = session.get(User, result.owner.id)
+    assert actor is not None
+
+    statement = asset_for_version_update_statement(result.id)
+    compiled = str(statement.compile(dialect=postgresql.dialect()))
+    assert compiled.endswith("FOR UPDATE")
+
+    add_asset_version(
+        session,
+        result.id,
+        AssetVersionCreateRequest(version="v0.2", make_current=True),
+        actor=actor,
+    )
+    add_asset_version(
+        session,
+        result.id,
+        AssetVersionCreateRequest(version="v0.3", make_current=True),
+        actor=actor,
+    )
+    add_asset_version(
+        session,
+        result.id,
+        AssetVersionCreateRequest(version="experiment", make_current=False),
+        actor=actor,
+    )
+
+    versions = session.scalars(select(AssetVersion).order_by(AssetVersion.version)).all()
+    assert [(item.version, item.is_current) for item in versions] == [
+        ("experiment", False),
+        ("v0.1", False),
+        ("v0.2", False),
+        ("v0.3", True),
+    ]
+    with pytest.raises(AssetVersionError, match="已经登记"):
+        add_asset_version(
+            session,
+            result.id,
+            AssetVersionCreateRequest(version="v0.3", make_current=True),
+            actor=actor,
+        )
+    assert (
+        session.scalar(
+            select(func.count()).select_from(Activity).where(Activity.action == "added_version")
+        )
+        == 3
     )
 
 
