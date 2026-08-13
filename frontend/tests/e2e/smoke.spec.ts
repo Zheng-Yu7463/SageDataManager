@@ -112,6 +112,12 @@ test('新实例总览为尚无数据的面板提供明确状态', async ({ page 
 })
 
 test('近期活动折叠重复事件并支持系统级操作', async ({ page }) => {
+  const componentResolutionWarnings: string[] = []
+  page.on('console', (message) => {
+    if (message.type() === 'warning' && message.text().includes('Failed to resolve component')) {
+      componentResolutionWarnings.push(message.text())
+    }
+  })
   const assetId = '12121212-1212-1212-1212-121212121212'
   const activity = {
     id: '34343434-3434-3434-3434-343434343434',
@@ -188,6 +194,7 @@ test('近期活动折叠重复事件并支持系统级操作', async ({ page }) 
   await expect(page.getByRole('heading', { name: '近期活动' })).toBeVisible()
   await expect(page.getByText('生成上传指令 ×18', { exact: true })).toBeVisible()
   await expect(page.getByRole('link', { name: '查看完整日志' })).toHaveAttribute('href', '/activity-log')
+  expect(componentResolutionWarnings).toEqual([])
 })
 
 test('窄屏顶栏与目录保持在视口内', async ({ page }) => {

@@ -18,8 +18,9 @@ CONSTRAINT_NAME = "uq_asset_relations_identity"
 
 
 def upgrade() -> None:
-    op.execute(
-        """
+    if op.get_bind().dialect.name == "postgresql":
+        op.execute(
+            """
         DO $$
         DECLARE
             duplicate_count BIGINT;
@@ -40,13 +41,14 @@ def upgrade() -> None:
         END
         $$
         """
-    )
-    op.create_unique_constraint(
-        CONSTRAINT_NAME,
-        "asset_relations",
-        ["source_asset_id", "target_asset_id", "relation_type"],
-    )
+        )
+    with op.batch_alter_table("asset_relations") as batch_op:
+        batch_op.create_unique_constraint(
+            CONSTRAINT_NAME,
+            ["source_asset_id", "target_asset_id", "relation_type"],
+        )
 
 
 def downgrade() -> None:
-    op.drop_constraint(CONSTRAINT_NAME, "asset_relations", type_="unique")
+    with op.batch_alter_table("asset_relations") as batch_op:
+        batch_op.drop_constraint(CONSTRAINT_NAME, type_="unique")

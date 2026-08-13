@@ -18,15 +18,24 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "unclaimed_files",
-        sa.Column("claimed_asset_id", sa.UUID(), sa.ForeignKey("assets.id", ondelete="SET NULL")),
-    )
-    op.add_column("unclaimed_files", sa.Column("claimed_at", sa.DateTime(timezone=True)))
+    with op.batch_alter_table("unclaimed_files") as batch_op:
+        batch_op.add_column(
+            sa.Column(
+                "claimed_asset_id",
+                sa.UUID(),
+                sa.ForeignKey(
+                    "assets.id",
+                    name="fk_unclaimed_files_claimed_asset_id_assets",
+                    ondelete="SET NULL",
+                ),
+            )
+        )
+        batch_op.add_column(sa.Column("claimed_at", sa.DateTime(timezone=True)))
     op.create_index("ix_unclaimed_files_claimed_asset_id", "unclaimed_files", ["claimed_asset_id"])
 
 
 def downgrade() -> None:
     op.drop_index("ix_unclaimed_files_claimed_asset_id", table_name="unclaimed_files")
-    op.drop_column("unclaimed_files", "claimed_at")
-    op.drop_column("unclaimed_files", "claimed_asset_id")
+    with op.batch_alter_table("unclaimed_files") as batch_op:
+        batch_op.drop_column("claimed_at")
+        batch_op.drop_column("claimed_asset_id")

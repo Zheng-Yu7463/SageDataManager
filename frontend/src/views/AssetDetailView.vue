@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useDebounceFn } from '@vueuse/core'
-import { Archive, ArrowDownToLine, ArrowLeft, Check, CheckCircle2, ChevronDown, ChevronRight, CircleAlert, Copy, Eye, FileText, Folder, FolderOpen, GitBranch, History, Layers3, Link2, Pencil, Plus, Save, Search, Trash2, X } from '@lucide/vue'
+import { Archive, ArrowDownToLine, ArrowLeft, ArrowUpRight, Check, CheckCircle2, ChevronDown, ChevronRight, CircleAlert, Copy, Eye, FileText, Folder, FolderOpen, GitBranch, History, Layers3, Link2, Pencil, Plus, Save, Search, Trash2, X } from '@lucide/vue'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 

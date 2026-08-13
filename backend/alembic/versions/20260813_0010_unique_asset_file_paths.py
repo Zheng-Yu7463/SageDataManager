@@ -18,8 +18,9 @@ CONSTRAINT_NAME = "uq_asset_files_relative_path"
 
 
 def upgrade() -> None:
-    op.execute(
-        """
+    if op.get_bind().dialect.name == "postgresql":
+        op.execute(
+            """
         DO $$
         DECLARE
             duplicate_count BIGINT;
@@ -53,9 +54,11 @@ def upgrade() -> None:
         END
         $$
         """
-    )
-    op.create_unique_constraint(CONSTRAINT_NAME, "asset_files", ["relative_path"])
+        )
+    with op.batch_alter_table("asset_files") as batch_op:
+        batch_op.create_unique_constraint(CONSTRAINT_NAME, ["relative_path"])
 
 
 def downgrade() -> None:
-    op.drop_constraint(CONSTRAINT_NAME, "asset_files", type_="unique")
+    with op.batch_alter_table("asset_files") as batch_op:
+        batch_op.drop_constraint(CONSTRAINT_NAME, type_="unique")

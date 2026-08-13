@@ -45,7 +45,7 @@ compose.yaml
 python backend/scripts/seed_mock_archive.py
 cp .env.example .env
 docker compose up --build -d
-docker compose exec backend python scripts/seed_demo.py
+docker compose exec backend python -m scripts.seed_demo
 ```
 
 访问：
@@ -67,14 +67,14 @@ cd backend
 pip install -e .
 pip install pytest ruff
 alembic upgrade head
-python scripts/seed_demo.py
+python -m scripts.seed_demo
 uvicorn app.main:app --reload
 ```
 
 
 ### 模拟归档扫描
 
-先执行 `python scripts/seed_demo.py` 建立元数据，再从仓库根目录生成模拟文件并设置存储根：
+先执行 `python -m scripts.seed_demo` 建立元数据，再从仓库根目录生成模拟文件并设置存储根：
 
 ```bash
 python backend/scripts/seed_mock_archive.py
