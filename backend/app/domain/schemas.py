@@ -77,6 +77,13 @@ class AssetListResponse(BaseModel):
     publication_facets: PublicationCatalogueFacets | None = None
 
 
+class ArchivedAssetListResponse(BaseModel):
+    items: list[AssetSummary]
+    total: int
+    page: int
+    page_size: int
+
+
 class AssetChoiceSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

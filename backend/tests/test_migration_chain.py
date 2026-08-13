@@ -54,8 +54,9 @@ def test_empty_sqlite_database_upgrades_to_head(tmp_path: Path) -> None:
         activity_indexes = {
             index["name"] for index in inspector.get_indexes("activities")
         }
+        asset_indexes = {index["name"] for index in inspector.get_indexes("assets")}
 
-    assert revision == "20260814_0016"
+    assert revision == "20260814_0017"
     assert {"operation_id", "operation_role"} <= activity_columns
     assert any(
         key["constrained_columns"] == ["claimed_asset_id"]
@@ -83,6 +84,7 @@ def test_empty_sqlite_database_upgrades_to_head(tmp_path: Path) -> None:
         "ix_activities_primary_created_id",
         "ix_activities_primary_action_created_id",
     } <= activity_indexes
+    assert "ix_assets_archived_at_id" in asset_indexes
 
 
 def test_publication_identity_migration_backfills_existing_records(tmp_path: Path) -> None:
@@ -193,6 +195,6 @@ def test_publication_identity_migration_can_retry_after_duplicate_preflight(
 
     with engine.connect() as connection:
         assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == (
-            "20260814_0016"
+            "20260814_0017"
         )
         assert sa.inspect(connection).has_table("publication_identity_keys")

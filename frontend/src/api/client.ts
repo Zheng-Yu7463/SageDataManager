@@ -9,6 +9,7 @@ import type {
   AccountSummary,
   AccountUpdateInput,
   AssetDetail,
+  ArchivedAssetListResponse,
   AssetChoiceSummary,
   AssetCreateInput,
   BatchAssetImportResult,
@@ -189,8 +190,9 @@ export function restoreAsset(assetId: string) {
   return request<AssetSummary>(`/api/assets/${assetId}/restore`, undefined, 'POST')
 }
 
-export function getArchivedAssets() {
-  return request<AssetSummary[]>('/api/assets/archived')
+export function getArchivedAssets(page = 1, pageSize = 20, signal?: AbortSignal) {
+  const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) })
+  return request<ArchivedAssetListResponse>(`/api/assets/archived?${params}`, signal)
 }
 
 export function addAssetVersion(assetId: string, input: AssetVersionCreateInput) {

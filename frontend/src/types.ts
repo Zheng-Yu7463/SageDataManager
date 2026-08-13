@@ -91,6 +91,13 @@ export interface AssetListResponse {
   } | null
 }
 
+export interface ArchivedAssetListResponse {
+  items: AssetSummary[]
+  total: number
+  page: number
+  page_size: number
+}
+
 export interface AssetChoiceSummary {
   id: string
   type: AssetType

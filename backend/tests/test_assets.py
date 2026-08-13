@@ -510,7 +510,9 @@ def test_asset_metadata_can_be_updated_archived_and_restored() -> None:
 
     assert updated.title == "更新后的土壤样本"
     assert updated.tags == ["新标签"]
-    assert list_archived_assets(session)[0].id == archived.id
+    archived_items, archived_total = list_archived_assets(session, page=1, page_size=20)
+    assert archived_items[0].id == archived.id
+    assert archived_total == 1
 
     restored = restore_asset(session, result.id, actor=actor)
 
@@ -518,6 +520,47 @@ def test_asset_metadata_can_be_updated_archived_and_restored() -> None:
     assert (
         session.scalar(select(Activity.action).order_by(Activity.created_at.desc())) == "restored"
     )
+
+
+def test_archived_assets_are_paginated_in_stable_archive_order() -> None:
+    session = make_session()
+    actor = User(username="archivist", name="Archiver", email="archivist@sage.lab")
+    session.add(actor)
+    session.flush()
+    archived_assets: list[Asset] = []
+    for index in range(23):
+        asset = Asset(
+            type=AssetType.DATASET,
+            slug=f"archive-{index:02d}",
+            title=f"Archive {index:02d}",
+            summary="Archived test asset",
+            status="archived",
+            visibility=Visibility.LAB,
+            owner=actor,
+            details={},
+            archived_at=datetime(2026, 8, 14, 3, index, tzinfo=UTC),
+        )
+        archived_assets.append(asset)
+    active = Asset(
+        type=AssetType.DATASET,
+        slug="active-dataset",
+        title="Active dataset",
+        summary="Not archived",
+        status="active",
+        visibility=Visibility.LAB,
+        owner=actor,
+        details={},
+    )
+    session.add_all([*archived_assets, active])
+    session.commit()
+
+    first_page, total = list_archived_assets(session, page=1, page_size=20)
+    second_page, second_total = list_archived_assets(session, page=2, page_size=20)
+
+    assert total == 23
+    assert second_total == 23
+    assert len(first_page) == 20
+    assert [item.slug for item in second_page] == ["archive-02", "archive-01", "archive-00"]
 
 
 def test_asset_metadata_update_ignores_semantically_equivalent_replays() -> None:

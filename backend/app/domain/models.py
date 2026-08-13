@@ -102,6 +102,7 @@ class InstanceBranding(Base):
 
 class Asset(Base):
     __tablename__ = "assets"
+    __table_args__ = (Index("ix_assets_archived_at_id", "archived_at", "id"),)
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     type: Mapped[AssetType] = mapped_column(Enum(AssetType, name="asset_type"), index=True)

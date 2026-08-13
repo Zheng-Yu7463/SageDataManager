@@ -651,19 +651,25 @@ def list_publication_catalogue_facets(
     return PublicationCatalogueFacets(venues=venues, years=years)
 
 
-def list_archived_assets(session: Session) -> list[AssetSummary]:
+def list_archived_assets(
+    session: Session, *, page: int, page_size: int
+) -> tuple[list[AssetSummary], int]:
+    filters = [Asset.archived_at.is_not(None)]
+    total = session.scalar(select(func.count()).select_from(Asset).where(*filters)) or 0
     statement = (
         select(Asset)
-        .where(Asset.archived_at.is_not(None))
+        .where(*filters)
         .options(
             selectinload(Asset.owner),
             selectinload(Asset.tags),
             selectinload(Asset.versions),
             selectinload(Asset.files),
         )
-        .order_by(Asset.archived_at.desc())
+        .order_by(Asset.archived_at.desc(), Asset.id.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
     )
-    return [asset_summary(asset) for asset in session.scalars(statement).all()]
+    return [asset_summary(asset) for asset in session.scalars(statement).all()], total
 
 
 def add_asset_relation(

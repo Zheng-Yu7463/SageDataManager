@@ -574,6 +574,65 @@ test('连续搜索只显示最新请求的状态和结果', async ({ page }) => 
   await expect(page.locator('.search-summary .tiny-spinner')).toBeHidden()
 })
 
+test('搜索失败后可重试同一关键词并保留已有结果', async ({ page }) => {
+  await page.route('**/api/dashboard', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        counts: { paper: 0, dataset: 0, literature: 0, project: 0, model: 0 },
+        total_storage_bytes: 0,
+        healthy_files: 0,
+        missing_files: 0,
+        recent_assets: [],
+        recent_activities: [],
+        popular_tags: [],
+      }),
+    })
+  })
+  await signInWithMockAccount(page)
+  let requests = 0
+  const result = {
+    id: '91919191-9191-9191-9191-919191919191',
+    type: 'project',
+    slug: 'retry-result',
+    title: '可重试搜索结果',
+    summary: '短暂失败后恢复',
+    status: 'active',
+    visibility: 'lab',
+    owner: { id: '92929292-9292-9292-9292-929292929292', name: '测试用户', avatar_url: null },
+    details: {},
+    tags: [],
+    current_version: null,
+    total_size: 0,
+    file_count: 0,
+    upload_directories: [],
+    default_upload_directory: 'documents',
+    updated_at: '2026-08-14T02:00:00Z',
+  }
+  await page.route('**/api/assets?*', async (route) => {
+    requests += 1
+    if (requests === 2) {
+      await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: '搜索服务暂不可用' }) })
+      return
+    }
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ items: [result], total: 1, page: 1, page_size: 20, publication_facets: null }),
+    })
+  })
+  await page.goto('/search?q=LLM')
+  await expect(page.getByText('可重试搜索结果')).toBeVisible()
+
+  await page.getByRole('button', { name: '检索目录' }).click()
+  await expect(page.getByRole('alert')).toContainText('搜索服务暂不可用')
+  await expect(page.getByText('可重试搜索结果')).toBeVisible()
+
+  await page.getByRole('button', { name: '重试' }).click()
+  await expect(page.getByRole('alert')).toBeHidden()
+  await expect(page.getByText('可重试搜索结果')).toBeVisible()
+  expect(requests).toBe(3)
+})
+
 test('搜索页归一化非法和越界页码', async ({ page }) => {
   await signIn(page)
   await page.route('**/api/assets?*', async (route) => {
@@ -887,8 +946,11 @@ test('并发恢复已归档资产时各行保持独立忙碌状态', async ({ pa
     default_upload_directory: 'raw',
     updated_at: '2026-08-14T02:00:00Z',
   }))
-  await page.route('**/api/assets/archived', async (route) => {
-    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(archivedAssets) })
+  await page.route('**/api/assets/archived?*', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ items: archivedAssets, total: archivedAssets.length, page: 1, page_size: 20 }),
+    })
   })
   const restoreReleases = new Map<string, () => void>()
   const restoreCounts = new Map<string, number>()
@@ -915,6 +977,69 @@ test('并发恢复已归档资产时各行保持独立忙碌状态', async ({ pa
 
   restoreReleases.get(archivedAssets[1].id)?.()
   await expect(secondRow).toBeHidden()
+})
+
+test('已归档资产分页归一化并在末页恢复后回退', async ({ page }) => {
+  await page.route('**/api/dashboard', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        counts: { paper: 0, dataset: 0, literature: 0, project: 0, model: 0 },
+        total_storage_bytes: 0,
+        healthy_files: 0,
+        missing_files: 0,
+        recent_assets: [],
+        recent_activities: [],
+        popular_tags: [],
+      }),
+    })
+  })
+  const archivedAsset = {
+    id: '33333333-2222-3333-4444-555555555555',
+    type: 'dataset',
+    slug: 'last-archived',
+    title: '末页唯一归档资产',
+    summary: '恢复后应回到第一页',
+    status: 'archived',
+    visibility: 'lab',
+    owner: { id: '99999999-8888-7777-6666-555555555555', name: '测试用户', avatar_url: null },
+    details: {},
+    tags: [],
+    current_version: null,
+    total_size: 0,
+    file_count: 0,
+    upload_directories: [],
+    default_upload_directory: 'raw',
+    updated_at: '2026-08-14T02:00:00Z',
+  }
+  await page.route('**/api/assets/archived?*', async (route) => {
+    const requestedPage = new URL(route.request().url()).searchParams.get('page')
+    if (requestedPage === '2') {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ items: [archivedAsset], total: 21, page: 2, page_size: 20 }),
+      })
+      return
+    }
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ items: [], total: 20, page: 1, page_size: 20 }),
+    })
+  })
+  await page.route('**/api/assets/*/restore', async (route) => {
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ ...archivedAsset, status: 'active' }) })
+  })
+  await signInWithMockAccount(page)
+  await page.goto('/archived-assets?page=0')
+  await expect(page).toHaveURL('/archived-assets')
+
+  await page.goto('/archived-assets?page=2')
+  await expect(page.getByText('末页唯一归档资产')).toBeVisible()
+  await expect(page.getByText('第 2 / 2 页')).toBeVisible()
+  await page.getByRole('button', { name: '恢复资产' }).click()
+
+  await expect(page).toHaveURL('/archived-assets')
+  await expect(page.getByText('末页唯一归档资产')).toBeHidden()
 })
 
 test('归档扫描完成后摘要刷新失败仍保留已有健康数据', async ({ page }) => {
@@ -1409,6 +1534,153 @@ test('详情切换后不会被上一项的延迟引用覆盖', async ({ page }) 
   await expect(page.getByText('不应出现的旧引用')).toBeVisible()
 })
 
+test('归档请求完成后不会导航或污染新资产', async ({ page }) => {
+  await page.route('**/api/dashboard', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        counts: { paper: 0, dataset: 0, literature: 0, project: 0, model: 0 },
+        total_storage_bytes: 0,
+        healthy_files: 0,
+        missing_files: 0,
+        recent_assets: [],
+        recent_activities: [],
+        popular_tags: [],
+      }),
+    })
+  })
+  await signInWithMockAccount(page)
+  const firstId = '10101010-1010-1010-1010-101010101010'
+  const secondId = '20202020-2020-2020-2020-202020202020'
+  const owner = { id: '30303030-3030-3030-3030-303030303030', name: '测试用户', avatar_url: null }
+  const detail = (id: string, type: 'literature' | 'dataset', title: string, relatedAssets: unknown[]) => ({
+    id,
+    type,
+    slug: `${type}-${id.slice(0, 4)}`,
+    title,
+    summary: `${title}摘要`,
+    status: 'active',
+    visibility: 'lab',
+    owner,
+    details: {},
+    tags: [],
+    current_version: null,
+    total_size: 0,
+    file_count: 0,
+    upload_directories: [],
+    default_upload_directory: 'raw',
+    updated_at: '2026-08-14T02:00:00Z',
+    versions: [],
+    files: [],
+    related_assets: relatedAssets,
+    recent_activities: [],
+  })
+  const firstAsset = detail(firstId, 'literature', '待归档文献', [{
+    relation_id: '40404040-4040-4040-4040-404040404040',
+    id: secondId,
+    type: 'dataset',
+    slug: 'current-dataset',
+    title: '当前数据集',
+    relation_type: 'supports',
+  }])
+  const secondAsset = detail(secondId, 'dataset', '当前数据集', [])
+  await page.route(`**/api/assets/${firstId}`, async (route) => {
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(firstAsset) })
+  })
+  await page.route(`**/api/assets/${secondId}`, async (route) => {
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(secondAsset) })
+  })
+  let releaseArchive: (() => void) | undefined
+  let markArchiveStarted: (() => void) | undefined
+  const archiveReleased = new Promise<void>((resolve) => { releaseArchive = resolve })
+  const archiveStarted = new Promise<void>((resolve) => { markArchiveStarted = resolve })
+  await page.route(`**/api/assets/${firstId}/archive`, async (route) => {
+    markArchiveStarted?.()
+    await archiveReleased
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ ...firstAsset, status: 'archived' }) })
+  })
+  page.on('dialog', (dialog) => dialog.accept())
+  await page.goto(`/assets/${firstId}`)
+  await page.getByRole('button', { name: '归档' }).click()
+  await archiveStarted
+  await page.getByRole('link', { name: /当前数据集/ }).click()
+
+  await expect(page.getByRole('heading', { name: '当前数据集' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '归档' })).toBeEnabled()
+  releaseArchive?.()
+  await expect(page).toHaveURL(`/assets/${secondId}`)
+  await expect(page.getByRole('heading', { name: '当前数据集' })).toBeVisible()
+  await expect(page.getByRole('alert')).toHaveCount(0)
+})
+
+test('文件预览可以用键盘进入 iframe 内容', async ({ page }) => {
+  await page.route('**/api/dashboard', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        counts: { paper: 0, dataset: 0, literature: 0, project: 0, model: 0 },
+        total_storage_bytes: 0,
+        healthy_files: 0,
+        missing_files: 0,
+        recent_assets: [],
+        recent_activities: [],
+        popular_tags: [],
+      }),
+    })
+  })
+  await signInWithMockAccount(page)
+  const assetId = '50505050-5050-5050-5050-505050505050'
+  const fileId = '60606060-6060-6060-6060-606060606060'
+  await page.route(`**/api/assets/${assetId}`, async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: assetId,
+        type: 'dataset',
+        slug: 'keyboard-preview',
+        title: '键盘预览数据',
+        summary: '验证预览焦点',
+        status: 'active',
+        visibility: 'lab',
+        owner: { id: '70707070-7070-7070-7070-707070707070', name: '测试用户', avatar_url: null },
+        details: {},
+        tags: [],
+        current_version: null,
+        total_size: 128,
+        file_count: 1,
+        upload_directories: [],
+        default_upload_directory: 'raw',
+        updated_at: '2026-08-14T02:00:00Z',
+        versions: [],
+        files: [{
+          id: fileId,
+          relative_path: 'dataset/keyboard-preview/raw/readme.txt',
+          file_name: 'readme.txt',
+          file_kind: 'document',
+          mime_type: 'text/plain',
+          file_size: 128,
+          health_status: 'healthy',
+          modified_at: '2026-08-14T02:00:00Z',
+        }],
+        related_assets: [],
+        recent_activities: [],
+      }),
+    })
+  })
+  await page.route(`**/api/files/${fileId}/tickets`, async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ content_url: 'about:blank', expires_at: '2026-08-14T03:00:00Z' }),
+    })
+  })
+  await page.goto(`/assets/${assetId}`)
+  await page.getByTitle('浏览器预览').click()
+  await expect(page.getByRole('dialog', { name: '预览 readme.txt' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '关闭预览' })).toBeFocused()
+  await page.keyboard.press('Tab')
+  await expect(page.locator('.preview-dialog iframe')).toBeFocused()
+})
+
 test('详情操作失败不会替换已加载的资产内容', async ({ page }) => {
   await signIn(page)
   await page.goto('/literature?view=grid')
@@ -1424,6 +1696,138 @@ test('详情操作失败不会替换已加载的资产内容', async ({ page }) 
   await expect(page.getByRole('alert')).toContainText('归档冲突，请稍后重试')
   await expect(page.getByRole('heading', { level: 1 })).toHaveText(title ?? '')
   await expect(page.getByRole('heading', { name: '归档概要' })).toBeVisible()
+})
+
+test('详情编辑以写接口响应更新页面且不依赖二次读取', async ({ page }) => {
+  await page.route('**/api/dashboard', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        counts: { paper: 0, dataset: 1, literature: 0, project: 0, model: 0 },
+        total_storage_bytes: 0,
+        healthy_files: 0,
+        missing_files: 0,
+        recent_assets: [],
+        recent_activities: [],
+        popular_tags: [],
+      }),
+    })
+  })
+  await signInWithMockAccount(page)
+  const assetId = '71717171-7171-7171-7171-717171717171'
+  const asset = {
+    id: assetId,
+    type: 'dataset',
+    slug: 'direct-update',
+    title: '更新前标题',
+    summary: '用于验证写接口响应直接更新页面。',
+    status: 'active',
+    visibility: 'lab',
+    owner: { id: '72727272-7272-7272-7272-727272727272', name: '测试用户', avatar_url: null },
+    details: {},
+    tags: [],
+    current_version: null,
+    total_size: 0,
+    file_count: 0,
+    upload_directories: [],
+    default_upload_directory: 'raw',
+    updated_at: '2026-08-14T03:00:00Z',
+    versions: [],
+    files: [],
+    related_assets: [],
+    recent_activities: [],
+  }
+  let detailReads = 0
+  await page.route(`**/api/assets/${assetId}`, async (route) => {
+    if (route.request().method() === 'PATCH') {
+      const payload = route.request().postDataJSON() as { title: string }
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({ ...asset, title: payload.title, updated_at: '2026-08-14T03:01:00Z' }),
+      })
+      return
+    }
+    detailReads += 1
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(asset) })
+  })
+
+  await page.goto(`/assets/${assetId}`)
+  await page.getByRole('button', { name: '编辑' }).click()
+  const dialog = page.getByRole('dialog', { name: '编辑资产' })
+  await dialog.getByLabel('标题').fill('更新后标题')
+  await dialog.getByRole('button', { name: '保存修改' }).click()
+
+  await expect(dialog).toBeHidden()
+  await expect(page.getByRole('heading', { name: '更新后标题' })).toBeVisible()
+  expect(detailReads).toBe(1)
+})
+
+test('目录 BibTeX 复制以最后一次选择为准', async ({ page }) => {
+  await page.route('**/api/dashboard', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        counts: { paper: 0, dataset: 0, literature: 2, project: 0, model: 0 },
+        total_storage_bytes: 0,
+        healthy_files: 0,
+        missing_files: 0,
+        recent_assets: [],
+        recent_activities: [],
+        popular_tags: [],
+      }),
+    })
+  })
+  await signInWithMockAccount(page)
+  const owner = { id: '73737373-7373-7373-7373-737373737373', name: '测试用户', avatar_url: null }
+  const publication = (id: string, title: string) => ({
+    id,
+    type: 'literature',
+    slug: title.toLowerCase().replace(' ', '-'),
+    title,
+    summary: `${title} 摘要`,
+    status: 'published',
+    visibility: 'lab',
+    owner,
+    details: {
+      venue: 'ACL', year: 2026, track: 'Conference Paper', authors: ['Ada Lovelace'],
+      source_id: id, source_url: `https://example.com/${id}`, pdf_url: `https://example.com/${id}.pdf`,
+    },
+    tags: ['ACL'],
+    current_version: null,
+    total_size: 0,
+    file_count: 0,
+    upload_directories: [],
+    default_upload_directory: 'source',
+    updated_at: '2026-08-14T03:00:00Z',
+  })
+  const firstId = '74747474-7474-7474-7474-747474747474'
+  const secondId = '75757575-7575-7575-7575-757575757575'
+  const publications = [publication(firstId, 'First Paper'), publication(secondId, 'Second Paper')]
+  await page.route('**/api/assets?*', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ items: publications, total: 2, page: 1, page_size: 20, publication_facets: { venues: ['ACL'], years: [2026] } }),
+    })
+  })
+  let releaseFirst: (() => void) | undefined
+  const firstReleased = new Promise<void>((resolve) => { releaseFirst = resolve })
+  await page.route(`**/api/assets/${firstId}/citation/bibtex`, async (route) => {
+    await firstReleased
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ citation_key: 'first', filename: 'first.bib', bibtex: '@article{first}' }) })
+  })
+  await page.route(`**/api/assets/${secondId}/citation/bibtex`, async (route) => {
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ citation_key: 'second', filename: 'second.bib', bibtex: '@article{second}' }) })
+  })
+
+  await page.goto('/literature?view=grid')
+  const firstCard = page.locator('.catalogue-card').filter({ hasText: 'First Paper' })
+  const secondCard = page.locator('.catalogue-card').filter({ hasText: 'Second Paper' })
+  await firstCard.getByRole('button', { name: 'BibTeX' }).click()
+  await secondCard.getByRole('button', { name: 'BibTeX' }).click()
+  await expect(secondCard.getByRole('button', { name: '已复制' })).toBeVisible()
+  releaseFirst?.()
+  await expect(secondCard.getByRole('button', { name: '已复制' })).toBeVisible()
+  await expect(firstCard.getByRole('button', { name: '已复制' })).toHaveCount(0)
 })
 
 test('首页最近归档入口指向最新资产所属目录', async ({ page }) => {

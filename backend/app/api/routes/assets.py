@@ -10,6 +10,7 @@ from app.api.dependencies import AdminDependency, require_admin
 from app.db.session import get_session
 from app.domain.enums import AssetType, Visibility
 from app.domain.schemas import (
+    ArchivedAssetListResponse,
     AssetChoiceSummary,
     AssetCreateRequest,
     AssetDetail,
@@ -213,8 +214,19 @@ def import_yaml_metadata(
 
 
 @router.get("/archived")
-def archived_assets(session: SessionDependency, _: AdminDependency) -> list[AssetSummary]:
-    return list_archived_assets(session)
+def archived_assets(
+    session: SessionDependency,
+    _: AdminDependency,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+) -> ArchivedAssetListResponse:
+    items, total = list_archived_assets(session, page=page, page_size=page_size)
+    return ArchivedAssetListResponse(
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @router.patch("/{asset_id}")

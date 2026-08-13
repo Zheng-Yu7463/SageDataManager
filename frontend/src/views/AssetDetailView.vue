@@ -21,6 +21,7 @@ const loading = ref(true)
 const error = ref('')
 let controller: AbortController | undefined
 let fileAccessController: AbortController | undefined
+let assetContextVersion = 0
 const fileActionId = ref<string | null>(null)
 const fileActionError = ref('')
 const previewingFile = ref<FileSummary | null>(null)
@@ -49,6 +50,7 @@ const publication = computed<PublicationMetadata | null>(() => data.value && ['p
 const citation = ref<PublicationCitation | null>(null)
 const citationLoading = ref(false)
 const citationCopied = ref(false)
+let citationCopiedTimer: number | undefined
 const citationError = ref('')
 const versionOpen = ref(false)
 const versionDialog = ref<HTMLElement | null>(null)
@@ -60,7 +62,7 @@ const previewableMimeTypes = new Set([
   'text/markdown', 'text/plain', 'text/tab-separated-values', 'text/yaml',
   'image/avif', 'image/gif', 'image/jpeg', 'image/png', 'image/webp',
 ])
-const removingRelationId = ref<string | null>(null)
+const removingRelationIds = ref(new Set<string>())
 const previewOpen = computed(() => Boolean(previewingFile.value))
 const returnLocation = computed(() => {
   const requested = route.query.returnTo
@@ -147,6 +149,19 @@ function buildFileBrowserRows(asset: AssetDetail) {
 }
 
 const fileBrowserRows = computed(() => (data.value ? buildFileBrowserRows(data.value) : []))
+
+interface AssetOperationContext {
+  assetId: string
+  version: number
+}
+
+function assetOperationContext(asset: AssetDetail): AssetOperationContext {
+  return { assetId: asset.id, version: assetContextVersion }
+}
+
+function isCurrentAssetContext(context: AssetOperationContext) {
+  return context.version === assetContextVersion && String(route.params.assetId) === context.assetId
+}
 
 async function loadCitation(asset: AssetDetail, requestController: AbortController) {
   citationLoading.value = true
@@ -265,7 +280,11 @@ async function copyCitation() {
   try {
     await copyText(citation.value.bibtex)
     citationCopied.value = true
-    window.setTimeout(() => { citationCopied.value = false }, 1800)
+    if (citationCopiedTimer) window.clearTimeout(citationCopiedTimer)
+    citationCopiedTimer = window.setTimeout(() => {
+      citationCopied.value = false
+      citationCopiedTimer = undefined
+    }, 1800)
   } catch {
     citationError.value = '浏览器无法写入剪贴板，请下载引用文件。'
   }
@@ -295,36 +314,44 @@ function closeEdit() {
 
 async function saveEdit() {
   if (!data.value || !edit.value.title.trim()) return
+  const context = assetOperationContext(data.value)
   saving.value = true
   editError.value = ''
   try {
-    await updateAsset(data.value.id, {
+    const updatedAsset = await updateAsset(context.assetId, {
       title: edit.value.title.trim(),
       summary: edit.value.summary.trim(),
       status: edit.value.status.trim(),
       visibility: edit.value.visibility,
       tags: edit.value.tags.split(/[，,]/).map((tag) => tag.trim()).filter(Boolean),
     })
+    if (!isCurrentAssetContext(context)) return
+    data.value = data.value ? { ...data.value, ...updatedAsset } : null
+    setPageTitle(updatedAsset.title)
     editOpen.value = false
-    await load()
   } catch (reason) {
+    if (!isCurrentAssetContext(context)) return
     editError.value = reason instanceof Error ? reason.message : '无法保存资产信息'
   } finally {
-    saving.value = false
+    if (isCurrentAssetContext(context)) saving.value = false
   }
 }
 
 async function archiveCurrentAsset() {
   if (!data.value || !window.confirm('归档后资产将从普通目录隐藏，但不会删除原始文件。确定继续吗？')) return
+  const context = assetOperationContext(data.value)
+  const cataloguePath = `/${assetMeta[data.value.type].english.toLowerCase()}`
   archiving.value = true
   actionError.value = ''
   try {
-    await archiveAsset(data.value.id)
-    await router.replace(`/${assetMeta[data.value.type].english.toLowerCase()}`)
+    await archiveAsset(context.assetId)
+    if (!isCurrentAssetContext(context)) return
+    await router.replace(cataloguePath)
   } catch (reason) {
+    if (!isCurrentAssetContext(context)) return
     actionError.value = reason instanceof Error ? reason.message : '无法归档资产'
   } finally {
-    archiving.value = false
+    if (isCurrentAssetContext(context)) archiving.value = false
   }
 }
 
@@ -340,20 +367,32 @@ function closeVersion() {
 
 async function saveVersion() {
   if (!data.value || !versionDraft.value.version.trim()) return
+  const context = assetOperationContext(data.value)
   versionSaving.value = true
   versionError.value = ''
   try {
-    await addAssetVersion(data.value.id, {
+    const createdVersion = await addAssetVersion(context.assetId, {
       version: versionDraft.value.version.trim(),
       release_notes: versionDraft.value.releaseNotes.trim(),
       make_current: versionDraft.value.makeCurrent,
     })
+    if (!isCurrentAssetContext(context)) return
+    if (data.value) {
+      const versions = createdVersion.is_current
+        ? data.value.versions.map((version) => ({ ...version, is_current: false }))
+        : data.value.versions
+      data.value = {
+        ...data.value,
+        current_version: createdVersion.is_current ? createdVersion.version : data.value.current_version,
+        versions: [createdVersion, ...versions],
+      }
+    }
     versionOpen.value = false
-    await load()
   } catch (reason) {
+    if (!isCurrentAssetContext(context)) return
     versionError.value = reason instanceof Error ? reason.message : '无法登记版本'
   } finally {
-    versionSaving.value = false
+    if (isCurrentAssetContext(context)) versionSaving.value = false
   }
 }
 
@@ -403,37 +442,57 @@ function closeRelation() {
 
 async function saveRelation() {
   if (!data.value || !relationTargetId.value || !relationType.value.trim()) return
+  const context = assetOperationContext(data.value)
   relationSaving.value = true
   relationError.value = ''
   try {
-    await addAssetRelation(data.value.id, {
+    const createdRelation = await addAssetRelation(context.assetId, {
       target_asset_id: relationTargetId.value,
       relation_type: relationType.value.trim(),
     })
+    if (!isCurrentAssetContext(context)) return
+    if (data.value) {
+      data.value = { ...data.value, related_assets: [...data.value.related_assets, createdRelation] }
+    }
     relationOpen.value = false
-    await load()
   } catch (reason) {
+    if (!isCurrentAssetContext(context)) return
     relationError.value = reason instanceof Error ? reason.message : '无法建立关联'
   } finally {
-    relationSaving.value = false
+    if (isCurrentAssetContext(context)) relationSaving.value = false
   }
 }
 
 async function removeRelation(relation: RelatedAssetSummary) {
-  if (!data.value || !window.confirm(`解除与「${relation.title}」的关联吗？`)) return
-  removingRelationId.value = relation.relation_id
+  if (!data.value || removingRelationIds.value.has(relation.relation_id) || !window.confirm(`解除与「${relation.title}」的关联吗？`)) return
+  const context = assetOperationContext(data.value)
+  removingRelationIds.value = new Set(removingRelationIds.value).add(relation.relation_id)
   actionError.value = ''
   try {
-    await removeAssetRelation(data.value.id, relation.relation_id)
-    await load()
+    await removeAssetRelation(context.assetId, relation.relation_id)
+    if (!isCurrentAssetContext(context)) return
+    if (data.value) {
+      data.value = {
+        ...data.value,
+        related_assets: data.value.related_assets.filter(
+          (relatedAsset) => relatedAsset.relation_id !== relation.relation_id,
+        ),
+      }
+    }
   } catch (reason) {
+    if (!isCurrentAssetContext(context)) return
     actionError.value = reason instanceof Error ? reason.message : '无法解除关联'
   } finally {
-    removingRelationId.value = null
+    if (isCurrentAssetContext(context)) {
+      const nextRemovingIds = new Set(removingRelationIds.value)
+      nextRemovingIds.delete(relation.relation_id)
+      removingRelationIds.value = nextRemovingIds
+    }
   }
 }
 
 function resetAssetContext() {
+  assetContextVersion += 1
   fileAccessController?.abort()
   fileAccessController = undefined
   fileActionId.value = null
@@ -441,15 +500,23 @@ function resetAssetContext() {
   previewingFile.value = null
   previewUrl.value = ''
   editOpen.value = false
+  saving.value = false
   editError.value = ''
+  archiving.value = false
   versionOpen.value = false
+  versionSaving.value = false
   versionError.value = ''
   relationCandidatesController?.abort()
   relationCandidatesController = undefined
   relationOpen.value = false
+  relationSaving.value = false
   relationCandidates.value = []
   relationError.value = ''
   relationTargetId.value = ''
+  removingRelationIds.value = new Set()
+  if (citationCopiedTimer) window.clearTimeout(citationCopiedTimer)
+  citationCopiedTimer = undefined
+  citationCopied.value = false
   actionError.value = ''
 }
 
@@ -465,6 +532,7 @@ onBeforeUnmount(() => {
   controller?.abort()
   fileAccessController?.abort()
   relationCandidatesController?.abort()
+  if (citationCopiedTimer) window.clearTimeout(citationCopiedTimer)
   closePreview()
 })
 </script>
@@ -559,7 +627,7 @@ onBeforeUnmount(() => {
           <header class="panel-heading"><div><span class="section-number">{{ publication ? '05' : '04' }}</span><div><h2>关联资产</h2><p>Research context</p></div></div><button class="section-action" @click="openRelation"><Plus :size="14" />添加关联</button></header>
           <div class="detail-section-body">
             <div v-if="data.related_assets.length" class="detail-list">
-              <div v-for="asset in data.related_assets" :key="asset.relation_id" class="detail-list-row detail-related-row"><RouterLink :to="{ name: 'asset-detail', params: { assetId: asset.id } }" class="detail-link"><GitBranch :size="18" /><span><strong>{{ asset.title }}</strong><small>{{ asset.relation_type }} · {{ assetMeta[asset.type].label }}</small></span></RouterLink><button class="relation-remove" :disabled="removingRelationId === asset.relation_id" :title="`解除与 ${asset.title} 的关联`" @click="removeRelation(asset)"><Trash2 :size="14" /></button></div>
+              <div v-for="asset in data.related_assets" :key="asset.relation_id" class="detail-list-row detail-related-row"><RouterLink :to="{ name: 'asset-detail', params: { assetId: asset.id } }" class="detail-link"><GitBranch :size="18" /><span><strong>{{ asset.title }}</strong><small>{{ asset.relation_type }} · {{ assetMeta[asset.type].label }}</small></span></RouterLink><button class="relation-remove" :disabled="removingRelationIds.has(asset.relation_id)" :title="`解除与 ${asset.title} 的关联`" @click="removeRelation(asset)"><Trash2 :size="14" /></button></div>
             </div>
             <p v-else class="detail-empty">尚未登记关联资产。可将论文、数据集、项目或模型串联为研究上下文。</p>
           </div>

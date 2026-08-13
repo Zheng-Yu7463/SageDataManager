@@ -101,6 +101,8 @@ const registration = ref({
 const citationActionId = ref<string | null>(null)
 const citationCopiedId = ref<string | null>(null)
 const citationError = ref('')
+let citationRequestVersion = 0
+let citationCopiedTimer: number | undefined
 const exportingCitations = ref(false)
 const uploadAsset = ref<AssetSummary | null>(null)
 const uploadDialog = ref<HTMLElement | null>(null)
@@ -462,19 +464,25 @@ async function copyUploadCommand() {
 }
 
 async function copyPublicationCitation(asset: AssetSummary) {
+  const requestVersion = ++citationRequestVersion
   citationActionId.value = asset.id
   citationError.value = ''
   try {
     const citation = await getPublicationCitation(asset.id)
+    if (requestVersion !== citationRequestVersion) return
     await copyText(citation.bibtex)
+    if (requestVersion !== citationRequestVersion) return
     citationCopiedId.value = asset.id
-    window.setTimeout(() => {
-      if (citationCopiedId.value === asset.id) citationCopiedId.value = null
+    if (citationCopiedTimer) window.clearTimeout(citationCopiedTimer)
+    citationCopiedTimer = window.setTimeout(() => {
+      if (requestVersion === citationRequestVersion) citationCopiedId.value = null
+      citationCopiedTimer = undefined
     }, 1800)
   } catch (reason) {
+    if (requestVersion !== citationRequestVersion) return
     citationError.value = reason instanceof Error ? reason.message : '无法复制 BibTeX'
   } finally {
-    citationActionId.value = null
+    if (requestVersion === citationRequestVersion) citationActionId.value = null
   }
 }
 
@@ -512,12 +520,21 @@ watch(
     route.query.view,
   ],
   () => {
+    citationRequestVersion += 1
+    citationActionId.value = null
+    citationCopiedId.value = null
+    citationError.value = ''
+    if (citationCopiedTimer) window.clearTimeout(citationCopiedTimer)
+    citationCopiedTimer = undefined
     readCatalogueState()
     void load()
   },
   { immediate: true },
 )
-onBeforeUnmount(() => controller?.abort())
+onBeforeUnmount(() => {
+  controller?.abort()
+  if (citationCopiedTimer) window.clearTimeout(citationCopiedTimer)
+})
 </script>
 
 <template>

@@ -50,7 +50,6 @@ async function load(nextQuery: string, nextPage: number) {
   controller = requestController
   loading.value = true
   error.value = ''
-  data.value = null
   try {
     const result = await getAssets(undefined, { query: nextQuery, page: nextPage, pageSize }, requestController.signal)
     if (controller !== requestController) return
@@ -74,7 +73,11 @@ async function load(nextQuery: string, nextPage: number) {
 
 function submit() {
   const value = inputQuery.value.trim()
-  router.push({ name: 'search', query: value ? { q: value } : {} })
+  if (value === activeQuery.value) {
+    void load(value, page.value)
+    return
+  }
+  void router.push({ name: 'search', query: value ? { q: value } : {} })
 }
 
 function clear() {
@@ -83,7 +86,7 @@ function clear() {
 }
 
 function goToPage(nextPage: number) {
-  router.push({ name: 'search', query: { q: activeQuery.value, page: String(nextPage) } })
+  void router.push({ name: 'search', query: { q: activeQuery.value, page: String(nextPage) } })
 }
 
 watch(
@@ -123,14 +126,15 @@ onBeforeUnmount(() => controller?.abort())
       <span v-if="loading" class="tiny-spinner"></span>
     </div>
 
-    <div v-if="error" class="state-panel state-panel--error state-panel--inline" role="alert"><strong>检索失败</strong><p>{{ error }}</p></div>
-    <div v-else-if="!activeQuery" class="empty-catalogue">
+    <div v-if="error" class="state-panel state-panel--error state-panel--inline" role="alert"><strong>检索失败</strong><p>{{ error }}</p><button class="button button--outline" @click="load(activeQuery, page)">重试</button></div>
+    <div v-if="!activeQuery" class="empty-catalogue">
       <span><Search :size="30" /></span><h2>从一个研究主题开始</h2><p>例如：气候科学、Transformer、多模态。</p>
     </div>
-    <div v-else-if="!loading && data?.items.length === 0" class="empty-catalogue">
+    <div v-else-if="loading && !data" class="state-panel" role="status" aria-live="polite"><span class="loader-ring"></span><p>正在检索目录…</p></div>
+    <div v-else-if="!loading && !error && data?.items.length === 0" class="empty-catalogue">
       <span><Search :size="30" /></span><h2>没有匹配的资产</h2><p>尝试使用更短的标题或主题词。</p>
     </div>
-    <section v-else class="search-results">
+    <section v-if="data?.items.length" class="search-results">
       <RouterLink
         v-for="asset in data?.items"
         :key="asset.id"
@@ -151,9 +155,9 @@ onBeforeUnmount(() => controller?.abort())
       </RouterLink>
     </section>
     <nav v-if="data && pageCount > 1" class="pagination" aria-label="搜索结果分页">
-      <button :disabled="page <= 1" @click="goToPage(page - 1)"><ArrowLeft :size="14" />上一页</button>
+      <button :disabled="page <= 1 || loading" @click="goToPage(page - 1)"><ArrowLeft :size="14" />上一页</button>
       <span>第 {{ page }} / {{ pageCount }} 页</span>
-      <button :disabled="page >= pageCount" @click="goToPage(page + 1)">下一页<ArrowRight :size="14" /></button>
+      <button :disabled="page >= pageCount || loading" @click="goToPage(page + 1)">下一页<ArrowRight :size="14" /></button>
     </nav>
   </div>
 </template>
