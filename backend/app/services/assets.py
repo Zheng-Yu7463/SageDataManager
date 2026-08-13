@@ -26,7 +26,7 @@ from app.domain.schemas import (
     UploadDirectoryOption,
     normalized_asset_details,
 )
-from app.services.activities import activity_summary
+from app.services.activities import recent_activity_summaries
 from app.services.paper_identity import (
     PublicationIdentityConflictError,
     publication_identities_match,
@@ -746,14 +746,6 @@ def get_asset(session: Session, asset_id: UUID) -> AssetDetail | None:
         if related_ids
         else {}
     )
-    activities = session.scalars(
-        select(Activity)
-        .where(Activity.asset_id == asset.id)
-        .options(selectinload(Activity.actor))
-        .order_by(Activity.created_at.desc(), Activity.id.asc())
-        .limit(20)
-    ).all()
-
     summary = asset_summary(asset)
     return AssetDetail(
         **summary.model_dump(),
@@ -777,5 +769,5 @@ def get_asset(session: Session, asset_id: UUID) -> AssetDetail | None:
                 )
             )
         ],
-        recent_activities=[activity_summary(activity) for activity in activities],
+        recent_activities=recent_activity_summaries(session, limit=20, asset_id=asset.id),
     )

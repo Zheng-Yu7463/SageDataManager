@@ -800,6 +800,7 @@ a {
 .activity-marker { position: relative; z-index: 1; width: 11px; height: 11px; margin-top: 3px; background: #fff; border: 3px solid #729579; border-radius: 50%; }
 .activity-list strong { display: -webkit-box; overflow: hidden; font-size: 11px; line-height: 1.35; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .activity-list p { margin: 3px 0 0; color: #7f8b83; font-size: 10px; }
+.activity-count { color: var(--sage); font-weight: 700; white-space: nowrap; }
 .activity-list time { color: #a2aaa5; font-size: 9px; }
 .panel-heading--compact { min-height: 62px; padding-top: 13px; padding-bottom: 13px; }
 .tag-cloud { display: flex; padding: 16px 18px 19px; flex-wrap: wrap; gap: 7px; }

@@ -9,7 +9,11 @@ from app.db.session import get_session
 from app.domain.enums import AssetType, HealthStatus
 from app.domain.models import Activity, Asset, FileRecord, Tag, asset_tags
 from app.domain.schemas import ActivityListResponse, DashboardSummary
-from app.services.activities import activity_facets, activity_summary
+from app.services.activities import (
+    activity_facets,
+    activity_summary,
+    recent_activity_summaries,
+)
 from app.services.assets import asset_summary
 
 router = APIRouter(
@@ -51,13 +55,7 @@ def dashboard(session: SessionDependency) -> DashboardSummary:
         .limit(5)
     ).all()
 
-    activities = session.scalars(
-        select(Activity)
-        .options(selectinload(Activity.asset), selectinload(Activity.actor))
-        .order_by(Activity.created_at.desc())
-        .limit(6)
-    ).all()
-    activity_summaries = [activity_summary(item) for item in activities]
+    activity_summaries = recent_activity_summaries(session, limit=6)
 
     popular_tags = session.execute(
         select(Tag.name, func.count(asset_tags.c.asset_id).label("usage_count"))

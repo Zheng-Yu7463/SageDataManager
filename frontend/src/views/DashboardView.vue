@@ -200,8 +200,8 @@ onMounted(load)
               <li v-for="activity in data.recent_activities" :key="activity.id">
                 <span class="activity-marker"></span>
                 <div>
-                  <strong>{{ activity.asset_title }}</strong>
-                  <p>{{ activity.actor_name }} · {{ activity.description }}</p>
+                  <strong>{{ activity.asset_title ?? activity.action_label }}</strong>
+                  <p>{{ activity.actor_name ?? '系统' }} · {{ activity.description }}<span v-if="activity.occurrence_count > 1" class="activity-count"> ×{{ activity.occurrence_count }}</span></p>
                   <time>{{ relativeTime(activity.created_at) }}</time>
                 </div>
               </li>

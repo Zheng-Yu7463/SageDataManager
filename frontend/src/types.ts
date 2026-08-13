@@ -179,6 +179,7 @@ export interface ActivitySummary {
   action_label: string
   description: string
   created_at: string
+  occurrence_count: number
 }
 export interface ActivityFacet {
   value: string

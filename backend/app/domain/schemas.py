@@ -106,6 +106,7 @@ class ActivitySummary(BaseModel):
     action_label: str
     description: str
     created_at: datetime
+    occurrence_count: int = 1
 
 
 class AssetDetail(AssetSummary):

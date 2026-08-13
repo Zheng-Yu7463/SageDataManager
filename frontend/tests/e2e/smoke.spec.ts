@@ -22,6 +22,32 @@ async function signIn(page: Page) {
   await expect(page.getByRole('heading', { name: '实验室科研资产总览' })).toBeVisible()
 }
 
+async function signInWithMockAccount(page: Page) {
+  const account = {
+    id: '90909090-9090-9090-9090-909090909090',
+    username: 'testadmin',
+    name: '测试管理员',
+    email: 'test-admin@sage.test',
+    role: 'admin',
+    upload_username: 'testadmin',
+    is_active: true,
+  }
+  await page.route('**/api/auth/login', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ ...account, session_token: 'mock-session-token' }),
+    })
+  })
+  await page.route('**/api/auth/me', async (route) => {
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(account) })
+  })
+  await page.goto('/')
+  await page.getByLabel('账号').fill('testadmin')
+  await page.getByLabel('密码').fill('test-password')
+  await page.getByRole('button', { name: '进入归档系统' }).click()
+  await expect(page.getByRole('button', { name: '账户菜单：测试管理员' })).toBeVisible()
+}
+
 async function navigateTo(page: Page, linkName: string | RegExp) {
   const menuButton = page.getByRole('button', { name: '打开导航' })
   if (await menuButton.isVisible()) await menuButton.click()
@@ -83,6 +109,85 @@ test('新实例总览为尚无数据的面板提供明确状态', async ({ page 
   await expect(page.getByText('尚无归档活动。资产登记、更新和文件操作会记录在这里。')).toBeVisible()
   await expect(page.getByText('尚无知识标签。为资产添加标签后，会形成团队共享词表。')).toBeVisible()
   await expect(page.getByRole('link', { name: '前往论文目录' })).toHaveAttribute('href', '/papers')
+})
+
+test('近期活动折叠重复事件并支持系统级操作', async ({ page }) => {
+  const assetId = '12121212-1212-1212-1212-121212121212'
+  const activity = {
+    id: '34343434-3434-3434-3434-343434343434',
+    asset_id: assetId,
+    asset_title: '重复上传测试文献',
+    asset_type: 'literature',
+    actor_name: '测试用户',
+    credential_name: null,
+    action: 'prepared_upload',
+    action_label: '生成上传指令',
+    description: '为 literature/repeated-upload/original 生成了上传指令',
+    created_at: '2026-08-14T01:00:00Z',
+    occurrence_count: 18,
+  }
+  await page.route('**/api/dashboard', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        counts: { paper: 0, dataset: 0, literature: 1, project: 0, model: 0 },
+        total_storage_bytes: 0,
+        healthy_files: 0,
+        missing_files: 0,
+        recent_assets: [],
+        popular_tags: [],
+        recent_activities: [{
+          ...activity,
+          id: '56565656-5656-5656-5656-565656565656',
+          asset_id: null,
+          asset_title: null,
+          asset_type: null,
+          action: 'updated_branding',
+          action_label: '更新品牌设置',
+          description: '更新了品牌设置',
+          occurrence_count: 2,
+        }],
+      }),
+    })
+  })
+  await signInWithMockAccount(page)
+  await expect(page.locator('.activity-list').getByText('更新品牌设置', { exact: true })).toBeVisible()
+  await expect(page.locator('.activity-list').getByText('×2', { exact: true })).toBeVisible()
+
+  await page.route(`**/api/assets/${assetId}`, async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: assetId,
+        type: 'literature',
+        slug: 'repeated-upload',
+        title: '重复上传测试文献',
+        summary: '用于验证活动摘要。',
+        status: 'published',
+        visibility: 'lab',
+        owner: { id: '78787878-7878-7878-7878-787878787878', name: '测试用户', avatar_url: null },
+        details: { venue: 'arXiv', year: 2026, authors: ['Ada Lovelace'] },
+        tags: [],
+        current_version: null,
+        total_size: 0,
+        file_count: 0,
+        upload_directories: [],
+        default_upload_directory: 'original',
+        updated_at: '2026-08-14T01:00:00Z',
+        versions: [],
+        files: [],
+        related_assets: [],
+        recent_activities: [activity],
+      }),
+    })
+  })
+  await page.route(`**/api/assets/${assetId}/citation/bibtex`, async (route) => {
+    await route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ detail: '无引用' }) })
+  })
+  await page.goto(`/assets/${assetId}?returnTo=/literature`)
+  await expect(page.getByRole('heading', { name: '近期活动' })).toBeVisible()
+  await expect(page.getByText('生成上传指令 ×18', { exact: true })).toBeVisible()
+  await expect(page.getByRole('link', { name: '查看完整日志' })).toHaveAttribute('href', '/activity-log')
 })
 
 test('窄屏顶栏与目录保持在视口内', async ({ page }) => {
