@@ -1,4 +1,5 @@
 from typing import Annotated
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -7,12 +8,22 @@ from app.api.dependencies import AdminDependency
 from app.core.config import settings
 from app.db.session import get_session
 from app.domain.schemas import (
+    AccessTokenCreatedResponse,
+    AccessTokenCreateRequest,
+    AccessTokenSummary,
     AccountCreateRequest,
     AccountLoginRequest,
     AccountLoginResponse,
     AccountSummary,
     AccountUpdateRequest,
     RegistrationStatus,
+)
+from app.services.access_tokens import (
+    AccessTokenConfigurationError,
+    AccessTokenNotFoundError,
+    create_access_token,
+    list_access_tokens,
+    revoke_access_token,
 )
 from app.services.accounts import (
     AccountConflictError,
@@ -93,3 +104,46 @@ def update_admin(
 @router.get("/registration-status")
 def registration_status() -> RegistrationStatus:
     return RegistrationStatus(enabled=settings.registration_enabled)
+
+
+@router.get("/access-tokens")
+def access_tokens(
+    session: SessionDependency, current_user: AdminDependency
+) -> list[AccessTokenSummary]:
+    return list_access_tokens(session, current_user)
+
+
+@router.post("/access-tokens", status_code=status.HTTP_201_CREATED)
+def create_token(
+    payload: AccessTokenCreateRequest,
+    session: SessionDependency,
+    current_user: AdminDependency,
+) -> AccessTokenCreatedResponse:
+    try:
+        result = create_access_token(session, current_user, payload)
+        session.commit()
+        return result
+    except AccessTokenConfigurationError as error:
+        session.rollback()
+        raise HTTPException(status_code=503, detail=str(error)) from None
+    except Exception:
+        session.rollback()
+        raise
+
+
+@router.delete("/access-tokens/{token_id}")
+def revoke_token(
+    token_id: UUID,
+    session: SessionDependency,
+    current_user: AdminDependency,
+) -> AccessTokenSummary:
+    try:
+        result = revoke_access_token(session, current_user, token_id)
+        session.commit()
+        return result
+    except AccessTokenNotFoundError:
+        session.rollback()
+        raise HTTPException(status_code=404, detail="访问令牌不存在。") from None
+    except Exception:
+        session.rollback()
+        raise

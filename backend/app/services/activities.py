@@ -13,6 +13,7 @@ def activity_summary(activity: Activity) -> ActivitySummary:
         asset_title=activity.asset.title if activity.asset else None,
         asset_type=activity.asset.type if activity.asset else None,
         actor_name=activity.actor.name if activity.actor else None,
+        credential_name=activity.credential_name,
         action=activity.action,
         action_label=activity_label(activity.action),
         description=activity.description,

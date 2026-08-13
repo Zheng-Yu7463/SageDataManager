@@ -1,6 +1,7 @@
 from pathlib import Path, PurePath
 
 UPLOAD_STAGING_DIRECTORY = ".uploads"
+UPLOAD_PARTS_DIRECTORY = ".parts"
 
 
 def is_internal_storage_path(path: PurePath) -> bool:

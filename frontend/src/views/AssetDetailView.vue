@@ -486,7 +486,7 @@ onBeforeUnmount(() => {
           <header class="panel-heading"><div><span class="section-number">{{ publication ? '06' : '05' }}</span><div><h2>归档活动</h2><p>Catalogue history</p></div></div></header>
           <div class="detail-section-body">
             <ol v-if="data.recent_activities.length" class="detail-timeline">
-              <li v-for="activity in data.recent_activities" :key="activity.id"><History :size="17" /><div><strong>{{ activity.action_label }}</strong><p>{{ activity.actor_name ?? '系统' }} · {{ activity.description }}</p></div><time>{{ formatDate(activity.created_at) }}</time></li>
+              <li v-for="activity in data.recent_activities" :key="activity.id"><History :size="17" /><div><strong>{{ activity.action_label }}</strong><p>{{ activity.actor_name ?? '系统' }}<template v-if="activity.credential_name"> / {{ activity.credential_name }}</template> · {{ activity.description }}</p></div><time>{{ formatDate(activity.created_at) }}</time></li>
             </ol>
             <p v-else class="detail-empty">暂无归档活动。</p>
           </div>

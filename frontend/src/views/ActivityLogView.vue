@@ -81,7 +81,7 @@ onMounted(load)
         <div class="activity-copy">
           <strong>{{ item.description }}</strong>
           <p>
-            {{ item.actor_name ?? '系统' }} · {{ item.action_label }}
+            {{ item.actor_name ?? '系统' }}<template v-if="item.credential_name"> / {{ item.credential_name }}</template> · {{ item.action_label }}
             <template v-if="item.asset_title"> · {{ item.asset_title }}</template>
           </p>
         </div>

@@ -50,6 +50,31 @@ class User(Base):
     avatar_url: Mapped[str | None] = mapped_column(String(500))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
+    access_tokens: Mapped[list[PersonalAccessToken]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+
+
+class PersonalAccessToken(Base):
+    __tablename__ = "personal_access_tokens"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    public_id: Mapped[str] = mapped_column(String(24), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    secret_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    scopes: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=datetime.utcnow, index=True
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
+    user: Mapped[User] = relationship(back_populates="access_tokens")
+
 
 class InstanceBranding(Base):
     __tablename__ = "instance_branding"
@@ -191,6 +216,7 @@ class Activity(Base):
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     asset_id: Mapped[UUID | None] = mapped_column(ForeignKey("assets.id", ondelete="SET NULL"))
     actor_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    credential_name: Mapped[str | None] = mapped_column(String(100))
     action: Mapped[str] = mapped_column(String(80))
     description: Mapped[str] = mapped_column(String(500))
     created_at: Mapped[datetime] = mapped_column(

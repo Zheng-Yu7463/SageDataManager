@@ -23,6 +23,7 @@
 - 管理员批量 JSON 元数据导入：整批预校验，重复 slug 不会产生部分记录；
 - 初始管理员账号的密码登录与有时效的会话令牌；
 - 受控文件下载，以及 PDF、图像、文本、CSV 和 JSON 的浏览器预览；
+- 面向 AI 客户端的公开 `agent.md`、个人访问令牌和隔离的 Agent API；
 
 下一阶段可继续接入增量扫描与 OIDC 等实验室统一认证。
 
@@ -53,7 +54,7 @@ docker compose exec backend python scripts/seed_demo.py
 - API 文档：http://localhost:8000/api/docs
 - 健康检查：http://localhost:8000/api/health
 
-`.env` 中的 `SAGE_STORAGE_ROOT` 应设置为宿主机上的实际归档目录。首次体验可保留默认值，脚本会生成 `sample-archive/` 模拟文件。Compose 会将其只读挂载到后端的 `/data/sage-archive`。
+`.env` 中的 `SAGE_STORAGE_ROOT` 应设置为宿主机上的实际归档目录。首次体验可保留默认值，脚本会生成 `sample-archive/` 模拟文件。Compose 会将其挂载到后端的 `/data/sage-archive`；后端需要写权限才能完成隔离上传和原子入库。
 
 ## 本地开发
 
@@ -151,6 +152,12 @@ python -m scripts.seed_conference_papers --migrate-existing --no-download-pdf
 系统首次初始化会预置 `yukai`、`zhengyu`、`zhourongyang`、`fengxuehan`、`chenshangyu` 和 `bisheng` 六个管理员账号。登录页需要手动输入账号；注册功能已预留但关闭。已有管理员可在“系统设置”预置其他管理员账号，或停用不再使用的账号；账号名应与服务器 SSH 用户名一致。共享初始密码必须保存在本机 `.env` 的 `SAGE_FIXED_ACCOUNT_PASSWORD` 中，不能提交到 Git。
 
 品牌配置保存在数据库的单实例配置表中。公开页面可读取品牌信息和 Logo，只有已登录管理员可以修改；Logo 仅接受不超过 1 MB 的 PNG、JPEG 或 WebP 文件。`SAGE_` 环境变量前缀和 `X-Sage-Session` 请求头作为部署兼容契约保留，不受界面品牌名称影响。
+
+### AI Agent 接入
+
+AI 客户端先读取公开的 `/agent.md`，再按其中的流程调用 `/api/agent/*`。每位管理员可在“系统设置 → AI 访问令牌”创建多个个人访问令牌，分别设置名称、权限和有效期。完整令牌只显示一次，服务端只保存 HMAC 摘要；令牌可以随时撤销，活动记录会同时标记所属管理员和令牌名称。
+
+令牌权限包括查询资产、登记元数据、上传文件、正式入库和导出 BibTeX。“正式入库”默认不勾选，应只授予需要完成归档闭环的可信自动化。令牌只适用于专用 Agent API，不能调用管理员、品牌、归档或删除接口。部署时必须设置 `SAGE_AUTH_SESSION_SECRET` 或 `SAGE_FIXED_ACCOUNT_PASSWORD`，否则服务器拒绝创建和验证访问令牌。
 
 ### 批量导入元数据
 

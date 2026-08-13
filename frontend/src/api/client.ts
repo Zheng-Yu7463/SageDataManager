@@ -2,6 +2,9 @@ import type {
   ArchiveHealthSummary,
   ActivityListResponse,
   AccountCreateInput,
+  AccessTokenCreateInput,
+  AccessTokenCreated,
+  AccessTokenSummary,
   AccountLoginResponse,
   AccountSummary,
   AccountUpdateInput,
@@ -237,6 +240,18 @@ export function createAdminAccount(input: AccountCreateInput) {
 
 export function updateAdminAccount(username: string, input: AccountUpdateInput) {
   return request<AccountSummary>(`/api/auth/admin-accounts/${username}`, undefined, 'PATCH', input)
+}
+
+export function getAccessTokens() {
+  return request<AccessTokenSummary[]>('/api/auth/access-tokens')
+}
+
+export function createAccessToken(input: AccessTokenCreateInput) {
+  return request<AccessTokenCreated>('/api/auth/access-tokens', undefined, 'POST', input)
+}
+
+export function revokeAccessToken(tokenId: string) {
+  return request<AccessTokenSummary>(`/api/auth/access-tokens/${tokenId}`, undefined, 'DELETE')
 }
 
 export function getInstanceBranding(signal?: AbortSignal) {

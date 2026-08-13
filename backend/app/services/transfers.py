@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime
 from mimetypes import guess_type
 from pathlib import Path, PurePosixPath
@@ -13,12 +14,14 @@ from app.domain.activity import ActivityAction
 from app.domain.enums import HealthStatus
 from app.domain.models import Activity, Asset, FileRecord, User
 from app.domain.schemas import (
+    AgentUploadCreateResponse,
+    AgentUploadedFileResponse,
     UploadCommandRequest,
     UploadCommandResponse,
     UploadFinalizeResponse,
 )
 from app.services.security import create_upload_token, read_upload_token
-from app.services.storage import UPLOAD_STAGING_DIRECTORY, file_kind
+from app.services.storage import UPLOAD_PARTS_DIRECTORY, UPLOAD_STAGING_DIRECTORY, file_kind
 from app.services.upload_directories import upload_directory_names
 
 
@@ -130,6 +133,111 @@ def generate_upload_command(
     )
 
 
+def create_agent_upload(
+    session: Session,
+    asset_id: UUID,
+    target_subdirectory: str,
+    *,
+    actor: User,
+    credential_name: str,
+) -> AgentUploadCreateResponse:
+    asset = session.get(Asset, asset_id)
+    if not asset or asset.archived_at:
+        raise UploadCommandError("目标资产不存在或已归档。")
+    subdirectory = _validated_subdirectory(asset, target_subdirectory)
+    upload_id = uuid4()
+    archive_relative_path = (
+        PurePosixPath(asset.type.value) / asset.slug / subdirectory
+    ).as_posix()
+    upload_token, expires_at = create_upload_token(
+        upload_id, asset.id, subdirectory.as_posix(), actor.username or ""
+    )
+    session.add(
+        Activity(
+            asset=asset,
+            actor=actor,
+            credential_name=credential_name,
+            action=ActivityAction.PREPARED_UPLOAD,
+            description=f"为 {archive_relative_path} 创建了 AI 上传任务",
+        )
+    )
+    session.flush()
+    return AgentUploadCreateResponse(
+        upload_id=upload_id,
+        asset_id=asset.id,
+        asset_title=asset.title,
+        archive_relative_path=archive_relative_path,
+        upload_token=upload_token,
+        expires_at=expires_at,
+        file_upload_url_template=f"/api/agent/uploads/{upload_id}/files/{{relative_path}}",
+        finalize_url=f"/api/agent/uploads/{upload_id}/finalize",
+    )
+
+
+def validate_agent_upload(
+    upload_id: UUID,
+    upload_token: str,
+    actor: User,
+) -> None:
+    claims = read_upload_token(upload_token)
+    if (
+        not claims
+        or claims.upload_id != upload_id
+        or claims.username != (actor.username or "")
+    ):
+        raise UploadTicketError("上传凭据无效或已过期，请重新创建上传任务。")
+
+
+def staged_upload_destination(
+    storage_root: Path,
+    upload_id: UUID,
+    relative_path: str,
+) -> tuple[Path, Path]:
+    if len(relative_path) > 1000 or "\x00" in relative_path:
+        raise UploadContentError("上传文件路径过长或包含无效字符。")
+    upload_path = PurePosixPath(relative_path.strip())
+    if (
+        upload_path.is_absolute()
+        or not upload_path.parts
+        or any(part in {"", ".", ".."} for part in upload_path.parts)
+        or any(len(part) > 255 for part in upload_path.parts)
+    ):
+        raise UploadContentError("上传文件路径必须是任务内的安全相对路径。")
+    root = storage_root.resolve(strict=True)
+    if not root.is_dir():
+        raise UploadContentError("存储根不可用，无法接收文件。")
+    staging_root = root / UPLOAD_STAGING_DIRECTORY
+    if staging_root.is_symlink():
+        raise UploadContentError("上传临时区不是有效目录，无法接收文件。")
+    destination = staging_root.joinpath(str(upload_id), *upload_path.parts)
+    if destination.exists() or destination.is_symlink():
+        raise UploadConflictError([upload_path.as_posix()])
+    if _unsafe_destination_parent(destination, root):
+        raise UploadContentError("上传文件的父目录不可用。")
+    return destination, staging_root / UPLOAD_PARTS_DIRECTORY
+
+
+def complete_agent_file_upload(
+    upload_id: UUID,
+    relative_path: str,
+    temporary_file: Path,
+    destination: Path,
+) -> AgentUploadedFileResponse:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists() or destination.is_symlink():
+        raise UploadConflictError([relative_path])
+    try:
+        os.link(temporary_file, destination)
+    except FileExistsError:
+        raise UploadConflictError([relative_path]) from None
+    temporary_file.unlink()
+    return AgentUploadedFileResponse(
+        upload_id=upload_id,
+        relative_path=PurePosixPath(relative_path).as_posix(),
+        file_size=destination.stat().st_size,
+    )
+
+
 def _staged_files(staging_directory: Path) -> list[Path]:
     if not staging_directory.exists():
         raise UploadNotReadyError("尚未检测到文件，请确认终端传输已完成后重试。")
@@ -194,6 +302,7 @@ def finalize_upload(
     upload_token: str,
     *,
     actor: User,
+    credential_name: str | None = None,
 ) -> UploadFinalizeResponse:
     claims = read_upload_token(upload_token)
     if (
@@ -277,6 +386,7 @@ def finalize_upload(
             Activity(
                 asset=asset,
                 actor=actor,
+                credential_name=credential_name,
                 action=ActivityAction.COMPLETED_UPLOAD,
                 description=(
                     f"向 {asset.type.value}/{asset.slug}/{subdirectory.as_posix()} "

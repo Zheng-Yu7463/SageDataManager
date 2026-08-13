@@ -174,6 +174,7 @@ export interface ActivitySummary {
   asset_title: string | null
   asset_type: AssetType | null
   actor_name: string | null
+  credential_name: string | null
   action: string
   action_label: string
   description: string
@@ -317,3 +318,26 @@ export interface InstanceBranding {
 }
 
 export type InstanceBrandingInput = Omit<InstanceBranding, 'logo_url'>
+
+export type AgentScope = 'assets:read' | 'metadata:write' | 'files:upload' | 'archive:finalize' | 'citations:export'
+
+export interface AccessTokenSummary {
+  id: string
+  name: string
+  token_prefix: string
+  scopes: AgentScope[]
+  created_at: string
+  expires_at: string
+  last_used_at: string | null
+  revoked_at: string | null
+}
+
+export interface AccessTokenCreated extends AccessTokenSummary {
+  token: string
+}
+
+export interface AccessTokenCreateInput {
+  name: string
+  scopes: AgentScope[]
+  expires_in_days: number
+}

@@ -1,10 +1,12 @@
+from dataclasses import dataclass
 from typing import Annotated
 
 from fastapi import Depends, Header, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db.session import get_session
-from app.domain.models import User
+from app.domain.models import PersonalAccessToken, User
+from app.services.access_tokens import AccessTokenConfigurationError, authenticate_access_token
 from app.services.accounts import get_active_account
 from app.services.security import read_session_token
 
@@ -26,3 +28,36 @@ def require_admin(
 
 
 AdminDependency = Annotated[User, Depends(require_admin)]
+
+
+@dataclass(frozen=True)
+class AgentPrincipal:
+    user: User
+    token: PersonalAccessToken
+
+
+def require_agent(
+    session: SessionDependency,
+    authorization: Annotated[str | None, Header()] = None,
+) -> AgentPrincipal:
+    scheme, _, plaintext = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not plaintext:
+        raise HTTPException(status_code=401, detail="请使用 Bearer 访问令牌。")
+    try:
+        token = authenticate_access_token(session, plaintext)
+    except AccessTokenConfigurationError as error:
+        session.rollback()
+        raise HTTPException(status_code=503, detail=str(error)) from None
+    if not token:
+        raise HTTPException(status_code=401, detail="访问令牌无效、已过期或已撤销。")
+    session.commit()
+    return AgentPrincipal(user=token.user, token=token)
+
+
+def require_agent_scope(scope: str):
+    def dependency(principal: Annotated[AgentPrincipal, Depends(require_agent)]) -> AgentPrincipal:
+        if scope not in principal.token.scopes:
+            raise HTTPException(status_code=403, detail=f"访问令牌缺少权限：{scope}")
+        return principal
+
+    return dependency

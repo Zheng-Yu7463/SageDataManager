@@ -101,6 +101,7 @@ class ActivitySummary(BaseModel):
     asset_title: str | None
     asset_type: AssetType | None
     actor_name: str | None
+    credential_name: str | None = None
     action: str
     action_label: str
     description: str
@@ -357,6 +358,76 @@ class UploadFinalizeResponse(BaseModel):
     imported_file_count: int
     total_size: int
     relative_paths: list[str]
+
+
+AgentScope = Literal[
+    "assets:read",
+    "metadata:write",
+    "files:upload",
+    "archive:finalize",
+    "citations:export",
+]
+
+
+class AccessTokenCreateRequest(BaseModel):
+    name: str = Field(min_length=2, max_length=100)
+    scopes: list[AgentScope] = Field(min_length=1, max_length=5)
+    expires_in_days: int = Field(default=90, ge=1, le=365)
+
+    @field_validator("name")
+    @classmethod
+    def strip_token_name(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("scopes")
+    @classmethod
+    def unique_scopes(cls, value: list[AgentScope]) -> list[AgentScope]:
+        return list(dict.fromkeys(value))
+
+
+class AccessTokenSummary(BaseModel):
+    id: UUID
+    name: str
+    token_prefix: str
+    scopes: list[AgentScope]
+    created_at: datetime
+    expires_at: datetime
+    last_used_at: datetime | None
+    revoked_at: datetime | None
+
+
+class AccessTokenCreatedResponse(AccessTokenSummary):
+    token: str
+
+
+class AgentIdentityResponse(BaseModel):
+    username: str
+    account_name: str
+    credential_name: str
+    scopes: list[AgentScope]
+    expires_at: datetime
+
+
+class AgentUploadCreateRequest(BaseModel):
+    asset_id: UUID
+    target_subdirectory: str = Field(min_length=1, max_length=400)
+
+
+class AgentUploadCreateResponse(BaseModel):
+    upload_id: UUID
+    asset_id: UUID
+    asset_title: str
+    archive_relative_path: str
+    upload_token: str
+    expires_at: datetime
+    file_upload_url_template: str
+    finalize_url: str
+
+
+class AgentUploadedFileResponse(BaseModel):
+    upload_id: UUID
+    relative_path: str
+    file_size: int
 
 
 class FileAccessTicketRequest(BaseModel):

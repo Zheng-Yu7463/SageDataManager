@@ -30,7 +30,7 @@ services:
       SAGE_AUTH_SESSION_SECRET: ${SAGE_AUTH_SESSION_SECRET:-}
       SAGE_STORAGE_ROOT: /data/sage-archive
     volumes:
-      - ${SAGE_STORAGE_ROOT:-./sample-archive}:/data/sage-archive:ro
+      - ${SAGE_STORAGE_ROOT:-./sample-archive}:/data/sage-archive
     depends_on:
       postgres:
         condition: service_healthy
@@ -42,8 +42,6 @@ services:
       context: ./frontend
     depends_on:
       - backend
-    volumes:
-      - ${SAGE_STORAGE_ROOT:-./sample-archive}:/data/sage-archive:ro
     ports:
       - "8080:80"
 

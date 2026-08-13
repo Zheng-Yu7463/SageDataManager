@@ -6,6 +6,8 @@ class ActivityAction(StrEnum):
     UPDATED_METADATA = "updated_metadata"
     PREPARED_UPLOAD = "prepared_upload"
     COMPLETED_UPLOAD = "completed_upload"
+    CREATED_ACCESS_TOKEN = "created_access_token"
+    REVOKED_ACCESS_TOKEN = "revoked_access_token"
     ARCHIVED = "archived"
     RESTORED = "restored"
     ADDED_VERSION = "added_version"
@@ -23,6 +25,8 @@ ACTIVITY_LABELS = {
     ActivityAction.UPDATED_METADATA: "更新元数据",
     ActivityAction.PREPARED_UPLOAD: "生成上传指令",
     ActivityAction.COMPLETED_UPLOAD: "完成文件上传",
+    ActivityAction.CREATED_ACCESS_TOKEN: "创建 AI 访问令牌",
+    ActivityAction.REVOKED_ACCESS_TOKEN: "撤销 AI 访问令牌",
     ActivityAction.ARCHIVED: "归档资产",
     ActivityAction.RESTORED: "恢复资产",
     ActivityAction.ADDED_VERSION: "登记版本",

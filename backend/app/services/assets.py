@@ -111,7 +111,11 @@ def _tags(session: Session, tag_values: list[str]) -> list[Tag]:
 
 
 def create_asset(
-    session: Session, payload: AssetCreateRequest, *, actor: User | None = None
+    session: Session,
+    payload: AssetCreateRequest,
+    *,
+    actor: User | None = None,
+    credential_name: str | None = None,
 ) -> AssetSummary:
     if session.scalar(select(Asset.id).where(Asset.slug == payload.slug)):
         raise AssetSlugConflictError
@@ -124,7 +128,7 @@ def create_asset(
             raise AssetMetadataError("该出版物已经收录，请按官方来源标识更新现有记录。")
 
     owner = actor
-    if payload.owner_email:
+    if payload.owner_email and actor is None:
         owner_email = payload.owner_email.strip().lower()
         owner = session.scalar(select(User).where(User.email == owner_email))
         if not owner:
@@ -157,6 +161,7 @@ def create_asset(
         Activity(
             asset=asset,
             actor=actor or owner,
+            credential_name=credential_name,
             action=ActivityAction.CREATED,
             description=f"登记了{asset.title}",
         )
