@@ -32,6 +32,7 @@ from app.services.paper_identity import (
     publication_identities_match,
     publication_identity,
     resolve_publication,
+    synchronize_publication_identity_keys,
 )
 from app.services.upload_directories import UPLOAD_DIRECTORY_OPTIONS
 
@@ -69,7 +70,30 @@ class AssetMetadataError(Exception):
 
 
 ASSET_RELATION_UNIQUE_CONSTRAINT = "uq_asset_relations_identity"
+ASSET_SLUG_UNIQUE_CONSTRAINTS = ("assets_slug_key", "ix_assets_slug")
+PUBLICATION_IDENTITY_UNIQUE_CONSTRAINT = "uq_publication_identity_keys_identity"
 PUBLICATION_ASSET_TYPES = (AssetType.PAPER, AssetType.LITERATURE)
+
+
+def _translate_asset_integrity_error(error: IntegrityError) -> None:
+    if any(
+        violates_constraint(
+            error,
+            constraint_name,
+            sqlite_columns=("assets.slug",),
+        )
+        for constraint_name in ASSET_SLUG_UNIQUE_CONSTRAINTS
+    ):
+        raise AssetSlugConflictError from error
+    if violates_constraint(
+        error,
+        PUBLICATION_IDENTITY_UNIQUE_CONSTRAINT,
+        sqlite_columns=("publication_identity_keys.kind", "publication_identity_keys.digest"),
+    ):
+        raise AssetMetadataError(
+            "该出版物已经收录，请检查 DOI、官方来源标识或题名与首位作者。"
+        ) from error
+    raise error
 
 
 def has_publication_metadata(asset_type: AssetType, details: dict) -> bool:
@@ -160,7 +184,11 @@ def create_asset(
     if payload.version and payload.version.strip():
         asset.versions.append(AssetVersion(version=payload.version.strip(), is_current=True))
     session.add(asset)
-    session.flush()
+    synchronize_publication_identity_keys(asset)
+    try:
+        session.flush()
+    except IntegrityError as error:
+        _translate_asset_integrity_error(error)
     record_activity(
         session,
         asset=asset,
@@ -201,7 +229,12 @@ def import_assets(
                 raise BatchAssetImportError(str(error)) from error
             if duplicate:
                 raise BatchAssetImportError(f"出版物已收录：{item.title}")
-    return [create_asset(session, item, actor=actor) for item in payload.assets]
+    try:
+        return [create_asset(session, item, actor=actor) for item in payload.assets]
+    except AssetSlugConflictError as error:
+        raise BatchAssetImportError("导入过程中资产 slug 发生并发冲突。") from error
+    except AssetMetadataError as error:
+        raise BatchAssetImportError(error.message) from error
 
 
 def update_asset(
@@ -267,6 +300,7 @@ def update_asset(
         asset.tags = _tags(session, next_tags)
     asset.details = next_details
     asset.updated_at = datetime.now(UTC)
+    synchronize_publication_identity_keys(asset)
     record_activity(
         session,
         asset=asset,
@@ -275,7 +309,10 @@ def update_asset(
         action=ActivityAction.UPDATED_METADATA,
         description="更新了资产基础信息",
     )
-    session.flush()
+    try:
+        session.flush()
+    except IntegrityError as error:
+        _translate_asset_integrity_error(error)
     return asset_summary(asset)
 
 

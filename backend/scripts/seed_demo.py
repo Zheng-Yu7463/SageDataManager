@@ -8,6 +8,7 @@ from app.domain.enums import AssetType, HealthStatus, Visibility
 from app.domain.models import Activity, Asset, AssetRelation, AssetVersion, FileRecord, Tag, User
 from app.services.accounts import ensure_fixed_accounts
 from app.services.activities import record_activity
+from app.services.paper_identity import synchronize_publication_identity_keys
 
 ASSETS = [
     {
@@ -135,6 +136,7 @@ def main() -> None:
                 )
             )
             session.add(asset)
+            synchronize_publication_identity_keys(asset)
             session.flush()
             asset_index[record["type"]] = asset
             record_activity(

@@ -768,6 +768,45 @@ test('文献登记提交完整期刊引用元数据', async ({ page }) => {
   })
 })
 
+test('文献登记冲突保留表单并在固定操作区显示错误', async ({ page }) => {
+  await signIn(page)
+  await page.route('**/api/assets', async (route) => {
+    if (route.request().method() !== 'POST') {
+      await route.continue()
+      return
+    }
+    await route.fulfill({
+      status: 409,
+      contentType: 'application/json',
+      body: JSON.stringify({ detail: '该出版物已经收录，请更新现有记录。' }),
+    })
+  })
+
+  await page.goto('/literature')
+  await page.getByRole('button', { name: '登记文献' }).click()
+  await page.getByLabel('标题').fill('重复文献')
+  await page.getByLabel('资产标识（slug）').fill('duplicate-literature')
+  await page.getByLabel('来源或期刊').fill('ICLR')
+  await page.getByLabel('文献类别').fill('Conference Poster')
+  await page.getByLabel('作者（逗号分隔）').fill('Ada Lovelace')
+  await page.getByLabel('官方来源标识').fill('duplicate-source')
+  await page.getByLabel('官方页面 URL').fill('https://example.com/paper')
+  await page.getByLabel('官方 PDF URL').fill('https://example.com/paper.pdf')
+  await page.getByLabel('期刊名称').fill('ICLR')
+  await page.getByRole('button', { name: '确认登记' }).click()
+
+  const dialog = page.getByRole('dialog', { name: '登记文献' })
+  const error = dialog.getByRole('alert')
+  const submit = dialog.getByRole('button', { name: '确认登记' })
+  await expect(error).toHaveText('该出版物已经收录，请更新现有记录。')
+  await expect(page.getByLabel('标题')).toHaveValue('重复文献')
+  await expect(submit).toBeInViewport()
+  await expect(error).toBeInViewport()
+
+  await page.keyboard.press('Escape')
+  await expect(dialog).toBeHidden()
+})
+
 test('关联资产通过服务端搜索覆盖完整目录', async ({ page }) => {
   await signIn(page)
   await page.route('**/api/assets/choices?*', async (route) => {

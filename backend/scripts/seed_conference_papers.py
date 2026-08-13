@@ -23,7 +23,11 @@ from app.domain.models import Activity, Asset, AssetVersion, FileRecord, Tag
 from app.domain.schemas import PublicationMetadata
 from app.services.accounts import ensure_fixed_accounts
 from app.services.activities import record_activity
-from app.services.paper_identity import normalize_identity_text, resolve_publication
+from app.services.paper_identity import (
+    normalize_identity_text,
+    resolve_publication,
+    synchronize_publication_identity_keys,
+)
 
 DEFAULT_ICLR_POSTER_IDS = (
     "10006831",
@@ -759,6 +763,7 @@ def upsert_metadata(
                 tags[str(publication.metadata.venue)],
                 tags[str(publication.metadata.year)],
             ]
+            synchronize_publication_identity_keys(asset)
             if relocations and publication.slug in relocations:
                 relocation = relocations[publication.slug]
                 file_record = session.scalar(

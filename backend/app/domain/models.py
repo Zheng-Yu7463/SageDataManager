@@ -13,11 +13,13 @@ from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
+    Index,
     LargeBinary,
     String,
     Table,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -128,6 +130,25 @@ class Asset(Base):
         back_populates="asset", cascade="all, delete-orphan"
     )
     tags: Mapped[list[Tag]] = relationship(secondary=asset_tags, back_populates="assets")
+    publication_identity_keys: Mapped[list[PublicationIdentityKey]] = relationship(
+        back_populates="asset", cascade="all, delete-orphan"
+    )
+
+
+class PublicationIdentityKey(Base):
+    __tablename__ = "publication_identity_keys"
+    __table_args__ = (
+        UniqueConstraint("kind", "digest", name="uq_publication_identity_keys_identity"),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    asset_id: Mapped[UUID] = mapped_column(
+        ForeignKey("assets.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    digest: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    asset: Mapped[Asset] = relationship(back_populates="publication_identity_keys")
 
 
 class AssetVersion(Base):
@@ -236,6 +257,23 @@ class AssetRelation(Base):
 
 class Activity(Base):
     __tablename__ = "activities"
+    __table_args__ = (
+        Index(
+            "ix_activities_primary_created_id",
+            "created_at",
+            "id",
+            postgresql_where=text("operation_role <> 'target'"),
+            sqlite_where=text("operation_role <> 'target'"),
+        ),
+        Index(
+            "ix_activities_primary_action_created_id",
+            "action",
+            "created_at",
+            "id",
+            postgresql_where=text("operation_role <> 'target'"),
+            sqlite_where=text("operation_role <> 'target'"),
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     asset_id: Mapped[UUID | None] = mapped_column(ForeignKey("assets.id", ondelete="SET NULL"))

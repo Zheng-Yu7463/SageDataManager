@@ -3,13 +3,14 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
+from hashlib import sha256
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.domain.enums import AssetType
-from app.domain.models import Asset
+from app.domain.models import Asset, PublicationIdentityKey
 
 
 class PublicationIdentityConflictError(Exception):
@@ -24,6 +25,12 @@ class PublicationIdentity:
     doi: str
     source_id: str
     title_and_first_author: tuple[str, str]
+
+
+@dataclass(frozen=True)
+class PublicationIdentityDigest:
+    kind: str
+    digest: str
 
 
 def normalize_identity_text(value: str) -> str:
@@ -63,6 +70,54 @@ def publication_identities_match(
     )
 
 
+def publication_identity_digests(
+    title: str, details: dict
+) -> tuple[PublicationIdentityDigest, ...]:
+    identity = publication_identity(title, details)
+    values = (
+        ("doi", identity.doi),
+        ("source_id", identity.source_id),
+        (
+            "title_author",
+            "\0".join(identity.title_and_first_author)
+            if all(identity.title_and_first_author)
+            else "",
+        ),
+    )
+    return tuple(
+        PublicationIdentityDigest(
+            kind=kind,
+            digest=sha256(value.encode("utf-8")).hexdigest(),
+        )
+        for kind, value in values
+        if value
+    )
+
+
+def synchronize_publication_identity_keys(asset: Asset) -> None:
+    if asset.type not in PUBLICATION_ASSET_TYPES or not asset.details.get("source_id"):
+        asset.publication_identity_keys = []
+        return
+    desired = {
+        identity.kind: identity.digest
+        for identity in publication_identity_digests(asset.title, asset.details)
+    }
+    existing = {identity.kind: identity for identity in asset.publication_identity_keys}
+    for kind, digest in desired.items():
+        identity = existing.get(kind)
+        if identity:
+            identity.digest = digest
+        else:
+            asset.publication_identity_keys.append(
+                PublicationIdentityKey(kind=kind, digest=digest)
+            )
+    asset.publication_identity_keys = [
+        identity
+        for identity in asset.publication_identity_keys
+        if identity.kind in desired
+    ]
+
+
 def matching_publications(
     session: Session,
     *,
@@ -70,17 +125,45 @@ def matching_publications(
     details: dict,
     exclude_asset_id: UUID | None = None,
 ) -> list[Asset]:
-    identity = publication_identity(title, details)
-    statement = select(Asset).where(Asset.type.in_(PUBLICATION_ASSET_TYPES))
+    identities = publication_identity_digests(title, details)
+    if not identities:
+        return []
+    indexed_statement = (
+        select(Asset)
+        .join(Asset.publication_identity_keys)
+        .where(
+            Asset.type.in_(PUBLICATION_ASSET_TYPES),
+            or_(
+                *(
+                    and_(
+                        PublicationIdentityKey.kind == identity.kind,
+                        PublicationIdentityKey.digest == identity.digest,
+                    )
+                    for identity in identities
+                )
+            ),
+        )
+        .distinct()
+    )
     if exclude_asset_id:
-        statement = statement.where(Asset.id != exclude_asset_id)
-    return [
+        indexed_statement = indexed_statement.where(Asset.id != exclude_asset_id)
+    indexed_matches = list(session.scalars(indexed_statement))
+
+    identity = publication_identity(title, details)
+    legacy_statement = select(Asset).where(
+        Asset.type.in_(PUBLICATION_ASSET_TYPES),
+        ~Asset.publication_identity_keys.any(),
+    )
+    if exclude_asset_id:
+        legacy_statement = legacy_statement.where(Asset.id != exclude_asset_id)
+    legacy_matches = [
         asset
-        for asset in session.scalars(statement)
+        for asset in session.scalars(legacy_statement)
         if publication_identities_match(
             identity, publication_identity(asset.title, asset.details)
         )
     ]
+    return indexed_matches + legacy_matches
 
 
 def resolve_publication(

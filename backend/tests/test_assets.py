@@ -8,7 +8,16 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.base import Base
 from app.domain.enums import AssetType, Visibility
-from app.domain.models import Activity, Asset, AssetRelation, AssetVersion, FileRecord, Tag, User
+from app.domain.models import (
+    Activity,
+    Asset,
+    AssetRelation,
+    AssetVersion,
+    FileRecord,
+    PublicationIdentityKey,
+    Tag,
+    User,
+)
 from app.domain.schemas import (
     AssetCreateRequest,
     AssetRelationCreateRequest,
@@ -124,6 +133,24 @@ def test_create_asset_rejects_duplicate_slug() -> None:
         create_asset(session, payload())
 
 
+def test_database_slug_conflict_is_translated_after_precheck(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = make_session()
+    created = create_asset(session, payload())
+    session.commit()
+    actor = session.get(User, created.owner.id)
+    assert actor is not None
+    original_scalar = session.scalar
+    monkeypatch.setattr(session, "scalar", lambda statement: None)
+
+    with pytest.raises(AssetSlugConflictError):
+        create_asset(session, payload(), actor=actor)
+
+    monkeypatch.setattr(session, "scalar", original_scalar)
+    session.rollback()
+
+
 def test_paper_metadata_is_normalized_and_duplicate_sources_are_rejected() -> None:
     session = make_session()
     created = create_asset(session, paper_payload())
@@ -132,6 +159,7 @@ def test_paper_metadata_is_normalized_and_duplicate_sources_are_rejected() -> No
     assert created.details["venue"] == "ACL"
     assert created.details["doi"] == "10.18653/v1/2026.acl-long.1"
     assert created.details["publication_url"] == "https://aclanthology.org/2026.acl-long.1/"
+    assert session.scalar(select(func.count()).select_from(PublicationIdentityKey)) == 3
     with pytest.raises(AssetMetadataError):
         create_asset(
             session,
@@ -139,6 +167,26 @@ def test_paper_metadata_is_normalized_and_duplicate_sources_are_rejected() -> No
                 slug="same-paper-second-slug", asset_type=AssetType.LITERATURE
             ),
         )
+
+
+def test_database_publication_conflict_is_translated_after_precheck(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = make_session()
+    created = create_asset(session, paper_payload())
+    session.commit()
+    actor = session.get(User, created.owner.id)
+    assert actor is not None
+    monkeypatch.setattr("app.services.assets.resolve_publication", lambda *args, **kwargs: None)
+
+    with pytest.raises(AssetMetadataError, match="已经收录"):
+        create_asset(
+            session,
+            paper_payload(slug="concurrent-publication", asset_type=AssetType.LITERATURE),
+            actor=actor,
+        )
+
+    session.rollback()
 
 
 def test_paper_bibtex_uses_structured_metadata_and_stable_fallbacks() -> None:
