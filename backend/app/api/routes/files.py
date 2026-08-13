@@ -3,6 +3,7 @@ from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import AdminDependency
@@ -81,12 +82,13 @@ def content(
         session.rollback()
         raise
 
-    return Response(
+    return FileResponse(
+        path=delivery.path,
+        filename=delivery.path.name,
+        media_type=delivery.media_type,
+        content_disposition_type=delivery.content_disposition,
         headers={
             "Cache-Control": "private, no-store",
-            "Content-Disposition": delivery.content_disposition,
-            "Content-Type": delivery.media_type,
-            "X-Accel-Redirect": delivery.internal_uri,
             "X-Content-Type-Options": "nosniff",
-        }
+        },
     )

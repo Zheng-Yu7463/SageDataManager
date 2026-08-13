@@ -68,7 +68,8 @@ function closeProfileMenu(event: PointerEvent) {
 watch(() => route.fullPath, () => {
   mobileNavigationOpen.value = false
   profileMenuOpen.value = false
-})
+  globalQuery.value = route.name === 'search' && typeof route.query.q === 'string' ? route.query.q : ''
+}, { immediate: true })
 
 onMounted(() => {
   window.addEventListener('keydown', focusGlobalSearch)

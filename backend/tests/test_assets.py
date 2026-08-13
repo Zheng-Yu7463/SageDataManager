@@ -206,6 +206,167 @@ def test_paper_list_filters_by_venue_and_year() -> None:
     assert [item.id for item in matching] == [paper.id]
 
 
+def test_search_requires_every_term_and_prioritizes_title_matches() -> None:
+    session = make_session()
+    title_match = create_asset(session, paper_payload(slug="title-match"))
+    metadata_match_payload = paper_payload(slug="metadata-match").model_copy(deep=True)
+    metadata_match_payload.title = "A Study of Tool Use"
+    metadata_match_payload.summary = "A framework for complex workflows."
+    metadata_match_payload.details["authors"] = ["OctoTools Group", "Bowen Chen"]
+    metadata_match_payload.details["source_id"] = "2026.acl-long.2"
+    metadata_match_payload.details["doi"] = "https://doi.org/10.18653/v1/2026.acl-long.2"
+    metadata_match = create_asset(session, metadata_match_payload)
+    unrelated_payload = payload().model_copy(
+        update={"slug": "unrelated", "title": "Complex soil observations"}
+    )
+    create_asset(session, unrelated_payload)
+    session.commit()
+
+    matching, total = list_assets(
+        session,
+        asset_type=None,
+        query="OctoTools complex",
+        status=None,
+        visibility=None,
+        has_files=None,
+        venue=None,
+        year=None,
+        page=1,
+        page_size=20,
+    )
+
+    assert total == 2
+    assert [item.id for item in matching] == [title_match.id, metadata_match.id]
+
+
+def test_search_matches_paper_metadata_owner_and_file_name() -> None:
+    session = make_session()
+    paper = create_asset(session, paper_payload())
+    session.add(
+        FileRecord(
+            asset_id=paper.id,
+            relative_path="paper/acl-2026-octotools/artifacts/evaluation-results.csv",
+            file_name="evaluation-results.csv",
+            file_kind="data",
+            file_size=128,
+        )
+    )
+    session.commit()
+
+    for query in ["Pan Lu", "10.18653/v1/2026.acl-long.1", "evaluation-results"]:
+        matching, total = list_assets(
+            session,
+            asset_type=None,
+            query=query,
+            status=None,
+            visibility=None,
+            has_files=None,
+            venue=None,
+            year=None,
+            page=1,
+            page_size=20,
+        )
+
+        assert total == 1
+        assert [item.id for item in matching] == [paper.id]
+
+
+def test_search_treats_sql_wildcards_as_literal_characters() -> None:
+    session = make_session()
+    create_asset(session, payload())
+    session.commit()
+
+    matching, total = list_assets(
+        session,
+        asset_type=None,
+        query="%",
+        status=None,
+        visibility=None,
+        has_files=None,
+        venue=None,
+        year=None,
+        page=1,
+        page_size=20,
+    )
+
+    assert total == 0
+    assert matching == []
+
+
+def test_search_matches_metadata_values_without_matching_json_field_names() -> None:
+    session = make_session()
+    paper = create_asset(session, paper_payload())
+    session.commit()
+
+    value_matches, value_total = list_assets(
+        session,
+        asset_type=None,
+        query="ACL",
+        status=None,
+        visibility=None,
+        has_files=None,
+        venue=None,
+        year=None,
+        page=1,
+        page_size=20,
+    )
+    key_matches, key_total = list_assets(
+        session,
+        asset_type=None,
+        query="venue",
+        status=None,
+        visibility=None,
+        has_files=None,
+        venue=None,
+        year=None,
+        page=1,
+        page_size=20,
+    )
+
+    assert value_total == 1
+    assert [item.id for item in value_matches] == [paper.id]
+    assert key_total == 0
+    assert key_matches == []
+
+
+def test_asset_pagination_has_a_stable_unique_order() -> None:
+    session = make_session()
+    assets = []
+    for index in range(5):
+        item = payload().model_copy(
+            update={"slug": f"stable-order-{index}", "title": "Shared title"}
+        )
+        assets.append(create_asset(session, item))
+    shared_time = session.get(Asset, assets[0].id).updated_at
+    for item in assets:
+        session.get(Asset, item.id).updated_at = shared_time
+    session.commit()
+
+    def pages() -> list[str]:
+        return [
+            str(item.id)
+            for page in range(1, 4)
+            for item in list_assets(
+                session,
+                asset_type=AssetType.DATASET,
+                query="Shared",
+                status=None,
+                visibility=None,
+                has_files=None,
+                venue=None,
+                year=None,
+                page=page,
+                page_size=2,
+            )[0]
+        ]
+
+    first_read = pages()
+    second_read = pages()
+
+    assert first_read == second_read
+    assert len(first_read) == len(set(first_read)) == 5
+
+
 def test_paper_catalogue_facets_follow_active_paper_metadata() -> None:
     session = make_session()
     acl = paper_payload()

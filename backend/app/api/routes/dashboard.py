@@ -4,14 +4,18 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.api.dependencies import AdminDependency
+from app.api.dependencies import AdminDependency, require_admin
 from app.db.session import get_session
 from app.domain.enums import AssetType, HealthStatus
 from app.domain.models import Activity, Asset, FileRecord, Tag, asset_tags
 from app.domain.schemas import ActivityListResponse, ActivitySummary, DashboardSummary
 from app.services.assets import asset_summary
 
-router = APIRouter(prefix="/dashboard", tags=["dashboard"])
+router = APIRouter(
+    prefix="/dashboard",
+    tags=["dashboard"],
+    dependencies=[Depends(require_admin)],
+)
 SessionDependency = Annotated[Session, Depends(get_session)]
 
 

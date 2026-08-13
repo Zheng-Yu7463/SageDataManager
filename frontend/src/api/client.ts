@@ -29,6 +29,7 @@ import type {
   ScanRunSummary,
   UnclaimedFileSummary,
 } from '@/types'
+import { expireSession, getSessionToken } from '@/session'
 
 class ApiError extends Error {
   constructor(
@@ -39,8 +40,16 @@ class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, signal?: AbortSignal, method = 'GET', body?: unknown): Promise<T> {
-  const sessionToken = window.localStorage.getItem('sage-session-token')
+type RequestAuthentication = 'session' | 'none'
+
+async function request<T>(
+  path: string,
+  signal?: AbortSignal,
+  method = 'GET',
+  body?: unknown,
+  authentication: RequestAuthentication = 'session',
+): Promise<T> {
+  const sessionToken = authentication === 'session' ? getSessionToken() : null
   const headers: Record<string, string> = { Accept: 'application/json' }
   if (body) headers['Content-Type'] = 'application/json'
   if (sessionToken) headers['X-Sage-Session'] = sessionToken
@@ -51,17 +60,22 @@ async function request<T>(path: string, signal?: AbortSignal, method = 'GET', bo
     body: body ? JSON.stringify(body) : undefined,
   })
   if (!response.ok) {
-    let message = `请求失败（${response.status}）`
-    try {
-      const payload = await response.json()
-      if (typeof payload.detail === 'string') message = payload.detail
-    } catch {
-      // Keep the HTTP status message when the response has no JSON body.
-    }
-    throw new ApiError(message, response.status)
+    await raiseApiError(response, Boolean(sessionToken))
   }
   if (response.status === 204) return undefined as T
   return response.json() as Promise<T>
+}
+
+async function raiseApiError(response: Response, authenticatedRequest: boolean): Promise<never> {
+  if (response.status === 401 && authenticatedRequest) expireSession()
+  let message = `请求失败（${response.status}）`
+  try {
+    const payload = await response.json()
+    if (typeof payload.detail === 'string') message = payload.detail
+  } catch {
+    // Keep the HTTP status message when the response has no JSON body.
+  }
+  throw new ApiError(message, response.status)
 }
 
 export function getDashboard(signal?: AbortSignal) {
@@ -185,7 +199,13 @@ export function getFileAccessTicket(fileId: string, mode: FileAccessMode) {
 }
 
 export function loginAccount(username: string, password: string) {
-  return request<AccountLoginResponse>('/api/auth/login', undefined, 'POST', { username, password })
+  return request<AccountLoginResponse>(
+    '/api/auth/login',
+    undefined,
+    'POST',
+    { username, password },
+    'none',
+  )
 }
 
 export function getCurrentAccount() {
@@ -213,7 +233,7 @@ export function updateInstanceBranding(input: InstanceBrandingInput) {
 }
 
 export async function uploadInstanceLogo(file: File) {
-  const sessionToken = window.localStorage.getItem('sage-session-token')
+  const sessionToken = getSessionToken()
   const response = await fetch('/api/settings/branding/logo', {
     method: 'PUT',
     headers: {
@@ -224,8 +244,7 @@ export async function uploadInstanceLogo(file: File) {
     body: file,
   })
   if (!response.ok) {
-    const payload = await response.json().catch(() => null) as { detail?: string } | null
-    throw new ApiError(payload?.detail ?? `请求失败（${response.status}）`, response.status)
+    await raiseApiError(response, Boolean(sessionToken))
   }
   return response.json() as Promise<InstanceBranding>
 }

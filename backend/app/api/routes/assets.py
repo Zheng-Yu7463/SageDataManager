@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import AdminDependency
+from app.api.dependencies import AdminDependency, require_admin
 from app.db.session import get_session
 from app.domain.enums import AssetType, Visibility
 from app.domain.schemas import (
@@ -52,7 +52,11 @@ from app.services.citations import (
     build_paper_citation_export,
 )
 
-router = APIRouter(prefix="/assets", tags=["assets"])
+router = APIRouter(
+    prefix="/assets",
+    tags=["assets"],
+    dependencies=[Depends(require_admin)],
+)
 SessionDependency = Annotated[Session, Depends(get_session)]
 
 

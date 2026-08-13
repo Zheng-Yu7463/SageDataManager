@@ -36,12 +36,17 @@ def make_session() -> Session:
 
 
 def create_file_record(
-    session: Session, root: Path, *, mime_type: str = "text/plain"
+    session: Session,
+    root: Path,
+    *,
+    mime_type: str = "text/plain",
+    file_name: str = "notes.txt",
+    content: bytes = b"controlled archive content",
 ) -> tuple[User, FileRecord]:
-    relative_path = "dataset/soil-samples/notes.txt"
+    relative_path = f"dataset/soil-samples/{file_name}"
     destination = root / relative_path
     destination.parent.mkdir(parents=True)
-    destination.write_text("controlled archive content", encoding="utf-8")
+    destination.write_bytes(content)
     owner = User(username="zhengyu", name="郑宇", email="zhengyu@sage.lab", role="admin")
     asset = Asset(
         type=AssetType.DATASET,
@@ -55,10 +60,10 @@ def create_file_record(
     record = FileRecord(
         asset=asset,
         relative_path=relative_path,
-        file_name="notes.txt",
+        file_name=file_name,
         file_kind="document",
         mime_type=mime_type,
-        file_size=26,
+        file_size=len(content),
         health_status=HealthStatus.HEALTHY,
     )
     session.add(record)
@@ -66,15 +71,15 @@ def create_file_record(
     return owner, record
 
 
-def test_prepare_delivery_uses_internal_uri_and_audits_access(tmp_path: Path) -> None:
+def test_prepare_delivery_resolves_file_and_audits_access(tmp_path: Path) -> None:
     session = make_session()
     actor, record = create_file_record(session, tmp_path)
 
     delivery = prepare_file_delivery(session, tmp_path, record.id, "download", actor=actor)
     session.commit()
 
-    assert delivery.internal_uri == "/_protected-files/dataset/soil-samples/notes.txt"
-    assert delivery.content_disposition.startswith("attachment;")
+    assert delivery.path == tmp_path / "dataset/soil-samples/notes.txt"
+    assert delivery.content_disposition == "attachment"
     assert session.scalar(select(Activity.action)) == "downloaded_file"
 
 
@@ -112,11 +117,18 @@ def test_file_ticket_is_bound_to_file_mode_and_account(tmp_path: Path) -> None:
     assert claims.username == "zhengyu"
 
 
-def test_file_content_endpoint_uses_ticket_and_accel_redirect(
+def test_file_content_endpoint_streams_original_pdf_bytes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     session = make_session()
-    actor, record = create_file_record(session, tmp_path)
+    pdf_content = b"%PDF-1.7\n1 0 obj<</Type/Catalog>>endobj\n%%EOF\n"
+    actor, record = create_file_record(
+        session,
+        tmp_path,
+        mime_type="application/pdf",
+        file_name="paper.pdf",
+        content=pdf_content,
+    )
     session.commit()
     monkeypatch.setattr(settings, "storage_root", tmp_path)
     monkeypatch.setattr(settings, "auth_session_secret", "test-session-secret")
@@ -134,8 +146,11 @@ def test_file_content_endpoint_uses_ticket_and_accel_redirect(
         content_response = client.get(ticket_response.json()["content_url"])
 
         assert content_response.status_code == 200
-        assert content_response.headers["x-accel-redirect"].endswith("/notes.txt")
+        assert content_response.content == pdf_content
+        assert content_response.headers["content-length"] == str(len(pdf_content))
+        assert content_response.headers["content-type"] == "application/pdf"
         assert content_response.headers["content-disposition"].startswith("attachment;")
+        assert "paper.pdf" in content_response.headers["content-disposition"]
         assert session.scalar(select(Activity.action)) == "downloaded_file"
     finally:
         app.dependency_overrides.clear()
@@ -147,13 +162,17 @@ def test_asset_detail_endpoint_returns_file_records(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     session = make_session()
-    _, record = create_file_record(session, tmp_path)
+    actor, record = create_file_record(session, tmp_path)
     session.commit()
     monkeypatch.setattr(settings, "storage_root", tmp_path)
+    monkeypatch.setattr(settings, "auth_session_secret", "test-session-secret")
     app.dependency_overrides[get_session] = lambda: session
     try:
         client = TestClient(app)
-        response = client.get(f"/api/assets/{record.asset_id}")
+        response = client.get(
+            f"/api/assets/{record.asset_id}",
+            headers={"X-Sage-Session": create_session_token(actor.username or "")},
+        )
 
         assert response.status_code == 200
         assert response.json()["files"][0]["relative_path"] == record.relative_path

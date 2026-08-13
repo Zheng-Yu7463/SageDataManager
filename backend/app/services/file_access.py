@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from urllib.parse import quote
 from uuid import UUID
 
 from sqlalchemy import select
@@ -42,7 +41,7 @@ class FilePreviewUnavailableError(FileAccessError):
 
 @dataclass(frozen=True)
 class ProtectedFileDelivery:
-    internal_uri: str
+    path: Path
     content_disposition: str
     media_type: str
 
@@ -92,7 +91,7 @@ def prepare_file_delivery(
     try:
         root = storage_root.resolve(strict=True)
         resolved_path = root.joinpath(*relative_path.parts).resolve(strict=True)
-        safe_relative_path = resolved_path.relative_to(root)
+        resolved_path.relative_to(root)
     except (OSError, ValueError):
         raise FileUnavailableError from None
     if not resolved_path.is_file():
@@ -109,9 +108,8 @@ def prepare_file_delivery(
         )
     )
     disposition = "inline" if mode == "preview" else "attachment"
-    filename = quote(record.file_name, safe="")
     return ProtectedFileDelivery(
-        internal_uri=f"/_protected-files/{quote(safe_relative_path.as_posix(), safe='/')}",
-        content_disposition=f"{disposition}; filename*=UTF-8''{filename}",
+        path=resolved_path,
+        content_disposition=disposition,
         media_type=record.mime_type or "application/octet-stream",
     )

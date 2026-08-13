@@ -4,7 +4,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import AdminDependency
+from app.api.dependencies import AdminDependency, require_admin
 from app.core.config import settings
 from app.db.session import get_session
 from app.domain.schemas import (
@@ -27,7 +27,11 @@ from app.services.unclaimed import (
     list_unclaimed_files,
 )
 
-router = APIRouter(prefix="/archive", tags=["archive"])
+router = APIRouter(
+    prefix="/archive",
+    tags=["archive"],
+    dependencies=[Depends(require_admin)],
+)
 SessionDependency = Annotated[Session, Depends(get_session)]
 
 

@@ -1,7 +1,11 @@
 import { expect, test, type Page } from '@playwright/test'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 
 function configuredPassword() {
+  if (process.env.SAGE_FIXED_ACCOUNT_PASSWORD) return process.env.SAGE_FIXED_ACCOUNT_PASSWORD
+  if (!existsSync('../.env')) {
+    throw new Error('SAGE_FIXED_ACCOUNT_PASSWORD is required for browser tests.')
+  }
   const content = readFileSync('../.env', 'utf8')
   const line = content
     .split(/\r?\n/)
@@ -63,6 +67,27 @@ test('账户菜单明确区分资料与退出操作', async ({ page }) => {
   await expect(page.getByRole('heading', { name: '实验室科研资产总览' })).toBeVisible()
 })
 
+test('运行中的失效会话会立即返回登录页', async ({ page }) => {
+  await signIn(page)
+  await page.evaluate(() => window.localStorage.setItem('sage-session-token', 'invalid-session'))
+  await page.goto('/papers')
+
+  await expect(page.getByRole('button', { name: '进入归档系统' })).toBeVisible()
+  await expect(page.locator('.app-shell')).toBeHidden()
+  await expect.poll(() => page.evaluate(() => window.localStorage.getItem('sage-session-token'))).toBeNull()
+})
+
+test('登录失败不会把匿名请求当作会话失效', async ({ page }) => {
+  await page.goto('/')
+  await page.evaluate(() => window.localStorage.setItem('sage-session-token', 'unrelated-token'))
+  await page.getByLabel('账号').fill('zhengyu')
+  await page.getByLabel('密码').fill('wrong-password')
+  await page.getByRole('button', { name: '进入归档系统' }).click()
+
+  await expect(page.getByText('账号或密码错误。')).toBeVisible()
+  await expect.poll(() => page.evaluate(() => window.localStorage.getItem('sage-session-token'))).toBe('unrelated-token')
+})
+
 test('弹窗锁定背景滚动并支持 Esc 关闭', async ({ page }) => {
   await signIn(page)
   await page.getByRole('link', { name: '论文 Papers', exact: true }).click()
@@ -112,6 +137,31 @@ test('目录筛选与视图状态可通过 URL 恢复', async ({ page }) => {
   await page.reload()
   await expect(page.getByLabel('收录会议')).toHaveValue('ICLR')
   await expect(page.getByRole('button', { name: '卡片视图' })).toHaveAttribute('aria-pressed', 'true')
+})
+
+test('目录筛选浮层支持键盘和外部关闭', async ({ page }) => {
+  await signIn(page)
+  await page.goto('/papers')
+  const trigger = page.getByRole('button', { name: /筛选条件/ })
+
+  await trigger.click()
+  await page.getByLabel('收录会议').selectOption('ICLR')
+  await expect(page.getByLabel('收录会议')).toBeVisible()
+  await expect(page).toHaveURL(/venue=ICLR/)
+
+  await page.keyboard.press('Escape')
+  await expect(page.getByLabel('收录会议')).toBeHidden()
+  await expect(trigger).toBeFocused()
+
+  await trigger.click()
+  await page.locator('.assets-heading-copy').click()
+  await expect(page.getByLabel('收录会议')).toBeHidden()
+
+  const layout = await page.evaluate(() => ({
+    viewportWidth: document.documentElement.clientWidth,
+    documentWidth: document.documentElement.scrollWidth,
+  }))
+  expect(layout.documentWidth).toBeLessThanOrEqual(layout.viewportWidth)
 })
 
 test('详情页返回到原目录状态', async ({ page }) => {

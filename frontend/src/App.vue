@@ -1,40 +1,36 @@
 <script setup lang="ts">
 import { NConfigProvider, NDialogProvider, NMessageProvider, zhCN, dateZhCN } from 'naive-ui'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted } from 'vue'
 
 import { getCurrentAccount } from '@/api/client'
 import AppShell from '@/components/AppShell.vue'
 import { useBranding } from '@/composables/useBranding'
 import LoginView from '@/views/LoginView.vue'
-import type { AccountLoginResponse, AccountSummary } from '@/types'
+import { getSessionToken, useSession } from '@/session'
+import type { AccountLoginResponse } from '@/types'
 
-const account = ref<AccountSummary | null>(null)
-const restoring = ref(true)
 const { branding, loadBranding } = useBranding()
+const { account, restoring, establishSession, completeSessionRestoration, expireSession } = useSession()
 
 async function restoreSession() {
   await loadBranding()
-  if (!window.localStorage.getItem('sage-session-token')) {
-    restoring.value = false
+  if (!getSessionToken()) {
+    completeSessionRestoration(null)
     return
   }
   try {
-    account.value = await getCurrentAccount()
+    completeSessionRestoration(await getCurrentAccount())
   } catch {
-    window.localStorage.removeItem('sage-session-token')
-  } finally {
-    restoring.value = false
+    expireSession()
   }
 }
 
 function completeLogin(response: AccountLoginResponse) {
-  window.localStorage.setItem('sage-session-token', response.session_token)
-  account.value = response
+  establishSession(response)
 }
 
 function signOut() {
-  window.localStorage.removeItem('sage-session-token')
-  account.value = null
+  expireSession()
 }
 
 onMounted(restoreSession)

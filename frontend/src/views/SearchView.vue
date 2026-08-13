@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ArrowRight, Search, X } from '@lucide/vue'
+import { ArrowLeft, ArrowRight, Search, X } from '@lucide/vue'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
@@ -7,7 +7,8 @@ import { getAssets } from '@/api/client'
 import { assetMeta } from '@/catalogue'
 import AssetIcon from '@/components/AssetIcon.vue'
 import { useBranding } from '@/composables/useBranding'
-import type { AssetListResponse } from '@/types'
+import { isPaperMetadata } from '@/types'
+import type { AssetListResponse, AssetSummary } from '@/types'
 
 const route = useRoute()
 const router = useRouter()
@@ -15,14 +16,27 @@ const query = ref('')
 const data = ref<AssetListResponse | null>(null)
 const loading = ref(false)
 const error = ref('')
+const page = ref(1)
+const pageSize = 20
 const { pageEyebrow } = useBranding()
 let controller: AbortController | undefined
 
 const resultLabel = computed(() => `${data.value?.total ?? 0} 项跨类型资产`)
+const pageCount = computed(() => Math.max(1, Math.ceil((data.value?.total ?? 0) / pageSize)))
 
-async function load(nextQuery: string) {
+function resultContext(asset: AssetSummary) {
+  if (asset.type === 'paper' && isPaperMetadata(asset.details)) {
+    const authors = asset.details.authors.slice(0, 3).join('、')
+    const remainder = asset.details.authors.length > 3 ? ` 等 ${asset.details.authors.length} 位作者` : ''
+    return `${authors}${remainder} · ${asset.details.venue} ${asset.details.year}`
+  }
+  return `负责人：${asset.owner.name}`
+}
+
+async function load(nextQuery: string, nextPage: number) {
   controller?.abort()
   query.value = nextQuery
+  page.value = nextPage
   if (!nextQuery) {
     data.value = null
     return
@@ -31,7 +45,7 @@ async function load(nextQuery: string) {
   loading.value = true
   error.value = ''
   try {
-    data.value = await getAssets(undefined, { query: nextQuery, pageSize: 50 }, controller.signal)
+    data.value = await getAssets(undefined, { query: nextQuery, page: nextPage, pageSize }, controller.signal)
   } catch (reason) {
     if (reason instanceof DOMException && reason.name === 'AbortError') return
     error.value = reason instanceof Error ? reason.message : '搜索失败'
@@ -50,9 +64,16 @@ function clear() {
   router.push({ name: 'search' })
 }
 
+function goToPage(nextPage: number) {
+  router.push({ name: 'search', query: { q: query.value, page: String(nextPage) } })
+}
+
 watch(
-  () => route.query.q,
-  (value) => load(typeof value === 'string' ? value.trim() : ''),
+  () => [route.query.q, route.query.page],
+  ([queryValue, pageValue]) => {
+    const nextPage = typeof pageValue === 'string' && /^\d+$/.test(pageValue) ? Number(pageValue) : 1
+    return load(typeof queryValue === 'string' ? queryValue.trim() : '', nextPage)
+  },
   { immediate: true },
 )
 onBeforeUnmount(() => controller?.abort())
@@ -93,6 +114,7 @@ onBeforeUnmount(() => controller?.abort())
         :key="asset.id"
         :to="{ name: 'asset-detail', params: { assetId: asset.id }, query: { returnTo: route.fullPath } }"
         class="search-result"
+        :aria-label="`查看${assetMeta[asset.type].label}：${asset.title}`"
       >
         <span class="catalogue-card-icon" :style="{ color: assetMeta[asset.type].color, background: assetMeta[asset.type].softColor }">
           <AssetIcon :type="asset.type" :size="21" />
@@ -100,10 +122,16 @@ onBeforeUnmount(() => controller?.abort())
         <span class="search-result-copy">
           <span><em :style="{ color: assetMeta[asset.type].color }">{{ assetMeta[asset.type].label }}</em>{{ asset.title }}</span>
           <small>{{ asset.summary }}</small>
+          <small class="search-result-context">{{ resultContext(asset) }}</small>
         </span>
         <span class="tag-list"><span v-for="tag in asset.tags.slice(0, 3)" :key="tag">{{ tag }}</span></span>
         <ArrowRight :size="18" />
       </RouterLink>
     </section>
+    <nav v-if="data && pageCount > 1" class="pagination" aria-label="搜索结果分页">
+      <button :disabled="page <= 1" @click="goToPage(page - 1)"><ArrowLeft :size="14" />上一页</button>
+      <span>第 {{ page }} / {{ pageCount }} 页</span>
+      <button :disabled="page >= pageCount" @click="goToPage(page + 1)">下一页<ArrowRight :size="14" /></button>
+    </nav>
   </div>
 </template>

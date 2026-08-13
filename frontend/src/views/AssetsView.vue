@@ -26,6 +26,7 @@ import AssetIcon from '@/components/AssetIcon.vue'
 import { createAsset, exportPaperCitations, getAssets, getPaperCitation, getUploadCommand } from '@/api/client'
 import { assetMeta } from '@/catalogue'
 import { useOverlayFocus } from '@/composables/useOverlayFocus'
+import { useDismissiblePopover } from '@/composables/useDismissiblePopover'
 import { useBranding } from '@/composables/useBranding'
 import { isPaperMetadata } from '@/types'
 import type { AssetListResponse, AssetSummary, AssetType, PaperMetadata, UploadCommandResult, Visibility } from '@/types'
@@ -38,6 +39,8 @@ const data = ref<AssetListResponse | null>(null)
 const loading = ref(false)
 const error = ref('')
 const filtersOpen = ref(false)
+const filterTrigger = ref<HTMLElement | null>(null)
+const filterPopover = ref<HTMLElement | null>(null)
 const filters = ref({
   status: '',
   visibility: '',
@@ -125,6 +128,7 @@ const registrationValid = computed(() => {
 
 useOverlayFocus(registrationOpen, registrationDialog, closeRegistration)
 useOverlayFocus(uploadOpen, uploadDialog, closeUpload)
+useDismissiblePopover(filtersOpen, filterTrigger, filterPopover)
 
 function queryValue(key: string) {
   const value = route.query[key]
@@ -459,14 +463,26 @@ onBeforeUnmount(() => controller?.abort())
       </label>
       <div class="asset-filters">
         <button
+          id="catalogue-filter-trigger"
+          ref="filterTrigger"
+          type="button"
           class="filter-button"
           :class="{ active: filtersOpen || activeFilterCount }"
           :aria-expanded="filtersOpen"
+          aria-controls="catalogue-filter-popover"
+          aria-haspopup="true"
           @click="filtersOpen = !filtersOpen"
         >
           <SlidersHorizontal :size="17" /> 筛选条件 <span>{{ activeFilterCount }}</span>
         </button>
-        <section v-if="filtersOpen" class="filter-popover" aria-label="结构化筛选">
+        <section
+          v-if="filtersOpen"
+          id="catalogue-filter-popover"
+          ref="filterPopover"
+          class="filter-popover"
+          role="group"
+          aria-labelledby="catalogue-filter-trigger"
+        >
           <label>
             状态
             <select v-model="filters.status" @change="applyFilters">

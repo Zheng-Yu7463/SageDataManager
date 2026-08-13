@@ -1,11 +1,12 @@
+import re
 from datetime import UTC, datetime
 from uuid import UUID
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import Text, and_, case, cast, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.domain.enums import AssetType, Visibility
-from app.domain.models import Activity, Asset, AssetRelation, AssetVersion, Tag, User
+from app.domain.models import Activity, Asset, AssetRelation, AssetVersion, FileRecord, Tag, User
 from app.domain.schemas import (
     ActivitySummary,
     AssetCreateRequest,
@@ -364,11 +365,105 @@ def list_assets(
             selectinload(Asset.versions),
             selectinload(Asset.files),
         )
-        .order_by(Asset.updated_at.desc())
-        .offset((page - 1) * page_size)
-        .limit(page_size)
     )
+    if search_terms := _search_terms(query):
+        statement = statement.order_by(
+            _search_relevance(query or "", search_terms).desc(),
+            Asset.updated_at.desc(),
+            Asset.id.asc(),
+        )
+    else:
+        statement = statement.order_by(Asset.updated_at.desc(), Asset.id.asc())
+    statement = statement.offset((page - 1) * page_size).limit(page_size)
     return [asset_summary(item) for item in session.scalars(statement).all()], total
+
+
+def _search_terms(query: str | None) -> list[str]:
+    if not query:
+        return []
+    tokens = [quoted or plain for quoted, plain in re.findall(r'"([^"]+)"|(\S+)', query)]
+    terms: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        normalized = " ".join(token.split())
+        identity = normalized.casefold()
+        if normalized and identity not in seen:
+            seen.add(identity)
+            terms.append(normalized)
+    return terms[:12]
+
+
+def _contains_pattern(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def _prefix_pattern(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"{escaped}%"
+
+
+def _paper_search_fields():
+    return (
+        cast(Asset.details["authors"], Text),
+        cast(Asset.details["venue"], Text),
+        cast(Asset.details["year"], Text),
+        cast(Asset.details["track"], Text),
+        cast(Asset.details["source_id"], Text),
+        cast(Asset.details["doi"], Text),
+        cast(Asset.details["booktitle"], Text),
+        cast(Asset.details["publisher"], Text),
+    )
+
+
+def _paper_metadata_matches(pattern: str):
+    return and_(
+        Asset.type == AssetType.PAPER,
+        or_(*(field.ilike(pattern, escape="\\") for field in _paper_search_fields())),
+    )
+
+
+def _term_matches(term: str):
+    pattern = _contains_pattern(term)
+    return or_(
+        Asset.title.ilike(pattern, escape="\\"),
+        Asset.summary.ilike(pattern, escape="\\"),
+        Asset.tags.any(Tag.name.ilike(pattern, escape="\\")),
+        Asset.owner.has(User.name.ilike(pattern, escape="\\")),
+        Asset.files.any(FileRecord.file_name.ilike(pattern, escape="\\")),
+        _paper_metadata_matches(pattern),
+    )
+
+
+def _search_relevance(query: str, terms: list[str]):
+    phrase = " ".join(query.strip().strip('"').split())
+    phrase_pattern = _contains_pattern(phrase)
+    score = case((func.lower(Asset.title) == phrase.casefold(), 160), else_=0)
+    score += case((Asset.title.ilike(_prefix_pattern(phrase), escape="\\"), 100), else_=0)
+    score += case((Asset.title.ilike(phrase_pattern, escape="\\"), 80), else_=0)
+    score += case(
+        (Asset.tags.any(Tag.name.ilike(phrase_pattern, escape="\\")), 65), else_=0
+    )
+    score += case(
+        (Asset.owner.has(User.name.ilike(phrase_pattern, escape="\\")), 55), else_=0
+    )
+    score += case((Asset.summary.ilike(phrase_pattern, escape="\\"), 40), else_=0)
+    score += case((_paper_metadata_matches(phrase_pattern), 35), else_=0)
+    score += case(
+        (Asset.files.any(FileRecord.file_name.ilike(phrase_pattern, escape="\\")), 30),
+        else_=0,
+    )
+    for term in terms:
+        pattern = _contains_pattern(term)
+        score += case((Asset.title.ilike(pattern, escape="\\"), 45), else_=0)
+        score += case((Asset.tags.any(Tag.name.ilike(pattern, escape="\\")), 35), else_=0)
+        score += case((Asset.owner.has(User.name.ilike(pattern, escape="\\")), 20), else_=0)
+        score += case((Asset.summary.ilike(pattern, escape="\\"), 12), else_=0)
+        score += case(
+            (Asset.files.any(FileRecord.file_name.ilike(pattern, escape="\\")), 10), else_=0
+        )
+        score += case((_paper_metadata_matches(pattern), 8), else_=0)
+    return score
 
 
 def _asset_filters(
@@ -398,15 +493,8 @@ def _asset_filters(
         )
     if year is not None:
         filters.extend([Asset.type == AssetType.PAPER, Asset.details["year"].as_integer() == year])
-    if query:
-        pattern = f"%{query.strip()}%"
-        filters.append(
-            or_(
-                Asset.title.ilike(pattern),
-                Asset.summary.ilike(pattern),
-                Asset.tags.any(Tag.name.ilike(pattern)),
-            )
-        )
+    if terms := _search_terms(query):
+        filters.append(and_(*(_term_matches(term) for term in terms)))
 
     return filters
 
@@ -439,7 +527,11 @@ def list_papers_for_citation_export(
             selectinload(Asset.versions),
             selectinload(Asset.files),
         )
-        .order_by(Asset.details["year"].as_integer().desc(), Asset.title)
+        .order_by(
+            Asset.details["year"].as_integer().desc(),
+            Asset.title.asc(),
+            Asset.id.asc(),
+        )
     )
     return [asset_summary(item) for item in session.scalars(statement).all()]
 

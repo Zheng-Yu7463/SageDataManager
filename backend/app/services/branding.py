@@ -11,7 +11,7 @@ DEFAULT_BRANDING = {
     "product_name": "SAGE",
     "product_subtitle": "RESEARCH ARCHIVE",
     "organization_name": "SAGE Lab",
-    "slogan": "求真 · 典藏 · 生长 · 卓越",
+    "slogan": "科学 · 数据 · 成长 · 卓越",
     "slogan_secondary": "Science · Archive · Growth · Excellence",
     "primary_color": "#2E7351",
 }
