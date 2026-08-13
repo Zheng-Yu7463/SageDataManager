@@ -191,6 +191,7 @@ def create_access_ticket(
     )
 
 
+@router.head("/{file_id}/content", include_in_schema=False)
 @router.get("/{file_id}/content")
 def content(
     file_id: UUID,

@@ -255,6 +255,34 @@ def test_file_content_endpoint_streams_original_pdf_bytes(
         assert range_response.status_code == 206
         assert range_response.content == pdf_content[:10]
         assert range_response.headers["content-range"] == f"bytes 0-9/{len(pdf_content)}"
+        suffix_range_response = client.get(
+            ticket_response.json()["content_url"], headers={"Range": "bytes=-8"}
+        )
+        assert suffix_range_response.status_code == 206
+        assert suffix_range_response.content == pdf_content[-8:]
+        assert suffix_range_response.headers["content-range"] == (
+            f"bytes {len(pdf_content) - 8}-{len(pdf_content) - 1}/{len(pdf_content)}"
+        )
+        open_range_response = client.get(
+            ticket_response.json()["content_url"], headers={"Range": "bytes=10-"}
+        )
+        assert open_range_response.status_code == 206
+        assert open_range_response.content == pdf_content[10:]
+        assert open_range_response.headers["content-range"] == (
+            f"bytes 10-{len(pdf_content) - 1}/{len(pdf_content)}"
+        )
+        head_response = client.head(ticket_response.json()["content_url"])
+        assert head_response.status_code == 200
+        assert head_response.content == b""
+        assert head_response.headers["content-length"] == str(len(pdf_content))
+        unsatisfiable_range_response = client.get(
+            ticket_response.json()["content_url"],
+            headers={"Range": f"bytes={len(pdf_content)}-"},
+        )
+        assert unsatisfiable_range_response.status_code == 416
+        assert unsatisfiable_range_response.headers["content-range"] == (
+            f"bytes */{len(pdf_content)}"
+        )
         assert session.scalars(select(Activity.action)).all() == ["downloaded_file"]
         grant = session.scalar(select(FileAccessGrant))
         assert grant is not None
