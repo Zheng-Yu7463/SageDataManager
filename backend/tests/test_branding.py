@@ -43,8 +43,8 @@ def test_branding_is_public_and_updates_require_admin(monkeypatch) -> None:
             "product_name": "SAGE",
             "product_subtitle": "RESEARCH ARCHIVE",
             "organization_name": "SAGE Lab",
-            "slogan": "科学 · 归档 · 成长 · 演进",
-            "slogan_secondary": "Science · Archive · Growth · Evolution",
+            "slogan": "求真 · 典藏 · 生长 · 卓越",
+            "slogan_secondary": "Science · Archive · Growth · Excellence",
             "primary_color": "#2E7351",
             "logo_url": None,
         }
