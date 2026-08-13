@@ -3,8 +3,10 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import Text, and_, case, cast, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
+from app.db.constraints import violates_constraint
 from app.domain.activity import ActivityAction
 from app.domain.enums import AssetType, Visibility
 from app.domain.models import Activity, Asset, AssetRelation, AssetVersion, FileRecord, Tag, User
@@ -64,6 +66,9 @@ class AssetMetadataError(Exception):
     def __init__(self, message: str):
         self.message = message
         super().__init__(message)
+
+
+ASSET_RELATION_UNIQUE_CONSTRAINT = "uq_asset_relations_identity"
 
 
 def asset_summary(asset: Asset) -> AssetSummary:
@@ -615,7 +620,12 @@ def add_asset_relation(
         source_asset_id=source.id, target_asset_id=target.id, relation_type=relation_type
     )
     session.add(relation)
-    session.flush()
+    try:
+        session.flush()
+    except IntegrityError as error:
+        if violates_constraint(error, ASSET_RELATION_UNIQUE_CONSTRAINT):
+            raise AssetRelationError("相同的关联已存在。") from error
+        raise
     session.add(
         Activity(
             asset=source,

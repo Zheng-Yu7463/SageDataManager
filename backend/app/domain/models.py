@@ -166,6 +166,14 @@ class Tag(Base):
 
 class AssetRelation(Base):
     __tablename__ = "asset_relations"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_asset_id",
+            "target_asset_id",
+            "relation_type",
+            name="uq_asset_relations_identity",
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     source_asset_id: Mapped[UUID] = mapped_column(

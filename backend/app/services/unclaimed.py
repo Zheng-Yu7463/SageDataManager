@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.db.constraints import violates_constraint
 from app.domain.activity import ActivityAction
 from app.domain.enums import HealthStatus
 from app.domain.models import Activity, Asset, FileRecord, UnclaimedFile, User
@@ -40,11 +41,6 @@ FILE_PATH_UNIQUE_CONSTRAINT = "uq_asset_files_relative_path"
 
 def locked_unclaimed_file_statement(unclaimed_file_id: UUID):
     return select(UnclaimedFile).where(UnclaimedFile.id == unclaimed_file_id).with_for_update()
-
-
-def is_file_path_unique_violation(error: IntegrityError) -> bool:
-    diagnostic = getattr(error.orig, "diag", None)
-    return getattr(diagnostic, "constraint_name", None) == FILE_PATH_UNIQUE_CONSTRAINT
 
 
 def file_kind(path: Path) -> str:
@@ -161,7 +157,7 @@ def claim_unclaimed_file(
     try:
         session.flush()
     except IntegrityError as error:
-        if is_file_path_unique_violation(error):
+        if violates_constraint(error, FILE_PATH_UNIQUE_CONSTRAINT):
             raise FilePathConflictError from error
         raise
     return FileClaimResult(asset_id=asset.id, file=FileSummary.model_validate(file_record))

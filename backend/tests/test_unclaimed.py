@@ -13,6 +13,7 @@ from app.api import dependencies
 from app.api.routes import archive as archive_routes
 from app.core.config import settings
 from app.db.base import Base
+from app.db.constraints import violates_constraint
 from app.db.session import get_session
 from app.domain.enums import AssetType, HealthStatus, Visibility
 from app.domain.models import Activity, Asset, FileRecord, UnclaimedFile, User
@@ -22,7 +23,6 @@ from app.services.security import create_session_token
 from app.services.unclaimed import (
     FilePathConflictError,
     claim_unclaimed_file,
-    is_file_path_unique_violation,
     list_unclaimed_files,
     locked_unclaimed_file_statement,
     sync_unclaimed_files,
@@ -156,8 +156,8 @@ def test_only_the_archive_path_constraint_is_mapped_to_a_domain_conflict() -> No
     )
     unrelated_conflict = IntegrityError("insert", {}, DatabaseError("other_constraint"))
 
-    assert is_file_path_unique_violation(path_conflict)
-    assert not is_file_path_unique_violation(unrelated_conflict)
+    assert violates_constraint(path_conflict, "uq_asset_files_relative_path")
+    assert not violates_constraint(unrelated_conflict, "uq_asset_files_relative_path")
 
 
 def test_claim_rejects_a_path_owned_by_another_asset_without_activity(tmp_path: Path) -> None:

@@ -1,10 +1,11 @@
 import pytest
 from sqlalchemy import create_engine, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.base import Base
 from app.domain.enums import AssetType, Visibility
-from app.domain.models import Activity, Asset, AssetVersion, FileRecord, Tag, User
+from app.domain.models import Activity, Asset, AssetRelation, AssetVersion, FileRecord, Tag, User
 from app.domain.schemas import (
     AssetCreateRequest,
     AssetRelationCreateRequest,
@@ -14,6 +15,7 @@ from app.domain.schemas import (
 )
 from app.services.assets import (
     AssetMetadataError,
+    AssetRelationError,
     AssetSlugConflictError,
     BatchAssetImportError,
     add_asset_relation,
@@ -538,6 +540,93 @@ def test_asset_relation_can_be_created_and_removed() -> None:
     refreshed = get_asset(session, source.id)
     assert refreshed is not None
     assert refreshed.related_assets == []
+
+
+def test_asset_relation_identity_is_unique_but_direction_and_type_are_distinct() -> None:
+    session = make_session()
+    source = create_asset(session, payload())
+    target = create_asset(
+        session,
+        payload().model_copy(
+            update={"slug": "relation-target", "title": "关系目标资产"}
+        ),
+    )
+    session.add_all(
+        [
+            AssetRelation(
+                source_asset_id=source.id,
+                target_asset_id=target.id,
+                relation_type="documents",
+            ),
+            AssetRelation(
+                source_asset_id=target.id,
+                target_asset_id=source.id,
+                relation_type="documents",
+            ),
+            AssetRelation(
+                source_asset_id=source.id,
+                target_asset_id=target.id,
+                relation_type="derived-from",
+            ),
+        ]
+    )
+    session.flush()
+    session.add(
+        AssetRelation(
+            source_asset_id=source.id,
+            target_asset_id=target.id,
+            relation_type="documents",
+        )
+    )
+
+    with pytest.raises(IntegrityError):
+        session.flush()
+
+
+def test_asset_relation_constraint_conflict_becomes_a_domain_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = make_session()
+    source = create_asset(session, payload())
+    target = create_asset(
+        session,
+        payload().model_copy(
+            update={"slug": "relation-conflict-target", "title": "关系冲突目标"}
+        ),
+    )
+    actor = session.get(User, source.owner.id)
+    assert actor is not None
+    session.commit()
+
+    class Diagnostic:
+        constraint_name = "uq_asset_relations_identity"
+
+    class DatabaseError(Exception):
+        diag = Diagnostic()
+
+    original_flush = session.flush
+
+    def flush_with_relation_conflict(*args, **kwargs) -> None:
+        if any(isinstance(item, AssetRelation) for item in session.new):
+            raise IntegrityError("insert", {}, DatabaseError())
+        original_flush(*args, **kwargs)
+
+    monkeypatch.setattr(session, "flush", flush_with_relation_conflict)
+
+    with pytest.raises(AssetRelationError, match="相同的关联已存在"):
+        add_asset_relation(
+            session,
+            source.id,
+            AssetRelationCreateRequest(
+                target_asset_id=target.id,
+                relation_type="documents",
+            ),
+            actor=actor,
+        )
+
+    assert not any(isinstance(item, Activity) for item in session.new)
+    session.rollback()
+    assert session.scalars(select(Activity).where(Activity.action == "linked_asset")).all() == []
 
 
 def test_asset_version_can_be_added_and_marked_current() -> None:
