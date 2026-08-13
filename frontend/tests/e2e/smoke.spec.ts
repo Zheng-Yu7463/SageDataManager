@@ -502,11 +502,14 @@ test('品牌写操作共享同一个事务状态', async ({ page }) => {
   await expect(page.getByRole('button', { name: '正在保存' })).toBeDisabled()
   await expect(page.getByRole('button', { name: '上传图片' })).toBeDisabled()
   await expect(page.getByLabel('选择实例 Logo 图片')).toBeDisabled()
+  await expect(page.getByLabel('产品名称')).toBeDisabled()
+  await expect(page.getByLabel('品牌主色色值')).toBeDisabled()
 
   releaseBrandingUpdate()
   await expect(page.getByText('品牌设置已应用')).toBeVisible()
   await expect(page.getByRole('button', { name: '保存品牌设置' })).toBeEnabled()
   await expect(page.getByRole('button', { name: '上传图片' })).toBeEnabled()
+  await expect(page.getByLabel('产品名称')).toBeEnabled()
 })
 
 test('设置页令牌加载失败不影响管理员账号事实', async ({ page }) => {

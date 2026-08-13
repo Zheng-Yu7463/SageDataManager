@@ -324,16 +324,16 @@ onMounted(load)
       <div class="branding-workspace">
         <form class="branding-form" @submit.prevent="saveBranding">
           <div class="branding-fields branding-fields--names">
-            <label>产品名称<input v-model="brandingForm.product_name" required maxlength="80" placeholder="例如：SAGE" /></label>
-            <label>产品副标题<input v-model="brandingForm.product_subtitle" required maxlength="120" placeholder="例如：RESEARCH ARCHIVE" /></label>
-            <label>组织名称<input v-model="brandingForm.organization_name" required maxlength="120" placeholder="例如：SAGE Lab" /></label>
+            <label>产品名称<input v-model="brandingForm.product_name" :disabled="brandingUpdating" required maxlength="80" placeholder="例如：SAGE" /></label>
+            <label>产品副标题<input v-model="brandingForm.product_subtitle" :disabled="brandingUpdating" required maxlength="120" placeholder="例如：RESEARCH ARCHIVE" /></label>
+            <label>组织名称<input v-model="brandingForm.organization_name" :disabled="brandingUpdating" required maxlength="120" placeholder="例如：SAGE Lab" /></label>
           </div>
           <div class="branding-fields branding-fields--slogans">
-            <label>主标语<input v-model="brandingForm.slogan" required maxlength="160" placeholder="例如：科学 · 数据 · 成长 · 卓越" /></label>
-            <label>辅助标语<input v-model="brandingForm.slogan_secondary" required maxlength="160" placeholder="例如：Science · Archive · Growth · Excellence" /></label>
+            <label>主标语<input v-model="brandingForm.slogan" :disabled="brandingUpdating" required maxlength="160" placeholder="例如：科学 · 数据 · 成长 · 卓越" /></label>
+            <label>辅助标语<input v-model="brandingForm.slogan_secondary" :disabled="brandingUpdating" required maxlength="160" placeholder="例如：Science · Archive · Growth · Excellence" /></label>
           </div>
           <div class="branding-controls">
-            <label class="color-field">品牌主色<span><input v-model="brandingForm.primary_color" type="color" /><input v-model="brandingForm.primary_color" required maxlength="7" pattern="#[0-9A-Fa-f]{6}" aria-label="品牌主色色值" /></span></label>
+            <label class="color-field">品牌主色<span><input v-model="brandingForm.primary_color" type="color" :disabled="brandingUpdating" /><input v-model="brandingForm.primary_color" :disabled="brandingUpdating" required maxlength="7" pattern="#[0-9A-Fa-f]{6}" aria-label="品牌主色色值" /></span></label>
             <div class="logo-control"><span>实例 Logo</span><div><input ref="logoInput" class="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp" aria-label="选择实例 Logo 图片" :disabled="brandingUpdating" @change="selectLogo" /><button class="button button--outline" type="button" :disabled="brandingUpdating" @click="logoInput?.click()"><ImageUp :size="15" />{{ logoUpdating ? '处理中' : '上传图片' }}</button><button v-if="branding.logo_url" class="button button--quiet" type="button" :disabled="brandingUpdating" @click="restoreDefaultLogo"><RotateCcw :size="15" />恢复默认</button></div><small>PNG、JPEG 或 WebP，最大 1 MB</small></div>
           </div>
           <div class="branding-feedback"><p v-if="brandingError" class="settings-error" role="alert">{{ brandingError }}</p><p v-else-if="brandingMessage" class="settings-success" role="status"><Check :size="14" />{{ brandingMessage }}</p><button class="button button--primary" :disabled="brandingUpdating" type="submit"><Save :size="16" />{{ brandingSaving ? '正在保存' : '保存品牌设置' }}</button></div>
