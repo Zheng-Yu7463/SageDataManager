@@ -10,10 +10,10 @@ import sqlalchemy as sa
 BACKEND_ROOT = Path(__file__).parents[1]
 
 
-def run_alembic(database_url: str, *arguments: str) -> None:
+def run_alembic_process(database_url: str, *arguments: str) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     environment["SAGE_DATABASE_URL"] = database_url
-    result = subprocess.run(
+    return subprocess.run(
         [sys.executable, "-m", "alembic", *arguments],
         cwd=BACKEND_ROOT,
         env=environment,
@@ -21,6 +21,10 @@ def run_alembic(database_url: str, *arguments: str) -> None:
         capture_output=True,
         text=True,
     )
+
+
+def run_alembic(database_url: str, *arguments: str) -> None:
+    result = run_alembic_process(database_url, *arguments)
     assert result.returncode == 0, result.stderr
 
 
@@ -131,3 +135,64 @@ def test_publication_identity_migration_backfills_existing_records(tmp_path: Pat
 
     assert [kind for kind, _ in identities] == ["doi", "source_id", "title_author"]
     assert all(len(digest) == 64 for _, digest in identities)
+
+
+def test_publication_identity_migration_can_retry_after_duplicate_preflight(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "duplicate-publications.db"
+    database_url = f"sqlite:///{database_path}"
+    run_alembic(database_url, "upgrade", "20260814_0015")
+
+    engine = sa.create_engine(database_url)
+    owner_id = uuid4()
+    duplicate_ids = (uuid4(), uuid4())
+    now = datetime.now(UTC).isoformat()
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text(
+                "INSERT INTO users "
+                "(id, name, email, username, role, is_active) "
+                "VALUES (:id, 'Admin', 'admin@example.org', 'admin', 'admin', 1)"
+            ),
+            {"id": owner_id.hex},
+        )
+        for index, asset_id in enumerate(duplicate_ids):
+            connection.execute(
+                sa.text(
+                    "INSERT INTO assets "
+                    "(id, type, slug, title, summary, status, visibility, owner_id, "
+                    "details, created_at, updated_at) VALUES "
+                    "(:id, 'LITERATURE', :slug, 'Duplicate Publication', '', "
+                    "'published', 'LAB', :owner_id, :details, :now, :now)"
+                ),
+                {
+                    "id": asset_id.hex,
+                    "slug": f"duplicate-publication-{index}",
+                    "owner_id": owner_id.hex,
+                    "details": '{"authors":["Same Author"],"source_id":"same-source"}',
+                    "now": now,
+                },
+            )
+
+    failed = run_alembic_process(database_url, "upgrade", "head")
+    assert failed.returncode != 0
+    assert "检测到重复出版物身份" in failed.stderr
+    with engine.connect() as connection:
+        assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == (
+            "20260814_0015"
+        )
+        assert not sa.inspect(connection).has_table("publication_identity_keys")
+
+    with engine.begin() as connection:
+        connection.execute(
+            sa.text("DELETE FROM assets WHERE id = :id"),
+            {"id": duplicate_ids[1].hex},
+        )
+    run_alembic(database_url, "upgrade", "head")
+
+    with engine.connect() as connection:
+        assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == (
+            "20260814_0016"
+        )
+        assert sa.inspect(connection).has_table("publication_identity_keys")

@@ -20,6 +20,7 @@ const data = ref<AssetDetail | null>(null)
 const loading = ref(true)
 const error = ref('')
 let controller: AbortController | undefined
+let fileAccessController: AbortController | undefined
 const fileActionId = ref<string | null>(null)
 const fileActionError = ref('')
 const previewingFile = ref<FileSummary | null>(null)
@@ -217,10 +218,15 @@ function canPreview(file: FileSummary) {
 }
 
 async function accessFile(file: FileSummary, mode: FileAccessMode) {
+  fileAccessController?.abort()
+  const requestController = new AbortController()
+  const assetId = data.value?.id
+  fileAccessController = requestController
   fileActionId.value = file.id
   fileActionError.value = ''
   try {
-    const ticket = await getFileAccessTicket(file.id, mode)
+    const ticket = await getFileAccessTicket(file.id, mode, requestController.signal)
+    if (fileAccessController !== requestController || data.value?.id !== assetId) return
     if (mode === 'preview') {
       previewingFile.value = file
       previewUrl.value = ticket.content_url
@@ -233,9 +239,14 @@ async function accessFile(file: FileSummary, mode: FileAccessMode) {
     link.click()
     link.remove()
   } catch (reason) {
+    if (fileAccessController !== requestController) return
+    if (reason instanceof DOMException && reason.name === 'AbortError') return
     fileActionError.value = reason instanceof Error ? reason.message : '文件操作失败'
   } finally {
-    fileActionId.value = null
+    if (fileAccessController === requestController) {
+      fileAccessController = undefined
+      fileActionId.value = null
+    }
   }
 }
 
@@ -422,9 +433,37 @@ async function removeRelation(relation: RelatedAssetSummary) {
   }
 }
 
-watch(() => route.params.assetId, load, { immediate: true })
+function resetAssetContext() {
+  fileAccessController?.abort()
+  fileAccessController = undefined
+  fileActionId.value = null
+  fileActionError.value = ''
+  previewingFile.value = null
+  previewUrl.value = ''
+  editOpen.value = false
+  editError.value = ''
+  versionOpen.value = false
+  versionError.value = ''
+  relationCandidatesController?.abort()
+  relationCandidatesController = undefined
+  relationOpen.value = false
+  relationCandidates.value = []
+  relationError.value = ''
+  relationTargetId.value = ''
+  actionError.value = ''
+}
+
+watch(
+  () => route.params.assetId,
+  () => {
+    resetAssetContext()
+    void load()
+  },
+  { immediate: true },
+)
 onBeforeUnmount(() => {
   controller?.abort()
+  fileAccessController?.abort()
   relationCandidatesController?.abort()
   closePreview()
 })

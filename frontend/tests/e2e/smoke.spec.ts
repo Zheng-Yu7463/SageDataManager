@@ -509,6 +509,66 @@ test('批量导入文件选择器支持页面声明的三种格式', async ({ pa
   await expect(page.getByLabel('导入数据内容')).toBeVisible()
 })
 
+test('批量导入支持粘贴 YAML 并定位结构化校验错误', async ({ page }) => {
+  await page.route('**/api/dashboard', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        counts: { paper: 0, dataset: 0, literature: 0, project: 0, model: 0 },
+        total_storage_bytes: 0,
+        healthy_files: 0,
+        missing_files: 0,
+        recent_assets: [],
+        recent_activities: [],
+        popular_tags: [],
+      }),
+    })
+  })
+  await page.route('**/api/assets/import/yaml', async (route) => {
+    await route.fulfill({
+      status: 201,
+      contentType: 'application/json',
+      body: JSON.stringify({ created: [{ title: 'YAML 粘贴资产' }] }),
+    })
+  })
+  await page.route('**/api/assets/import', async (route) => {
+    await route.fulfill({
+      status: 422,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        detail: [{
+          type: 'enum',
+          loc: ['body', 'assets', 1, 'type'],
+          msg: 'Input should be a valid asset type',
+          input: 'unknown',
+        }],
+      }),
+    })
+  })
+  await signInWithMockAccount(page)
+  await page.goto('/import-assets')
+
+  await page.getByRole('button', { name: 'YAML' }).click()
+  await page.getByLabel('导入数据内容').fill([
+    'assets:',
+    '  - type: dataset',
+    '    slug: yaml-pasted-asset',
+    '    title: YAML 粘贴资产',
+  ].join('\n'))
+  await page.getByRole('button', { name: '验证并导入' }).click()
+  await expect(page.getByText('已创建 1 条资产')).toBeVisible()
+  await expect(page.getByText('YAML 粘贴资产', { exact: true })).toBeVisible()
+
+  await page.getByRole('button', { name: 'JSON' }).click()
+  await page.getByLabel('导入数据内容').fill(JSON.stringify([
+    { type: 'dataset', slug: 'valid-record', title: 'Valid Record' },
+    { type: 'unknown', slug: 'invalid-record', title: 'Invalid Record' },
+  ]))
+  await page.getByRole('button', { name: '验证并导入' }).click()
+  await expect(page.getByRole('alert')).toContainText('第 2 条 · type：Input should be a valid asset type')
+  await expect(page.getByRole('alert')).not.toContainText('请求失败（422）')
+})
+
 test('CSV 导入支持 BOM、转义引号和跨行字段', async ({ page }) => {
   await signIn(page)
   await page.goto('/import-assets')
@@ -625,6 +685,69 @@ test('待认领文件加载期间禁止重复刷新', async ({ page }) => {
   await navigation
   await expect(page.getByText('latest.pdf', { exact: true })).toBeVisible()
   await expect(refresh).toBeEnabled()
+})
+
+test('归档扫描完成后摘要刷新失败仍保留已有健康数据', async ({ page }) => {
+  await page.route('**/api/dashboard', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        counts: { paper: 0, dataset: 0, literature: 0, project: 0, model: 0 },
+        total_storage_bytes: 0,
+        healthy_files: 0,
+        missing_files: 0,
+        recent_assets: [],
+        recent_activities: [],
+        popular_tags: [],
+      }),
+    })
+  })
+  await signInWithMockAccount(page)
+  let healthRequests = 0
+  const health = {
+    storage_available: true,
+    latest_scan: null,
+    recent_scans: [],
+    indexed_files: 27,
+    healthy_files: 25,
+    missing_files: 2,
+    unclaimed_files: 3,
+  }
+  await page.route('**/api/archive/health', async (route) => {
+    healthRequests += 1
+    if (healthRequests === 1) {
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify(health) })
+      return
+    }
+    await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ detail: '摘要服务暂不可用' }) })
+  })
+  await page.route('**/api/archive/scans', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: '77777777-7777-7777-7777-777777777777',
+        status: 'completed',
+        source: 'storage-root',
+        files_discovered: 30,
+        files_indexed: 27,
+        files_missing: 2,
+        files_unclaimed: 3,
+        files_skipped: 0,
+        message: '扫描完成',
+        started_at: '2026-08-14T01:00:00Z',
+        completed_at: '2026-08-14T01:01:00Z',
+      }),
+    })
+  })
+
+  await page.goto('/archive-health')
+  await expect(page.getByText('25', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '运行扫描' }).click()
+
+  await expect(page.getByRole('alert')).toContainText('扫描已完成，但暂时无法刷新健康摘要')
+  await expect(page.getByText('25', { exact: true })).toBeVisible()
+  await expect(page.getByText('归档服务暂不可用')).toBeHidden()
+  await expect(page.getByRole('button', { name: '运行扫描' })).toBeEnabled()
 })
 
 test('操作日志使用服务端活动标签和筛选项', async ({ page }) => {
@@ -836,14 +959,33 @@ test('关联资产通过服务端搜索覆盖完整目录', async ({ page }) => 
 })
 
 test('详情切换后不会被上一项的延迟引用覆盖', async ({ page }) => {
-  await signIn(page)
+  await page.route('**/api/dashboard', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        counts: { paper: 0, dataset: 0, literature: 0, project: 0, model: 0 },
+        total_storage_bytes: 0,
+        healthy_files: 0,
+        missing_files: 0,
+        recent_assets: [],
+        recent_activities: [],
+        popular_tags: [],
+      }),
+    })
+  })
+  await signInWithMockAccount(page)
   const publicationId = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
   const datasetId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
   let releaseCitation: (() => void) | undefined
   let markCitationStarted: (() => void) | undefined
+  let releaseFileTicket: (() => void) | undefined
+  let markFileTicketStarted: (() => void) | undefined
   const citationReleased = new Promise<void>((resolve) => { releaseCitation = resolve })
   const citationStarted = new Promise<void>((resolve) => { markCitationStarted = resolve })
+  const fileTicketReleased = new Promise<void>((resolve) => { releaseFileTicket = resolve })
+  const fileTicketStarted = new Promise<void>((resolve) => { markFileTicketStarted = resolve })
   const owner = { id: 'cccccccc-cccc-cccc-cccc-cccccccccccc', name: '测试用户', avatar_url: null }
+  const fileId = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee'
 
   await page.route(`**/api/assets/${publicationId}`, async (route) => {
     await route.fulfill({
@@ -869,13 +1011,22 @@ test('详情切换后不会被上一项的延迟引用覆盖', async ({ page }) 
         },
         tags: ['ACL'],
         current_version: 'v1',
-        total_size: 0,
-        file_count: 0,
+        total_size: 2048,
+        file_count: 1,
         upload_directories: [],
         default_upload_directory: 'source',
         updated_at: '2026-08-13T06:00:00Z',
         versions: [],
-        files: [],
+        files: [{
+          id: fileId,
+          relative_path: 'literature/delayed-citation/source/paper.pdf',
+          file_name: 'paper.pdf',
+          file_kind: 'document',
+          mime_type: 'application/pdf',
+          file_size: 2048,
+          health_status: 'healthy',
+          modified_at: '2026-08-13T06:00:00Z',
+        }],
         related_assets: [{
           relation_id: 'dddddddd-dddd-dddd-dddd-dddddddddddd',
           id: datasetId,
@@ -902,6 +1053,21 @@ test('详情切换后不会被上一项的延迟引用覆盖', async ({ page }) 
       })
     } catch {
       // The application intentionally aborts citation loading after navigation.
+    }
+  })
+  await page.route(`**/api/files/${fileId}/tickets`, async (route) => {
+    markFileTicketStarted?.()
+    await fileTicketReleased
+    try {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          content_url: `/api/files/${fileId}/content?grant=stale`,
+          expires_at: '2026-08-13T06:10:00Z',
+        }),
+      })
+    } catch {
+      // The application intentionally aborts file access after navigation.
     }
   })
   await page.route(`**/api/assets/${datasetId}`, async (route) => {
@@ -936,16 +1102,25 @@ test('详情切换后不会被上一项的延迟引用覆盖', async ({ page }) 
   await expect(page.getByRole('heading', { name: '延迟引用文献' })).toBeVisible()
   await citationStarted
   await expect(page.getByRole('status')).toContainText('正在生成引用')
+  await page.getByTitle('浏览器预览').click()
+  await fileTicketStarted
 
   await page.getByRole('link', { name: /当前数据集/ }).click()
   await expect(page.getByRole('heading', { name: '当前数据集' })).toBeVisible()
   await expect(page.getByText('这是切换后应稳定显示的资产。')).toBeVisible()
   await expect(page.getByRole('heading', { name: '出版物引用' })).toBeHidden()
 
+  releaseFileTicket?.()
+  await expect(page.getByRole('dialog', { name: '预览 paper.pdf' })).toBeHidden()
   releaseCitation?.()
-  await expect(page.getByRole('heading', { name: '当前数据集' })).toBeVisible()
   await expect(page.getByText('不应出现的旧引用')).toBeHidden()
-  await expect(page.getByRole('heading', { name: '出版物引用' })).toBeHidden()
+  await page.getByRole('button', { name: '编辑' }).click()
+  await page.getByRole('dialog', { name: '编辑资产' }).getByLabel('标题').fill('不应带回上一项的草稿')
+  await page.goBack()
+  await expect(page.getByRole('heading', { name: '延迟引用文献' })).toBeVisible()
+  await expect(page.getByRole('dialog', { name: '编辑资产' })).toBeHidden()
+  await expect(page.getByText('不应带回上一项的草稿')).toBeHidden()
+  await expect(page.getByText('不应出现的旧引用')).toBeVisible()
 })
 
 test('详情操作失败不会替换已加载的资产内容', async ({ page }) => {

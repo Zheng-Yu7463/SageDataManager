@@ -9,16 +9,21 @@ import type { ArchiveHealthSummary } from '@/types'
 const data = ref<ArchiveHealthSummary | null>(null)
 const loading = ref(true)
 const running = ref(false)
-const error = ref('')
+const loadError = ref('')
+const scanError = ref('')
 const { pageEyebrow } = useBranding()
+
+async function refreshSummary() {
+  data.value = await getArchiveHealth()
+}
 
 async function load() {
   loading.value = true
-  error.value = ''
+  loadError.value = ''
   try {
-    data.value = await getArchiveHealth()
+    await refreshSummary()
   } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : '无法读取归档健康状态'
+    loadError.value = reason instanceof Error ? reason.message : '无法读取归档健康状态'
   } finally {
     loading.value = false
   }
@@ -26,12 +31,23 @@ async function load() {
 
 async function scan() {
   running.value = true
-  error.value = ''
+  scanError.value = ''
   try {
     await runArchiveScan()
-    await load()
+    try {
+      await refreshSummary()
+      loadError.value = ''
+    } catch {
+      scanError.value = '扫描已完成，但暂时无法刷新健康摘要。请稍后刷新页面查看最新结果。'
+    }
   } catch (reason) {
-    error.value = reason instanceof Error ? reason.message : '扫描未能完成'
+    scanError.value = reason instanceof Error ? reason.message : '扫描未能完成'
+    try {
+      await refreshSummary()
+      loadError.value = ''
+    } catch {
+      scanError.value += ' 同时无法刷新扫描记录，请稍后刷新页面。'
+    }
   } finally {
     running.value = false
   }
@@ -58,9 +74,10 @@ onMounted(load)
       </button>
     </header>
 
-    <div v-if="loading" class="state-panel" role="status" aria-live="polite"><span class="loader-ring"></span><p>正在读取扫描索引…</p></div>
-    <div v-else-if="error" class="state-panel state-panel--error" role="alert"><CircleAlert :size="28" /><strong>归档服务暂不可用</strong><p>{{ error }}</p><button class="button button--outline" @click="load">重试</button></div>
+    <div v-if="loading && !data" class="state-panel" role="status" aria-live="polite"><span class="loader-ring"></span><p>正在读取扫描索引…</p></div>
+    <div v-else-if="loadError && !data" class="state-panel state-panel--error" role="alert"><CircleAlert :size="28" /><strong>归档服务暂不可用</strong><p>{{ loadError }}</p><button class="button button--outline" @click="load">重试</button></div>
     <template v-else-if="data">
+      <p v-if="scanError || loadError" class="archive-action-error" role="alert"><CircleAlert :size="17" />{{ scanError || loadError }}</p>
       <section class="archive-metrics">
         <article class="archive-metric"><CheckCircle2 :size="21" /><strong>{{ data.healthy_files }}</strong><span>健康文件</span></article>
         <article class="archive-metric"><FileSearch :size="21" /><strong>{{ data.indexed_files }}</strong><span>已索引文件</span></article>
@@ -95,6 +112,6 @@ onMounted(load)
 </template>
 
 <style scoped>
-.archive-metrics { display: grid; margin-bottom: 14px; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }.archive-metric { display: grid; min-height: 118px; padding: 18px; color: var(--sage); background: rgba(252,253,249,.92); border: 1px solid var(--line); border-radius: 8px; align-content: start; gap: 5px; }.archive-metric.warning { color: #b4772d; }.archive-metric strong { color: var(--ink); font-family: "Iowan Old Style", serif; font-size: 31px; font-weight: 500; }.archive-metric span { color: #849087; font-size: 11px; }.archive-grid { display: grid; grid-template-columns: minmax(280px, .75fr) minmax(0, 1.25fr); gap: 14px; }.archive-status-body { display: flex; padding: 24px 21px; align-items: flex-start; gap: 14px; }.archive-status-icon { display: grid; width: 50px; height: 50px; flex: 0 0 auto; color: var(--sage); place-items: center; background: var(--sage-soft); border-radius: 50%; }.archive-status-icon.offline { color: #a6633b; background: #f7e9e1; }.archive-status-body strong { font-family: "Iowan Old Style", "Songti SC", serif; font-size: 17px; }.archive-status-body p, .latest-scan small, .scan-row p, .archive-empty, .archive-note { color: #7c887f; font-size: 11px; line-height: 1.6; }.archive-status-body p { margin: 7px 0 0; }.latest-scan { display: grid; margin: 0 21px 21px; padding: 13px 0; gap: 4px; border-top: 1px solid #e4e9e2; }.latest-scan span { color: #9aa39d; font-size: 10px; }.latest-scan strong { font-family: "Iowan Old Style", serif; font-size: 14px; }.latest-scan small { margin: 0; }.scan-history { display: grid; }.scan-row { display: grid; min-height: 72px; padding: 13px 20px; align-items: center; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 10px; border-bottom: 1px solid #e6ebe4; }.scan-state { width: 9px; height: 9px; background: var(--sage); border-radius: 50%; }.scan-state.failed { background: #a6633b; }.scan-row strong { font-size: 12px; }.scan-row p { margin: 3px 0 0; }.scan-row time { color: #98a29c; font-size: 10px; white-space: nowrap; }.archive-empty { margin: 24px 20px; }.archive-note { margin: 16px 2px 0; }.is-spinning { animation: spin 800ms linear infinite; }
+.archive-action-error { display: flex; margin: 0 0 14px; padding: 11px 13px; align-items: center; color: #965b38; background: #fff6ef; border-left: 3px solid #bd7750; gap: 8px; font-size: 11px; }.archive-metrics { display: grid; margin-bottom: 14px; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }.archive-metric { display: grid; min-height: 118px; padding: 18px; color: var(--sage); background: rgba(252,253,249,.92); border: 1px solid var(--line); border-radius: 8px; align-content: start; gap: 5px; }.archive-metric.warning { color: #b4772d; }.archive-metric strong { color: var(--ink); font-family: "Iowan Old Style", serif; font-size: 31px; font-weight: 500; }.archive-metric span { color: #849087; font-size: 11px; }.archive-grid { display: grid; grid-template-columns: minmax(280px, .75fr) minmax(0, 1.25fr); gap: 14px; }.archive-status-body { display: flex; padding: 24px 21px; align-items: flex-start; gap: 14px; }.archive-status-icon { display: grid; width: 50px; height: 50px; flex: 0 0 auto; color: var(--sage); place-items: center; background: var(--sage-soft); border-radius: 50%; }.archive-status-icon.offline { color: #a6633b; background: #f7e9e1; }.archive-status-body strong { font-family: "Iowan Old Style", "Songti SC", serif; font-size: 17px; }.archive-status-body p, .latest-scan small, .scan-row p, .archive-empty, .archive-note { color: #7c887f; font-size: 11px; line-height: 1.6; }.archive-status-body p { margin: 7px 0 0; }.latest-scan { display: grid; margin: 0 21px 21px; padding: 13px 0; gap: 4px; border-top: 1px solid #e4e9e2; }.latest-scan span { color: #9aa39d; font-size: 10px; }.latest-scan strong { font-family: "Iowan Old Style", serif; font-size: 14px; }.latest-scan small { margin: 0; }.scan-history { display: grid; }.scan-row { display: grid; min-height: 72px; padding: 13px 20px; align-items: center; grid-template-columns: 18px minmax(0, 1fr) auto; gap: 10px; border-bottom: 1px solid #e6ebe4; }.scan-state { width: 9px; height: 9px; background: var(--sage); border-radius: 50%; }.scan-state.failed { background: #a6633b; }.scan-row strong { font-size: 12px; }.scan-row p { margin: 3px 0 0; }.scan-row time { color: #98a29c; font-size: 10px; white-space: nowrap; }.archive-empty { margin: 24px 20px; }.archive-note { margin: 16px 2px 0; }.is-spinning { animation: spin 800ms linear infinite; }
 @media (max-width: 850px) { .archive-metrics { grid-template-columns: repeat(2, 1fr); }.archive-grid { grid-template-columns: 1fr; } } @media (max-width: 460px) { .archive-metric { min-height: 102px; padding: 15px; }.archive-metric strong { font-size: 27px; }.scan-row { grid-template-columns: 16px 1fr; }.scan-row time { display: none; } }
 </style>

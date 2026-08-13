@@ -77,6 +77,26 @@ async function raiseApiError(response: Response, authenticatedRequest: boolean):
   try {
     const payload = await response.json()
     if (typeof payload.detail === 'string') message = payload.detail
+    else if (Array.isArray(payload.detail)) {
+      const validationMessages = payload.detail.flatMap((detail: unknown) => {
+        if (typeof detail !== 'object' || detail === null) return []
+        const { loc, msg } = detail as { loc?: unknown; msg?: unknown }
+        if (!Array.isArray(loc) || typeof msg !== 'string') return []
+        const path = loc.filter((part) => part !== 'body')
+        const assetIndex = path.findIndex((part) => part === 'assets')
+        const recordIndex = assetIndex >= 0 && typeof path[assetIndex + 1] === 'number'
+          ? Number(path[assetIndex + 1])
+          : null
+        const fieldPath = path
+          .filter((_, index) => index !== assetIndex && index !== assetIndex + 1)
+          .join('.')
+        const location = [recordIndex === null ? '' : `第 ${recordIndex + 1} 条`, fieldPath]
+          .filter(Boolean)
+          .join(' · ')
+        return [`${location ? `${location}：` : ''}${msg}`]
+      })
+      if (validationMessages.length) message = validationMessages.join('；')
+    }
   } catch {
     // Keep the HTTP status message when the response has no JSON body.
   }
@@ -212,8 +232,8 @@ export function finalizeUpload(uploadId: string, uploadToken: string) {
   })
 }
 
-export function getFileAccessTicket(fileId: string, mode: FileAccessMode) {
-  return request<FileAccessTicket>(`/api/files/${fileId}/tickets`, undefined, 'POST', { mode })
+export function getFileAccessTicket(fileId: string, mode: FileAccessMode, signal?: AbortSignal) {
+  return request<FileAccessTicket>(`/api/files/${fileId}/tickets`, signal, 'POST', { mode })
 }
 
 export function loginAccount(username: string, password: string) {

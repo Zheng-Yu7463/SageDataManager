@@ -5,7 +5,16 @@ from sqlalchemy import delete
 from app.db.session import SessionLocal
 from app.domain.activity import ActivityAction
 from app.domain.enums import AssetType, HealthStatus, Visibility
-from app.domain.models import Activity, Asset, AssetRelation, AssetVersion, FileRecord, Tag, User
+from app.domain.models import (
+    Activity,
+    Asset,
+    AssetRelation,
+    AssetVersion,
+    FileRecord,
+    PublicationIdentityKey,
+    Tag,
+    User,
+)
 from app.services.accounts import ensure_fixed_accounts
 from app.services.activities import record_activity
 from app.services.paper_identity import synchronize_publication_identity_keys
@@ -96,6 +105,7 @@ def main() -> None:
         session.execute(delete(FileRecord))
         session.execute(delete(AssetRelation))
         session.execute(delete(AssetVersion))
+        session.execute(delete(PublicationIdentityKey))
         session.execute(delete(Asset))
         session.execute(delete(Tag))
         session.execute(delete(User))

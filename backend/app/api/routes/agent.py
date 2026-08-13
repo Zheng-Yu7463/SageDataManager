@@ -157,7 +157,7 @@ def agent_update_asset(
         raise HTTPException(status_code=404, detail="资产不存在或已归档。") from None
     except AssetMetadataError as error:
         session.rollback()
-        raise HTTPException(status_code=422, detail=error.message) from None
+        raise HTTPException(status_code=409, detail=error.message) from None
     except Exception:
         session.rollback()
         raise

@@ -49,24 +49,6 @@ def _identity_values(title: str, details: dict) -> tuple[tuple[str, str], ...]:
 
 
 def upgrade() -> None:
-    identity_table = op.create_table(
-        "publication_identity_keys",
-        sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("asset_id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("kind", sa.String(length=24), nullable=False),
-        sa.Column("digest", sa.String(length=64), nullable=False),
-        sa.ForeignKeyConstraint(["asset_id"], ["assets.id"], ondelete="CASCADE"),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint(
-            "kind", "digest", name="uq_publication_identity_keys_identity"
-        ),
-    )
-    op.create_index(
-        "ix_publication_identity_keys_asset_id",
-        "publication_identity_keys",
-        ["asset_id"],
-    )
-
     connection = op.get_bind()
     assets = sa.table(
         "assets",
@@ -102,6 +84,24 @@ def upgrade() -> None:
                     "digest": digest,
                 }
             )
+
+    identity_table = op.create_table(
+        "publication_identity_keys",
+        sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("asset_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("kind", sa.String(length=24), nullable=False),
+        sa.Column("digest", sa.String(length=64), nullable=False),
+        sa.ForeignKeyConstraint(["asset_id"], ["assets.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint(
+            "kind", "digest", name="uq_publication_identity_keys_identity"
+        ),
+    )
+    op.create_index(
+        "ix_publication_identity_keys_asset_id",
+        "publication_identity_keys",
+        ["asset_id"],
+    )
     if records:
         connection.execute(identity_table.insert(), records)
 
