@@ -1,3 +1,4 @@
+import hashlib
 import os
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -20,6 +21,7 @@ from app.services.transfers import (
     UploadNotReadyError,
     finalize_upload,
     generate_upload_command,
+    upload_status,
 )
 
 
@@ -194,13 +196,103 @@ def test_finalize_upload_moves_and_indexes_a_file(tmp_path: Path) -> None:
     assert result.relative_paths == [
         "dataset/soil-samples-2026/raw/2026-08/samples.csv"
     ]
+    expected_checksum = hashlib.sha256(destination.read_bytes()).hexdigest()
+    assert result.checksums[result.relative_paths[0]] == expected_checksum
     assert record is not None
+    assert record.checksum == expected_checksum
     assert record.asset_id == asset.id
     assert record.file_kind == "data"
     assert record.health_status == HealthStatus.HEALTHY
     assert session.scalar(
         select(func.count()).select_from(Activity).where(Activity.action == "completed_upload")
     ) == 1
+
+
+def test_upload_status_reports_waiting_ready_and_completed(tmp_path: Path) -> None:
+    session = make_session()
+    asset = create_asset(session)
+    prepared = prepare_upload(session, asset)
+
+    waiting = upload_status(
+        session,
+        tmp_path,
+        prepared.upload_id,
+        prepared.upload_token,
+        actor=asset.owner,
+    )
+    assert waiting.status == "waiting"
+    assert waiting.uploaded_file_count == 0
+
+    staged = staging_directory(tmp_path, prepared.upload_id) / "samples.csv"
+    staged.parent.mkdir(parents=True)
+    staged.write_text("sample,value\nA,1\n")
+    transferring = upload_status(
+        session,
+        tmp_path,
+        prepared.upload_id,
+        prepared.upload_token,
+        actor=asset.owner,
+    )
+    assert transferring.status == "waiting"
+    assert transferring.uploaded_file_count == 1
+
+    mark_upload_complete(tmp_path, prepared.upload_id)
+    ready = upload_status(
+        session,
+        tmp_path,
+        prepared.upload_id,
+        prepared.upload_token,
+        actor=asset.owner,
+    )
+    assert ready.status == "ready"
+    assert ready.total_size == staged.stat().st_size
+
+    finalize_upload(
+        session,
+        tmp_path,
+        prepared.upload_id,
+        prepared.upload_token,
+        actor=asset.owner,
+    )
+    completed = upload_status(
+        session,
+        tmp_path,
+        prepared.upload_id,
+        prepared.upload_token,
+        actor=asset.owner,
+    )
+    assert completed.status == "completed"
+    assert completed.uploaded_file_count == 1
+
+
+def test_finalize_upload_rejects_duplicate_content_for_same_asset(tmp_path: Path) -> None:
+    session = make_session()
+    asset = create_asset(session)
+    first = prepare_upload(session, asset)
+    first_file = staging_directory(tmp_path, first.upload_id) / "samples.csv"
+    first_file.parent.mkdir(parents=True)
+    first_file.write_text("duplicate content")
+    mark_upload_complete(tmp_path, first.upload_id)
+    finalize_upload(session, tmp_path, first.upload_id, first.upload_token, actor=asset.owner)
+
+    second = prepare_upload(session, asset)
+    second_file = staging_directory(tmp_path, second.upload_id) / "copy.csv"
+    second_file.parent.mkdir(parents=True)
+    second_file.write_text("duplicate content")
+    mark_upload_complete(tmp_path, second.upload_id)
+
+    with pytest.raises(UploadContentError, match="内容相同"):
+        finalize_upload(
+            session,
+            tmp_path,
+            second.upload_id,
+            second.upload_token,
+            actor=asset.owner,
+        )
+
+    assert not (tmp_path / "dataset/soil-samples-2026/raw/2026-08/copy.csv").exists()
+    assert second_file.exists()
+    assert session.scalar(select(func.count()).select_from(FileRecord)) == 1
 
 
 def test_finalize_upload_preserves_uploaded_directory_structure(tmp_path: Path) -> None:

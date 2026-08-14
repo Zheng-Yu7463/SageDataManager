@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import stat
@@ -24,6 +25,7 @@ from app.domain.schemas import (
     UploadCommandRequest,
     UploadCommandResponse,
     UploadFinalizeResponse,
+    UploadStatusResponse,
 )
 from app.services.activities import record_activity
 from app.services.security import create_upload_token, read_upload_token
@@ -80,6 +82,7 @@ class OpenStagedFile:
 class PublishedFile:
     path: Path
     parent_descriptor: int
+    checksum_sha256: str
 
 
 def _new_upload_task(
@@ -328,6 +331,7 @@ def complete_agent_file_upload(
     relative_path: str,
     temporary_file: Path,
     destination: Path,
+    checksum_sha256: str,
 ) -> AgentUploadedFileResponse:
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists() or destination.is_symlink():
@@ -341,6 +345,7 @@ def complete_agent_file_upload(
         upload_id=upload_id,
         relative_path=PurePosixPath(relative_path).as_posix(),
         file_size=destination.stat().st_size,
+        checksum_sha256=checksum_sha256,
     )
 
 
@@ -368,6 +373,71 @@ def _staged_files(staging_directory: Path, *, completion_marker_required: bool) 
     if not files:
         raise UploadNotReadyError("尚未检测到文件，请确认终端传输已完成后重试。")
     return sorted(files, key=lambda path: path.relative_to(staging_directory).as_posix())
+
+
+def upload_status(
+    session: Session,
+    storage_root: Path,
+    upload_id: UUID,
+    upload_token: str,
+    *,
+    actor: User,
+) -> UploadStatusResponse:
+    claims = read_upload_token(upload_token)
+    task = session.get(UploadTask, upload_id)
+    if (
+        not claims
+        or claims.upload_id != upload_id
+        or claims.username != (actor.username or "")
+        or not task
+        or task.user_id != actor.id
+        or task.access_token_id is not None
+        or task.asset_id != claims.asset_id
+        or task.target_subdirectory != claims.target_subdirectory
+        or task.transfer_mode != "scp"
+    ):
+        raise UploadTicketError("上传凭据无效或已过期，请重新生成上传命令。")
+    if task.status == "completed" and task.result:
+        result = UploadFinalizeResponse.model_validate(task.result)
+        return UploadStatusResponse(
+            upload_id=task.id,
+            status="completed",
+            uploaded_file_count=result.imported_file_count,
+            total_size=result.total_size,
+            expires_at=task.expires_at,
+        )
+    try:
+        root = storage_root.resolve(strict=True)
+    except (FileNotFoundError, NotADirectoryError) as error:
+        raise UploadContentError("存储根不可用，无法检测上传进度。") from error
+    if not root.is_dir():
+        raise UploadContentError("存储根不可用，无法检测上传进度。")
+    staging_directory = root / UPLOAD_STAGING_DIRECTORY / str(upload_id)
+    if not staging_directory.exists():
+        return UploadStatusResponse(
+            upload_id=task.id,
+            status="waiting",
+            uploaded_file_count=0,
+            total_size=0,
+            expires_at=task.expires_at,
+        )
+    try:
+        files = _staged_files(staging_directory, completion_marker_required=False)
+    except UploadNotReadyError:
+        files = []
+    try:
+        total_size = sum(path.stat().st_size for path in files)
+    except OSError as error:
+        raise UploadContentError("上传文件正在变化，请等待传输完成。") from error
+    completion_marker = staging_directory / UPLOAD_COMPLETION_MARKER
+    ready = bool(files) and completion_marker.is_file() and not completion_marker.is_symlink()
+    return UploadStatusResponse(
+        upload_id=task.id,
+        status="ready" if ready else "waiting",
+        uploaded_file_count=len(files),
+        total_size=total_size,
+        expires_at=task.expires_at,
+    )
 
 
 def _open_staged_files(
@@ -456,8 +526,9 @@ def _copy_without_overwrite(
     destination_parent_descriptor: int,
     destination: Path,
     relative_path: str,
-) -> None:
+) -> str:
     target_descriptor: int | None = None
+    checksum_sha256 = ""
     try:
         target_descriptor = os.open(
             destination.name,
@@ -473,9 +544,13 @@ def _copy_without_overwrite(
             os.fdopen(target_descriptor, "wb") as output_file,
         ):
             target_descriptor = None
-            shutil.copyfileobj(input_file, output_file)
+            digest = hashlib.sha256()
+            while chunk := input_file.read(1024 * 1024):
+                digest.update(chunk)
+                output_file.write(chunk)
             output_file.flush()
             os.fsync(output_file.fileno())
+            checksum_sha256 = digest.hexdigest()
         try:
             current_metadata = os.fstat(source.descriptor)
             path_metadata = os.stat(
@@ -513,6 +588,7 @@ def _copy_without_overwrite(
     finally:
         if target_descriptor is not None:
             os.close(target_descriptor)
+    return checksum_sha256
 
 
 def finalize_upload(
@@ -615,7 +691,7 @@ def finalize_upload(
                     parent_descriptor = next_descriptor
                 rollback_descriptor = os.dup(parent_descriptor)
                 try:
-                    _copy_without_overwrite(
+                    checksum_sha256 = _copy_without_overwrite(
                         source,
                         parent_descriptor,
                         destination,
@@ -625,10 +701,39 @@ def finalize_upload(
                     os.close(rollback_descriptor)
                     raise
                 published_files.append(
-                    PublishedFile(path=destination, parent_descriptor=rollback_descriptor)
+                    PublishedFile(
+                        path=destination,
+                        parent_descriptor=rollback_descriptor,
+                        checksum_sha256=checksum_sha256,
+                    )
                 )
             finally:
                 os.close(parent_descriptor)
+
+        checksum_paths: dict[str, str] = {}
+        duplicate_paths: list[str] = []
+        for published, relative_path in zip(published_files, relative_paths, strict=True):
+            original_path = checksum_paths.setdefault(published.checksum_sha256, relative_path)
+            if original_path != relative_path:
+                duplicate_paths.append(f"{relative_path} 与 {original_path}")
+        existing_checksums = {
+            checksum: relative_path
+            for checksum, relative_path in session.execute(
+                select(FileRecord.checksum, FileRecord.relative_path).where(
+                    FileRecord.asset_id == asset.id,
+                    FileRecord.checksum.in_(checksum_paths),
+                )
+            ).all()
+            if checksum
+        }
+        duplicate_paths.extend(
+            f"{relative_path} 与已归档文件 {existing_checksums[checksum]}"
+            for checksum, relative_path in checksum_paths.items()
+            if checksum in existing_checksums
+        )
+        if duplicate_paths:
+            visible = "\n".join(f"- {path}" for path in duplicate_paths[:8])
+            raise UploadContentError(f"检测到内容相同的重复文件：\n{visible}")
 
         for published, relative_path in zip(published_files, relative_paths, strict=True):
             metadata = os.stat(
@@ -645,6 +750,7 @@ def finalize_upload(
                     file_kind=file_kind(published.path),
                     mime_type=guess_type(published.path.name)[0],
                     file_size=metadata.st_size,
+                    checksum=published.checksum_sha256,
                     health_status=HealthStatus.HEALTHY,
                     modified_at=datetime.fromtimestamp(metadata.st_mtime, UTC),
                 )
@@ -665,6 +771,12 @@ def finalize_upload(
             imported_file_count=len(destinations),
             total_size=total_size,
             relative_paths=relative_paths,
+            checksums={
+                relative_path: published.checksum_sha256
+                for published, relative_path in zip(
+                    published_files, relative_paths, strict=True
+                )
+            },
         )
         task.status = "completed"
         task.result = result.model_dump(mode="json")

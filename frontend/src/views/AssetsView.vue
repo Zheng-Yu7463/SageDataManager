@@ -32,6 +32,7 @@ import {
   getAssets,
   getPublicationCitation,
   getUploadCommand,
+  getUploadStatus,
 } from '@/api/client'
 import { assetMeta } from '@/catalogue'
 import { useOverlayFocus } from '@/composables/useOverlayFocus'
@@ -45,6 +46,7 @@ import type {
   PublicationMetadata,
   UploadCommandResult,
   UploadFinalizeResult,
+  UploadStatusResult,
   Visibility,
 } from '@/types'
 import { copyText, downloadTextFile } from '@/utils/textFiles'
@@ -111,10 +113,15 @@ const uploadGenerating = ref(false)
 const uploadFinalizing = ref(false)
 const uploadError = ref('')
 const uploadRefreshError = ref('')
+const uploadStatusError = ref('')
+const uploadStatusChecking = ref(false)
 const uploadCopied = ref(false)
 const uploadResult = ref<UploadCommandResult | null>(null)
+const uploadStatus = ref<UploadStatusResult | null>(null)
 const uploadFinalizeResult = ref<UploadFinalizeResult | null>(null)
 const uploadPhase = ref<'configure' | 'transfer' | 'success'>('configure')
+let uploadStatusTimer: number | undefined
+let uploadStatusRequestVersion = 0
 const upload = ref({
   sourcePath: '',
   directory: '',
@@ -157,6 +164,7 @@ const registrationValid = computed(() => {
     && registration.value.sourceId.trim()
     && isHttpUrl(registration.value.sourceUrl)
     && isHttpUrl(registration.value.pdfUrl)
+    && (assetType.value !== 'literature' || registration.value.summary.trim())
     && (
       !registration.value.citationKey.trim()
       || /^[A-Za-z][A-Za-z0-9_:+.-]*$/.test(registration.value.citationKey.trim())
@@ -385,6 +393,7 @@ async function registerAsset() {
         source_id: registration.value.sourceId.trim(),
         source_url: registration.value.sourceUrl.trim(),
         pdf_url: registration.value.pdfUrl.trim(),
+        ...(registration.value.summary.trim() ? { abstract: registration.value.summary.trim() } : {}),
         entry_type: registration.value.entryType,
         ...(registration.value.citationKey.trim() ? { citation_key: registration.value.citationKey.trim() } : {}),
         ...(registration.value.booktitle.trim() ? { booktitle: registration.value.booktitle.trim() } : {}),
@@ -405,6 +414,48 @@ async function registerAsset() {
   }
 }
 
+function stopUploadStatusPolling() {
+  uploadStatusRequestVersion += 1
+  if (uploadStatusTimer) window.clearTimeout(uploadStatusTimer)
+  uploadStatusTimer = undefined
+  uploadStatusChecking.value = false
+}
+
+async function pollUploadStatus(requestVersion: number) {
+  if (
+    requestVersion !== uploadStatusRequestVersion
+    || uploadPhase.value !== 'transfer'
+    || !uploadResult.value
+  ) return
+  uploadStatusChecking.value = true
+  try {
+    const result = await getUploadStatus(
+      uploadResult.value.upload_id,
+      uploadResult.value.upload_token,
+    )
+    if (requestVersion !== uploadStatusRequestVersion) return
+    uploadStatus.value = result
+    uploadStatusError.value = ''
+  } catch (reason) {
+    if (requestVersion !== uploadStatusRequestVersion) return
+    uploadStatusError.value = reason instanceof Error ? reason.message : '无法读取上传进度'
+  } finally {
+    if (requestVersion !== uploadStatusRequestVersion) return
+    uploadStatusChecking.value = false
+    if (uploadPhase.value === 'transfer' && uploadStatus.value?.status !== 'completed') {
+      uploadStatusTimer = window.setTimeout(() => {
+        void pollUploadStatus(requestVersion)
+      }, 2000)
+    }
+  }
+}
+
+function startUploadStatusPolling() {
+  stopUploadStatusPolling()
+  const requestVersion = uploadStatusRequestVersion
+  void pollUploadStatus(requestVersion)
+}
+
 function openUpload(asset: AssetSummary) {
   filtersOpen.value = false
   uploadAsset.value = asset
@@ -414,16 +465,22 @@ function openUpload(asset: AssetSummary) {
     nestedPath: '',
     recursive: false,
   }
+  stopUploadStatusPolling()
   uploadError.value = ''
   uploadRefreshError.value = ''
+  uploadStatusError.value = ''
   uploadCopied.value = false
   uploadResult.value = null
+  uploadStatus.value = null
   uploadFinalizeResult.value = null
   uploadPhase.value = 'configure'
 }
 
 function closeUpload() {
-  if (!uploadBusy.value) uploadAsset.value = null
+  if (!uploadBusy.value) {
+    stopUploadStatusPolling()
+    uploadAsset.value = null
+  }
 }
 
 async function generateUploadCommand() {
@@ -440,6 +497,7 @@ async function generateUploadCommand() {
       recursive: upload.value.recursive,
     })
     uploadPhase.value = 'transfer'
+    startUploadStatusPolling()
   } catch (reason) {
     uploadError.value = reason instanceof Error ? reason.message : '无法生成上传命令'
   } finally {
@@ -448,15 +506,19 @@ async function generateUploadCommand() {
 }
 
 function reconfigureUpload() {
+  stopUploadStatusPolling()
   uploadError.value = ''
+  uploadStatusError.value = ''
   uploadCopied.value = false
   uploadResult.value = null
+  uploadStatus.value = null
   uploadFinalizeResult.value = null
   uploadPhase.value = 'configure'
 }
 
 async function finalizeCurrentUpload() {
   if (uploadFinalizing.value || !uploadResult.value) return
+  stopUploadStatusPolling()
   uploadFinalizing.value = true
   uploadError.value = ''
   uploadRefreshError.value = ''
@@ -468,6 +530,7 @@ async function finalizeCurrentUpload() {
     uploadPhase.value = 'success'
   } catch (reason) {
     uploadError.value = reason instanceof Error ? reason.message : '无法检测并入库，请稍后重试'
+    startUploadStatusPolling()
     return
   } finally {
     uploadFinalizing.value = false
@@ -563,6 +626,7 @@ watch(
 )
 onBeforeUnmount(() => {
   controller?.abort()
+  stopUploadStatusPolling()
   if (citationCopiedTimer) window.clearTimeout(citationCopiedTimer)
 })
 </script>
@@ -735,7 +799,7 @@ onBeforeUnmount(() => {
         <div class="registration-body">
           <label>标题<input v-model="registration.title" required autofocus maxlength="500" placeholder="例如：田野样本观测数据集" /></label>
           <label>资产标识（slug）<input v-model="registration.slug" required pattern="[a-z0-9]+(-[a-z0-9]+)*" minlength="3" maxlength="160" placeholder="例如：soil-samples-2026" /></label>
-          <label>摘要<textarea v-model="registration.summary" maxlength="5000" rows="3" placeholder="简要说明研究内容、范围或用途"></textarea></label>
+          <label>{{ assetType === 'literature' ? '摘要（必填）' : '摘要' }}<textarea v-model="registration.summary" :required="assetType === 'literature'" maxlength="5000" rows="3" placeholder="简要说明研究内容、范围或用途"></textarea></label>
           <div class="registration-grid">
             <label>状态<select v-model="registration.status"><option value="draft">draft</option><option value="active">active</option><option value="available">available</option><option value="collected">collected</option><option v-if="publicationCatalogue" value="published">published</option></select></label>
             <label>可见范围<select v-model="registration.visibility"><option value="lab">全实验室</option><option value="project">项目成员</option><option value="restricted">受限</option></select></label>
@@ -804,7 +868,16 @@ onBeforeUnmount(() => {
             <header><div><strong>终端上传命令</strong><small>最终位置：{{ uploadResult.archive_relative_path }}</small></div><button class="button button--outline" type="button" @click="copyUploadCommand"><Check v-if="uploadCopied" :size="16" /><Copy v-else :size="16" />{{ uploadCopied ? '已复制' : '复制' }}</button></header>
             <pre><code>{{ uploadResult.command }}</code></pre>
           </section>
-          <div class="upload-safety-note"><ShieldCheck :size="17" /><p><strong>正式归档受保护</strong><span>传输文件暂存在隔离区；发现重名、符号链接或异常内容时不会移动任何正式文件。</span></p></div>
+          <div class="upload-live-status" :class="{ 'upload-live-status--ready': ['ready', 'completed'].includes(uploadStatus?.status ?? '') }" role="status">
+            <Check v-if="['ready', 'completed'].includes(uploadStatus?.status ?? '')" :size="17" />
+            <LoaderCircle v-else :class="{ spin: uploadStatusChecking }" :size="17" />
+            <p v-if="uploadStatus?.status === 'completed'"><strong>任务已经完成入库</strong><span>点击下方按钮同步本次入库结果，无需重新上传文件。</span></p>
+            <p v-else-if="uploadStatus?.status === 'ready'"><strong>终端传输已完成</strong><span>检测到 {{ uploadStatus.uploaded_file_count }} 个文件 · {{ formatBytes(uploadStatus.total_size) }}，可以执行校验入库。</span></p>
+            <p v-else-if="uploadStatus?.uploaded_file_count"><strong>正在接收文件</strong><span>已检测到 {{ uploadStatus.uploaded_file_count }} 个文件 · {{ formatBytes(uploadStatus.total_size) }}，等待终端命令完成。</span></p>
+            <p v-else><strong>等待终端传输</strong><span>页面每 2 秒自动检测临时区，无需反复点击入库按钮。</span></p>
+          </div>
+          <div class="upload-safety-note"><ShieldCheck :size="17" /><p><strong>正式归档受保护</strong><span>传输文件暂存在隔离区；系统计算 SHA-256，并在重名、重复内容、符号链接或异常内容出现时回滚整批入库。</span></p></div>
+          <p v-if="uploadStatusError" class="registration-error upload-error-block" role="alert">{{ uploadStatusError }}</p>
           <p v-if="uploadError" class="registration-error upload-error-block" role="alert">{{ uploadError }}</p>
           <footer><button class="button button--outline" type="button" :disabled="uploadFinalizing" @click="reconfigureUpload">重新配置</button><button class="button button--primary" :disabled="uploadFinalizing" type="submit"><LoaderCircle v-if="uploadFinalizing" class="spin" :size="16" /><ShieldCheck v-else :size="16" />{{ uploadFinalizing ? '正在检测临时区' : '检测并入库' }}</button></footer>
         </template>
@@ -814,7 +887,7 @@ onBeforeUnmount(() => {
             <span><Check :size="24" /></span>
             <div><strong>文件已完成入库</strong><p>已索引 {{ uploadFinalizeResult.imported_file_count }} 个文件 · {{ formatBytes(uploadFinalizeResult.total_size) }}</p></div>
           </section>
-          <div class="upload-imported-paths"><span>已写入</span><code v-for="path in uploadFinalizeResult.relative_paths.slice(0, 4)" :key="path">{{ path }}</code><small v-if="uploadFinalizeResult.relative_paths.length > 4">另有 {{ uploadFinalizeResult.relative_paths.length - 4 }} 个文件</small></div>
+          <div class="upload-imported-paths"><span>已写入并校验</span><div v-for="path in uploadFinalizeResult.relative_paths.slice(0, 4)" :key="path" class="upload-imported-file"><code>{{ path }}</code><small v-if="uploadFinalizeResult.checksums[path]">SHA-256 · {{ uploadFinalizeResult.checksums[path].slice(0, 16) }}…</small></div><small v-if="uploadFinalizeResult.relative_paths.length > 4">另有 {{ uploadFinalizeResult.relative_paths.length - 4 }} 个文件</small></div>
           <p v-if="uploadRefreshError" class="registration-error upload-error-block" role="alert">{{ uploadRefreshError }}</p>
           <footer><button class="button button--primary" type="button" @click="closeUpload"><Check :size="16" />完成</button></footer>
         </template>
@@ -827,5 +900,5 @@ onBeforeUnmount(() => {
 <style scoped>
 .registration-backdrop { position: fixed; z-index: 40; inset: 0; display: grid; padding: 20px; place-items: center; background: rgba(23, 34, 26, .48); }
 .registration-dialog { position: relative; display: grid; width: min(100%, 610px); max-height: calc(100vh - 40px); padding: 28px; overflow-y: auto; background: #fdfefb; border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 20px 50px rgba(24, 37, 29, .22); gap: 11px; }.registration-dialog--asset { grid-template-rows: auto minmax(0, 1fr) auto; padding: 0; overflow: hidden; gap: 0; }.registration-header { display: grid; padding: 26px 28px 15px; gap: 5px; border-bottom: 1px solid var(--line); }.registration-body { display: grid; min-height: 0; padding: 18px 28px; overflow-y: auto; gap: 11px; }.registration-dialog h2 { margin: -5px 0 0; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 24px; font-weight: 500; }.registration-note { margin: -3px 0 7px; color: var(--muted); font-size: 12px; line-height: 1.55; }.registration-dialog label { display: grid; color: #526056; font-size: 12px; font-weight: 700; gap: 6px; }.registration-dialog input, .registration-dialog textarea, .registration-dialog select { width: 100%; min-width: 0; padding: 9px 10px; color: var(--ink); font: inherit; font-size: 13px; background: #fff; border: 1px solid var(--line); border-radius: 5px; outline-color: var(--sage); }.registration-dialog textarea { resize: vertical; }.registration-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }.registration-close { position: absolute; z-index: 1; top: 13px; right: 13px; display: grid; width: 31px; height: 31px; color: #68776d; place-items: center; background: transparent; border: 0; border-radius: 50%; cursor: pointer; }.registration-close:hover { background: #eef2ed; }.registration-error { margin: 1px 0; color: #a6633b; font-size: 12px; }.registration-dialog footer { display: flex; margin-top: 9px; justify-content: flex-end; gap: 9px; }.registration-footer { display: grid !important; margin: 0 !important; padding: 12px 28px 16px; border-top: 1px solid var(--line); gap: 8px !important; }.registration-footer .registration-error { padding: 8px 10px; background: #fff6f0; border-left: 3px solid #bd7750; }.registration-footer-actions { display: flex; justify-content: flex-end; gap: 9px; } @media (max-width: 560px) { .registration-dialog { padding: 24px 20px; }.registration-dialog--asset { width: 100%; max-height: calc(100dvh - 24px); padding: 0; }.registration-header { padding: 22px 20px 13px; }.registration-body { padding: 16px 20px; }.registration-footer { padding: 11px 20px 14px; }.registration-footer-actions .button { min-width: 0; flex: 1; justify-content: center; }.registration-grid { grid-template-columns: 1fr; } }
-.data-status { display: inline-flex; color: #89968e; align-items: center; gap: 4px; font-family: inherit; font-size: 11px; }.data-status--present { color: var(--asset-accent); }.upload-dialog { width: min(100%, 720px); }.upload-steps { display: grid; margin: 3px 0 7px; padding: 0; grid-template-columns: repeat(3, 1fr); list-style: none; border-top: 1px solid var(--line); }.upload-steps li { display: flex; padding-top: 10px; color: #98a29b; align-items: center; font-size: 11px; gap: 6px; }.upload-steps li + li { justify-content: center; }.upload-steps li:last-child { justify-content: flex-end; }.upload-steps span { display: grid; width: 20px; height: 20px; place-items: center; border: 1px solid #cfd7d1; border-radius: 50%; font-size: 10px; }.upload-steps .active { color: var(--ink); font-weight: 700; }.upload-steps .active span { color: #fff; background: var(--sage); border-color: var(--sage); }.upload-steps .complete { color: var(--sage); }.upload-steps .complete span { color: var(--sage); background: #e8f0e9; border-color: #aebfb1; }.upload-source-kind { display: grid; margin: 0; padding: 0; grid-template-columns: 1fr 1fr; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }.upload-source-kind legend { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); }.upload-source-kind button { display: flex; min-height: 38px; color: #657168; align-items: center; justify-content: center; background: #fff; border: 0; cursor: pointer; gap: 7px; }.upload-source-kind button + button { border-left: 1px solid var(--line); }.upload-source-kind button.active { color: #24452f; font-weight: 700; background: #edf3ed; box-shadow: inset 0 0 0 1px #aec0b1; }.upload-target-preview { display: grid; padding: 10px 12px; background: #f3f6f2; border: 1px solid #dce4dc; border-radius: 5px; gap: 4px; }.upload-target-preview span, .upload-imported-paths > span { color: var(--muted); font-size: 10px; font-weight: 700; text-transform: uppercase; }.upload-target-preview code { overflow-wrap: anywhere; color: #36533e; font-size: 12px; }.upload-command-result { display: grid; margin-top: 2px; gap: 10px; }.upload-command-result header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }.upload-command-result header div { display: grid; gap: 3px; }.upload-command-result strong { font-size: 13px; }.upload-command-result small { color: var(--muted); font-size: 11px; line-height: 1.55; }.upload-command-result pre { margin: 0; padding: 13px; overflow-x: auto; color: #dfeade; background: #17221b; border-radius: 6px; font-size: 11px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }.upload-command-result code { color: inherit; }.upload-safety-note { display: flex; padding: 11px 12px; color: #36513e; align-items: flex-start; background: #eff4ef; border-left: 3px solid #78937c; gap: 9px; }.upload-safety-note svg { margin-top: 1px; flex: 0 0 auto; }.upload-safety-note p { display: grid; margin: 0; gap: 2px; }.upload-safety-note strong { font-size: 11px; }.upload-safety-note span { color: #68766c; font-size: 11px; line-height: 1.5; }.upload-error-block { padding: 10px 12px; white-space: pre-line; background: #fff6f0; border-left: 3px solid #bd7750; }.upload-success { display: flex; padding: 18px; align-items: center; background: #eff5ef; border: 1px solid #cddccd; border-radius: 6px; gap: 13px; }.upload-success > span { display: grid; width: 40px; height: 40px; color: #fff; place-items: center; background: #52745b; border-radius: 50%; }.upload-success div { display: grid; gap: 4px; }.upload-success strong { font-size: 15px; }.upload-success p { margin: 0; color: #627069; font-size: 12px; }.upload-imported-paths { display: grid; padding: 12px; background: #f7f8f5; border: 1px solid var(--line); border-radius: 5px; gap: 5px; }.upload-imported-paths code { overflow-wrap: anywhere; color: #4f5e54; font-size: 11px; }.upload-imported-paths small { color: var(--muted); font-size: 10px; }.spin { animation: spin .8s linear infinite; } @keyframes spin { to { transform: rotate(360deg); } } @media (max-width: 560px) { .upload-dialog { max-height: calc(100dvh - 24px); }.upload-steps li { font-size: 10px; }.upload-command-result header { align-items: flex-start; }.upload-command-result header div { min-width: 0; }.upload-command-result small { overflow-wrap: anywhere; }.upload-dialog footer { position: sticky; bottom: -24px; margin-right: -20px; margin-left: -20px; padding: 12px 20px 0; background: #fdfefb; border-top: 1px solid var(--line); } }
+.data-status { display: inline-flex; color: #89968e; align-items: center; gap: 4px; font-family: inherit; font-size: 11px; }.data-status--present { color: var(--asset-accent); }.upload-dialog { width: min(100%, 720px); }.upload-steps { display: grid; margin: 3px 0 7px; padding: 0; grid-template-columns: repeat(3, 1fr); list-style: none; border-top: 1px solid var(--line); }.upload-steps li { display: flex; padding-top: 10px; color: #98a29b; align-items: center; font-size: 11px; gap: 6px; }.upload-steps li + li { justify-content: center; }.upload-steps li:last-child { justify-content: flex-end; }.upload-steps span { display: grid; width: 20px; height: 20px; place-items: center; border: 1px solid #cfd7d1; border-radius: 50%; font-size: 10px; }.upload-steps .active { color: var(--ink); font-weight: 700; }.upload-steps .active span { color: #fff; background: var(--sage); border-color: var(--sage); }.upload-steps .complete { color: var(--sage); }.upload-steps .complete span { color: var(--sage); background: #e8f0e9; border-color: #aebfb1; }.upload-source-kind { display: grid; margin: 0; padding: 0; grid-template-columns: 1fr 1fr; border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }.upload-source-kind legend { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip: rect(0, 0, 0, 0); }.upload-source-kind button { display: flex; min-height: 38px; color: #657168; align-items: center; justify-content: center; background: #fff; border: 0; cursor: pointer; gap: 7px; }.upload-source-kind button + button { border-left: 1px solid var(--line); }.upload-source-kind button.active { color: #24452f; font-weight: 700; background: #edf3ed; box-shadow: inset 0 0 0 1px #aec0b1; }.upload-target-preview { display: grid; padding: 10px 12px; background: #f3f6f2; border: 1px solid #dce4dc; border-radius: 5px; gap: 4px; }.upload-target-preview span, .upload-imported-paths > span { color: var(--muted); font-size: 10px; font-weight: 700; text-transform: uppercase; }.upload-live-status { display: flex; padding: 11px 12px; color: #66746b; align-items: flex-start; background: #f5f6f3; border: 1px solid #dce2dc; border-radius: 5px; gap: 9px; }.upload-live-status--ready { color: #3f6d49; background: #edf5ec; border-color: #c9ddca; }.upload-live-status svg { margin-top: 1px; flex: 0 0 auto; }.upload-live-status p { display: grid; margin: 0; gap: 2px; }.upload-live-status strong { color: inherit; font-size: 11px; }.upload-live-status span { color: #748078; font-size: 11px; line-height: 1.5; }.upload-target-preview code { overflow-wrap: anywhere; color: #36533e; font-size: 12px; }.upload-command-result { display: grid; margin-top: 2px; gap: 10px; }.upload-command-result header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }.upload-command-result header div { display: grid; gap: 3px; }.upload-command-result strong { font-size: 13px; }.upload-command-result small { color: var(--muted); font-size: 11px; line-height: 1.55; }.upload-command-result pre { margin: 0; padding: 13px; overflow-x: auto; color: #dfeade; background: #17221b; border-radius: 6px; font-size: 11px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }.upload-command-result code { color: inherit; }.upload-safety-note { display: flex; padding: 11px 12px; color: #36513e; align-items: flex-start; background: #eff4ef; border-left: 3px solid #78937c; gap: 9px; }.upload-safety-note svg { margin-top: 1px; flex: 0 0 auto; }.upload-safety-note p { display: grid; margin: 0; gap: 2px; }.upload-safety-note strong { font-size: 11px; }.upload-safety-note span { color: #68766c; font-size: 11px; line-height: 1.5; }.upload-error-block { padding: 10px 12px; white-space: pre-line; background: #fff6f0; border-left: 3px solid #bd7750; }.upload-success { display: flex; padding: 18px; align-items: center; background: #eff5ef; border: 1px solid #cddccd; border-radius: 6px; gap: 13px; }.upload-success > span { display: grid; width: 40px; height: 40px; color: #fff; place-items: center; background: #52745b; border-radius: 50%; }.upload-success div { display: grid; gap: 4px; }.upload-success strong { font-size: 15px; }.upload-success p { margin: 0; color: #627069; font-size: 12px; }.upload-imported-paths { display: grid; padding: 12px; background: #f7f8f5; border: 1px solid var(--line); border-radius: 5px; gap: 5px; }.upload-imported-paths code { overflow-wrap: anywhere; color: #4f5e54; font-size: 11px; }.upload-imported-paths small { color: var(--muted); font-size: 10px; }.upload-imported-file { display: grid; gap: 2px; }.upload-imported-file + .upload-imported-file { padding-top: 5px; border-top: 1px solid #e3e7e1; }.spin { animation: spin .8s linear infinite; } @keyframes spin { to { transform: rotate(360deg); } } @media (max-width: 560px) { .upload-dialog { max-height: calc(100dvh - 24px); }.upload-steps li { font-size: 10px; }.upload-command-result header { align-items: flex-start; }.upload-command-result header div { min-width: 0; }.upload-command-result small { overflow-wrap: anywhere; }.upload-dialog footer { position: sticky; bottom: -24px; margin-right: -20px; margin-left: -20px; padding: 12px 20px 0; background: #fdfefb; border-top: 1px solid var(--line); } }
 </style>

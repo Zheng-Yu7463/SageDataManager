@@ -157,6 +157,29 @@ def test_legacy_shared_password_is_upgraded_on_successful_login(
         login_account(session, "legacyadmin", "wrong-password")
 
 
+def test_administrator_can_reset_an_account_password(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = make_session()
+    monkeypatch.setattr(settings, "auth_session_secret", "test-session-secret")
+    actor, _ = initialize_admin_account(session, account_request())
+    actor_user = session.query(User).filter_by(username=actor.username).one()
+    create_admin_account(session, account_request("newadmin"))
+    session.commit()
+
+    update_admin_account(
+        session,
+        "newadmin",
+        AccountUpdateRequest(password="replacement-password"),
+        actor=actor_user,
+    )
+    session.commit()
+
+    with pytest.raises(AccountLoginError, match="账号或密码错误"):
+        login_account(session, "newadmin", "secure-password")
+    assert login_account(session, "newadmin", "replacement-password")[0].username == "newadmin"
+
+
 def test_administrator_creates_account_with_independent_password(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

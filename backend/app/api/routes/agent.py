@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 from typing import Annotated
 from uuid import UUID
 
@@ -210,6 +212,7 @@ async def agent_upload_file(
     session: SessionDependency,
     principal: Annotated[AgentPrincipal, scoped("files:upload")],
     x_sage_upload_token: Annotated[str | None, Header()] = None,
+    x_sage_content_sha256: Annotated[str | None, Header()] = None,
 ) -> AgentUploadedFileResponse:
     if not x_sage_upload_token:
         raise HTTPException(status_code=401, detail="缺少 X-Sage-Upload-Token。")
@@ -220,6 +223,12 @@ async def agent_upload_file(
         raise HTTPException(status_code=400, detail="Content-Length 无效。") from None
     if declared_size is not None and declared_size > settings.agent_upload_max_bytes:
         raise HTTPException(status_code=413, detail="上传文件超过服务器限制。")
+    expected_checksum = (x_sage_content_sha256 or "").strip().lower()
+    if expected_checksum and (
+        len(expected_checksum) != 64
+        or any(character not in "0123456789abcdef" for character in expected_checksum)
+    ):
+        raise HTTPException(status_code=400, detail="X-Sage-Content-SHA256 格式无效。")
     try:
         validate_agent_upload(
             session,
@@ -233,16 +242,27 @@ async def agent_upload_file(
         )
         with temporary_upload_path(parts_directory) as temporary_file:
             received = 0
+            digest = hashlib.sha256()
             with temporary_file.open("xb") as output:
                 async for chunk in request.stream():
                     received += len(chunk)
                     if received > settings.agent_upload_max_bytes:
                         raise UploadTooLargeError("上传文件超过服务器限制。")
+                    digest.update(chunk)
                     output.write(chunk)
             if received == 0:
                 raise UploadContentError("不能上传空文件。")
+            checksum_sha256 = digest.hexdigest()
+            if expected_checksum and not hmac.compare_digest(
+                expected_checksum, checksum_sha256
+            ):
+                raise UploadContentError("文件 SHA-256 校验失败，请重新上传。")
             result = complete_agent_file_upload(
-                upload_id, relative_path, temporary_file, destination
+                upload_id,
+                relative_path,
+                temporary_file,
+                destination,
+                checksum_sha256,
             )
         session.commit()
         return result

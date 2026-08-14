@@ -1,3 +1,4 @@
+import hashlib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -409,17 +410,21 @@ def test_agent_can_upload_and_finalize_a_file(tmp_path: Path, monkeypatch) -> No
         assert task.status_code == 201
         task_data = task.json()
 
+        content = b"%PDF-1.7\nagent fixture\n%%EOF"
+        expected_checksum = hashlib.sha256(content).hexdigest()
         upload = client.put(
             f"/api/agent/uploads/{task_data['upload_id']}/files/paper.pdf",
             headers={
                 **bearer(plaintext),
                 "X-Sage-Upload-Token": task_data["upload_token"],
+                "X-Sage-Content-SHA256": expected_checksum,
                 "Content-Type": "application/pdf",
             },
-            content=b"%PDF-1.7\nagent fixture\n%%EOF",
+            content=content,
         )
         assert upload.status_code == 200
         assert upload.json()["relative_path"] == "paper.pdf"
+        assert upload.json()["checksum_sha256"] == expected_checksum
         assert not (tmp_path / ".uploads" / ".parts").exists()
 
         finalized = client.post(
@@ -431,6 +436,7 @@ def test_agent_can_upload_and_finalize_a_file(tmp_path: Path, monkeypatch) -> No
         assert finalized.json()["relative_paths"] == [
             "literature/agent-upload-paper/original/official/paper.pdf"
         ]
+        assert list(finalized.json()["checksums"].values()) == [expected_checksum]
         replayed = client.post(
             task_data["finalize_url"],
             headers=bearer(plaintext),
@@ -452,10 +458,46 @@ def test_agent_can_upload_and_finalize_a_file(tmp_path: Path, monkeypatch) -> No
         ).read_bytes().startswith(b"%PDF")
         file_record = session.scalar(select(FileRecord))
         assert file_record is not None
+        assert file_record.checksum == expected_checksum
         activities = session.scalars(select(Activity).order_by(Activity.created_at)).all()
         assert activities[-2].credential_name == "literature-sync"
         assert activities[-1].credential_name == "literature-sync"
         assert sum(activity.action == "completed_upload" for activity in activities) == 1
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
+def test_agent_upload_rejects_mismatched_declared_checksum(
+    tmp_path: Path, monkeypatch
+) -> None:
+    session = make_session()
+    user, asset = create_user_and_asset(session)
+    monkeypatch.setattr(settings, "auth_session_secret", "agent-test-secret")
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    plaintext = create_token(session, user, ["files:upload"])
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        client = TestClient(app)
+        task = client.post(
+            "/api/agent/uploads",
+            headers=bearer(plaintext),
+            json={"asset_id": str(asset.id), "target_subdirectory": "original"},
+        ).json()
+
+        response = client.put(
+            f"/api/agent/uploads/{task['upload_id']}/files/paper.pdf",
+            headers={
+                **bearer(plaintext),
+                "X-Sage-Upload-Token": task["upload_token"],
+                "X-Sage-Content-SHA256": "0" * 64,
+            },
+            content=b"actual content",
+        )
+
+        assert response.status_code == 409
+        assert "SHA-256 校验失败" in response.json()["detail"]
+        assert not (tmp_path / ".uploads").exists()
     finally:
         app.dependency_overrides.clear()
         session.close()

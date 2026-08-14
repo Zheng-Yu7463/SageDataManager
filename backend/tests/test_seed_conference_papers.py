@@ -168,6 +168,37 @@ def test_parse_iclr_paper_falls_back_to_proceedings_abstract(
     assert paper.metadata.abstract == "Official proceedings abstract."
 
 
+def test_parse_iclr_paper_rejects_missing_official_abstract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    virtual_page = b"""
+        <script type="application/ld+json">
+          {"name": "Example Paper", "author": [{"name": "Ada Lovelace"}]}
+        </script>
+        <a href="https://openreview.net/forum?id=example123">OpenReview</a>
+    """
+    publication_parser = seed_conference_papers.PaperPageParser()
+    publication_parser.feed(
+        """
+        <meta name="citation_author" content="Lovelace, Ada">
+        <meta name="citation_pdf_url" content="https://proceedings.iclr.cc/paper.pdf">
+        <meta name="citation_publication_date" content="2026-04-20">
+        """
+    )
+    monkeypatch.setattr(seed_conference_papers, "fetch", lambda url: virtual_page)
+    monkeypatch.setattr(
+        seed_conference_papers,
+        "find_iclr_proceedings_page",
+        lambda title, first_author: (
+            "https://proceedings.iclr.cc/paper.html",
+            publication_parser,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="官方页面缺少摘要"):
+        seed_conference_papers.parse_iclr_paper("example-poster")
+
+
 def test_parse_arxiv_feed_builds_preprint_metadata() -> None:
     payload = b"""<?xml version="1.0" encoding="UTF-8"?>
     <feed xmlns="http://www.w3.org/2005/Atom">

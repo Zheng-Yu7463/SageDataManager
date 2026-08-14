@@ -98,6 +98,12 @@ def paper_payload(
     )
 
 
+def test_publication_summary_populates_missing_abstract() -> None:
+    request = paper_payload(asset_type=AssetType.LITERATURE)
+
+    assert request.details["abstract"] == request.summary
+
+
 def test_publication_identity_lookup_uses_exists_for_postgres_json_assets() -> None:
     class CapturingSession:
         def __init__(self) -> None:

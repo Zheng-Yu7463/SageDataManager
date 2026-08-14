@@ -277,6 +277,15 @@ export interface UploadFinalizeResult {
   imported_file_count: number
   total_size: number
   relative_paths: string[]
+  checksums: Record<string, string>
+}
+
+export interface UploadStatusResult {
+  upload_id: string
+  status: 'waiting' | 'ready' | 'completed'
+  uploaded_file_count: number
+  total_size: number
+  expires_at: string
 }
 
 export type FileAccessMode = 'download' | 'preview'
@@ -310,6 +319,7 @@ export interface AccountCreateInput {
 
 export interface AccountUpdateInput {
   name?: string
+  password?: string
   is_active?: boolean
 }
 

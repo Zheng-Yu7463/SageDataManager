@@ -17,6 +17,7 @@ from app.domain.schemas import (
     UploadCommandResponse,
     UploadFinalizeRequest,
     UploadFinalizeResponse,
+    UploadStatusResponse,
 )
 from app.services.archive import StorageScanError, archive_health, scan_storage
 from app.services.transfers import (
@@ -27,6 +28,7 @@ from app.services.transfers import (
     UploadTicketError,
     finalize_upload,
     generate_upload_command,
+    upload_status,
 )
 from app.services.unclaimed import (
     AssetNotFoundError,
@@ -87,6 +89,27 @@ def claim_file(
     except Exception:
         session.rollback()
         raise
+
+
+@router.post("/uploads/{upload_id}/status")
+def staged_upload_status(
+    upload_id: UUID,
+    payload: UploadFinalizeRequest,
+    session: SessionDependency,
+    current_user: AdminDependency,
+) -> UploadStatusResponse:
+    try:
+        return upload_status(
+            session,
+            settings.storage_root,
+            upload_id,
+            payload.upload_token,
+            actor=current_user,
+        )
+    except UploadTicketError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from None
+    except (UploadNotReadyError, UploadContentError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from None
 
 
 @router.post("/uploads/{upload_id}/finalize")

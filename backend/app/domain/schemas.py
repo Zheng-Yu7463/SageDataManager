@@ -304,6 +304,12 @@ class AssetCreateRequest(BaseModel):
     @model_validator(mode="after")
     def validate_details_for_asset_type(self) -> "AssetCreateRequest":
         self.details = normalized_asset_details(self.type, self.details)
+        if (
+            self.type in {AssetType.PAPER, AssetType.LITERATURE}
+            and self.summary.strip()
+            and not self.details.get("abstract")
+        ):
+            self.details["abstract"] = self.summary.strip()
         return self
 
 
@@ -366,6 +372,15 @@ class UploadFinalizeResponse(BaseModel):
     imported_file_count: int
     total_size: int
     relative_paths: list[str]
+    checksums: dict[str, str] = Field(default_factory=dict)
+
+
+class UploadStatusResponse(BaseModel):
+    upload_id: UUID
+    status: Literal["waiting", "ready", "completed"]
+    uploaded_file_count: int
+    total_size: int
+    expires_at: datetime
 
 
 AgentScope = Literal[
@@ -436,6 +451,7 @@ class AgentUploadedFileResponse(BaseModel):
     upload_id: UUID
     relative_path: str
     file_size: int
+    checksum_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
 class FileAccessTicketRequest(BaseModel):
@@ -469,6 +485,7 @@ class AccountCreateRequest(BaseModel):
 
 class AccountUpdateRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=80)
+    password: str | None = Field(default=None, min_length=10, max_length=256)
     is_active: bool | None = None
 
 

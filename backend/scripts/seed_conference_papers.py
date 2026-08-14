@@ -280,6 +280,8 @@ def parse_iclr_paper(poster_id: str, year: int = 2026) -> PublicationRecord:
         citation_author_name(author) for author in publication_parser.meta["citation_author"]
     ]
     abstract = parser.abstract or publication_parser.abstract
+    if not abstract:
+        raise ValueError(f"ICLR 官方页面缺少摘要：{publication_url}")
     metadata = PublicationMetadata(
         venue="ICLR",
         year=year,

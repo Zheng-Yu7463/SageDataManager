@@ -115,6 +115,8 @@ def update_admin_account(
         raise AccountNotFoundError
     if payload.name is not None:
         user.name = payload.name.strip()
+    if payload.password is not None:
+        user.password_hash = hash_password(payload.password)
     if payload.is_active is not None:
         if user.id == actor.id and not payload.is_active:
             raise AccountConflictError("不能停用当前登录账号。")

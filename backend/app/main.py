@@ -54,11 +54,15 @@ Never place a token in this document, source code, URLs, logs, or asset metadata
 5. Create an isolated upload task: `POST /api/agent/uploads`.
 6. Upload each file with `PUT` to the returned `file_upload_url_template`.
    Send the upload token in `X-Sage-Upload-Token` and use the same personal
-   access token that created the task.
+   access token that created the task. When the local SHA-256 is known, send
+   it in `X-Sage-Content-SHA256`; a mismatch rejects the file before staging.
+   The response always returns the SHA-256 calculated from received bytes.
 7. Finalize after every upload succeeds. `POST` to `finalize_url`
    with `{"upload_token":"..."}`.
    Finalization is idempotent: after a lost response, retry it with the same
    upload ID and tokens. A completed task rejects additional file uploads.
+   Finalization stores SHA-256 for every file and rejects duplicate content
+   already attached to the same asset.
 8. On a file conflict, do not overwrite or rename the file without user direction.
 
 ## Catalogue policy
