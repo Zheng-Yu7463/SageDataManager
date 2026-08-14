@@ -109,7 +109,7 @@ class PaperPageParser(HTMLParser):
         elif self._json_depth:
             self._json_depth += 1
         classes = set((attributes.get("class") or "").split())
-        if tag == "div" and ({"abstract-text-inner", "acl-abstract"} & classes):
+        if {"abstract-text-inner", "acl-abstract", "paper-abstract"} & classes:
             self._abstract_depth = 1
         elif self._abstract_depth:
             self._abstract_depth += 1
@@ -279,6 +279,7 @@ def parse_iclr_paper(poster_id: str, year: int = 2026) -> PublicationRecord:
     publication_authors = [
         citation_author_name(author) for author in publication_parser.meta["citation_author"]
     ]
+    abstract = parser.abstract or publication_parser.abstract
     metadata = PublicationMetadata(
         venue="ICLR",
         year=year,
@@ -288,7 +289,7 @@ def parse_iclr_paper(poster_id: str, year: int = 2026) -> PublicationRecord:
         source_url=source_url,
         publication_url=publication_url,
         pdf_url=publication_parser.meta["citation_pdf_url"][0],
-        abstract=parser.abstract,
+        abstract=abstract,
         published_at=publication_parser.meta["citation_publication_date"][0],
         citation_key=citation_key("ICLR", year, forum_id),
         booktitle=first_meta(publication_parser, "citation_conference_title", "citation_book_title")
@@ -296,7 +297,7 @@ def parse_iclr_paper(poster_id: str, year: int = 2026) -> PublicationRecord:
         publisher=first_meta(publication_parser, "citation_publisher"),
     )
     return PublicationRecord(
-        slug=f"iclr-{year}-{poster_id}", title=title, summary=parser.abstract, metadata=metadata
+        slug=f"iclr-{year}-{poster_id}", title=title, summary=abstract, metadata=metadata
     )
 
 

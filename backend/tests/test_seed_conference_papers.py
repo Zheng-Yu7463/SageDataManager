@@ -119,6 +119,55 @@ def test_citation_pages_combines_first_and_last_page() -> None:
     assert seed_conference_papers.citation_pages(parser) == "101--112"
 
 
+def test_paper_page_parser_reads_iclr_proceedings_abstract() -> None:
+    parser = seed_conference_papers.PaperPageParser()
+    parser.feed(
+        """
+        <section class="paper-section">
+          <h2 class="section-label">Abstract</h2>
+          <p class="paper-abstract"><p>Official <strong>ICLR</strong> abstract.</p></p>
+        </section>
+        """
+    )
+
+    assert parser.abstract == "Official ICLR abstract."
+
+
+def test_parse_iclr_paper_falls_back_to_proceedings_abstract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    virtual_page = b"""
+        <script type="application/ld+json">
+          {"name": "Example Paper", "author": [{"name": "Ada Lovelace"}]}
+        </script>
+        <a href="https://openreview.net/forum?id=example123">OpenReview</a>
+    """
+    publication_page = b"""
+        <meta name="citation_title" content="Example Paper">
+        <meta name="citation_author" content="Lovelace, Ada">
+        <meta name="citation_pdf_url" content="https://proceedings.iclr.cc/paper.pdf">
+        <meta name="citation_publication_date" content="2026-04-20">
+        <p class="paper-abstract"><p>Official proceedings abstract.</p></p>
+    """
+    publication_parser = seed_conference_papers.PaperPageParser()
+    publication_parser.feed(publication_page.decode())
+
+    monkeypatch.setattr(seed_conference_papers, "fetch", lambda url: virtual_page)
+    monkeypatch.setattr(
+        seed_conference_papers,
+        "find_iclr_proceedings_page",
+        lambda title, first_author: (
+            "https://proceedings.iclr.cc/paper.html",
+            publication_parser,
+        ),
+    )
+
+    paper = seed_conference_papers.parse_iclr_paper("example-poster")
+
+    assert paper.summary == "Official proceedings abstract."
+    assert paper.metadata.abstract == "Official proceedings abstract."
+
+
 def test_parse_arxiv_feed_builds_preprint_metadata() -> None:
     payload = b"""<?xml version="1.0" encoding="UTF-8"?>
     <feed xmlns="http://www.w3.org/2005/Atom">
