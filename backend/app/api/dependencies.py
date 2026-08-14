@@ -36,6 +36,15 @@ def require_admin(
 AdminDependency = Annotated[User, Depends(require_admin)]
 
 
+def require_instance_owner(current_user: AdminDependency) -> User:
+    if not current_user.is_instance_owner:
+        raise HTTPException(status_code=403, detail="只有实例所有者可以执行系统更新。")
+    return current_user
+
+
+InstanceOwnerDependency = Annotated[User, Depends(require_instance_owner)]
+
+
 @dataclass(frozen=True)
 class AgentPrincipal:
     user: User

@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     upload_ticket_ttl_seconds: int = 86400
     agent_upload_max_bytes: int = 500_000_000
     upload_destination_root: str = "/home/zhengyu/SageDataManager/sample-archive"
+    update_agent_socket: Path = Path("/run/sage-updater/updater.sock")
+    update_agent_secret: str = ""
+    update_agent_timeout_seconds: int = 60
 
     model_config = SettingsConfigDict(
         env_file=".env",

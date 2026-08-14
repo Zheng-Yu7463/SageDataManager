@@ -517,6 +517,39 @@ class AccountUpdateRequest(BaseModel):
     is_active: bool | None = None
 
 
+class SystemUpdateCommit(BaseModel):
+    sha: str
+    short_sha: str
+    subject: str
+    author: str
+    committed_at: str
+
+
+class SystemUpdateStatus(BaseModel):
+    enabled: bool
+    state: str
+    phase: str | None = None
+    message: str
+    branch: str | None = None
+    current_commit: str | None = None
+    latest_commit: str | None = None
+    update_available: bool = False
+    behind_count: int = 0
+    ahead_count: int = 0
+    worktree_clean: bool | None = None
+    remote_url: str | None = None
+    commits: list[SystemUpdateCommit] = Field(default_factory=list)
+    started_at: str | None = None
+    completed_at: str | None = None
+    error: str | None = None
+    backup_path: str | None = None
+    logs: list[str] = Field(default_factory=list)
+
+
+class SystemUpdateApplyRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=256)
+
+
 class AccountLoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=80, pattern=r"^[a-z0-9]+$")
 

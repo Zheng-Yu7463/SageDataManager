@@ -1,0 +1,33 @@
+[Unit]
+Description=SageDataManager restricted update agent
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=@@REPOSITORY@@
+EnvironmentFile=@@REPOSITORY@@/.env
+Environment=SAGE_UPDATE_REPOSITORY=@@REPOSITORY@@
+Environment=SAGE_UPDATE_AGENT_SOCKET=/run/sage-updater/updater.sock
+Environment=SAGE_UPDATE_STATE_DIRECTORY=/var/lib/sage-updater
+ExecStart=/usr/bin/python3 @@REPOSITORY@@/deploy/sage_updater.py
+Restart=always
+RestartSec=3
+RuntimeDirectory=sage-updater
+RuntimeDirectoryMode=0750
+StateDirectory=sage-updater
+StateDirectoryMode=0700
+UMask=0007
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=@@REPOSITORY@@ /var/lib/sage-updater /run/sage-updater
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

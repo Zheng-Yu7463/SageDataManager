@@ -4,8 +4,14 @@ from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Path, Request, Response, status
 
-from app.api.dependencies import AdminDependency, SessionDependency
-from app.domain.schemas import InstanceBrandingResponse, InstanceBrandingUpdateRequest
+from app.api.dependencies import AdminDependency, InstanceOwnerDependency, SessionDependency
+from app.core.config import settings
+from app.domain.schemas import (
+    InstanceBrandingResponse,
+    InstanceBrandingUpdateRequest,
+    SystemUpdateApplyRequest,
+    SystemUpdateStatus,
+)
 from app.services.branding import (
     MAX_LOGO_BYTES,
     BrandingLogoError,
@@ -14,6 +20,13 @@ from app.services.branding import (
     remove_branding_logo,
     update_branding,
     update_branding_logo,
+)
+from app.services.security import verify_password
+from app.services.system_updates import (
+    UpdateAgentRequestError,
+    UpdateAgentUnavailableError,
+    disabled_update_status,
+    request_update_agent,
 )
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -109,3 +122,42 @@ def delete_branding_logo(
     except Exception:
         session.rollback()
         raise
+
+
+def _update_agent_response(method: str, path: str) -> SystemUpdateStatus:
+    try:
+        return SystemUpdateStatus.model_validate(request_update_agent(method, path))
+    except UpdateAgentUnavailableError as error:
+        if method != "GET":
+            raise HTTPException(status_code=503, detail=str(error)) from None
+        return SystemUpdateStatus.model_validate(disabled_update_status(str(error)))
+    except UpdateAgentRequestError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from None
+
+
+@router.get("/system-update")
+def get_system_update_status(current_user: AdminDependency) -> SystemUpdateStatus:
+    return _update_agent_response("GET", "/v1/status")
+
+
+@router.post("/system-update/check")
+def check_system_update(current_user: AdminDependency) -> SystemUpdateStatus:
+    return _update_agent_response("POST", "/v1/check")
+
+
+@router.post("/system-update/apply", status_code=status.HTTP_202_ACCEPTED)
+def apply_system_update(
+    payload: SystemUpdateApplyRequest,
+    current_user: InstanceOwnerDependency,
+) -> SystemUpdateStatus:
+    password_matches = bool(
+        current_user.password_hash and verify_password(payload.password, current_user.password_hash)
+    )
+    legacy_matches = bool(
+        not current_user.password_hash
+        and settings.fixed_account_password
+        and hmac.compare_digest(payload.password, settings.fixed_account_password)
+    )
+    if not password_matches and not legacy_matches:
+        raise HTTPException(status_code=403, detail="当前账号密码不正确。")
+    return _update_agent_response("POST", "/v1/update")
