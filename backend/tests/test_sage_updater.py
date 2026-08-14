@@ -104,3 +104,72 @@ def test_check_rejects_a_dirty_worktree(tmp_path: Path) -> None:
         manager.check()
 
     assert manager.status()["state"] == "failed"
+
+
+def test_snap_docker_uses_packaged_clients_without_the_snap_launcher(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    docker_binary = tmp_path / "snap/docker/current/bin/docker"
+    compose_binary = tmp_path / "snap/docker/current/usr/libexec/docker/cli-plugins/docker-compose"
+    docker_binary.parent.mkdir(parents=True)
+    compose_binary.parent.mkdir(parents=True)
+    docker_binary.touch()
+    compose_binary.touch()
+    monkeypatch.setattr(sage_updater, "SNAP_DOCKER_BINARY", docker_binary)
+    monkeypatch.setattr(sage_updater, "SNAP_COMPOSE_BINARY", compose_binary)
+
+    docker_command, compose_command = sage_updater.resolve_container_commands("/snap/bin/docker")
+
+    assert docker_command == (str(docker_binary),)
+    assert compose_command == (str(compose_binary),)
+
+
+def test_update_uses_the_commit_fetched_during_preflight(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote, worktree = create_repository_pair(tmp_path)
+    manager = sage_updater.UpdateManager(agent_config(tmp_path, remote, worktree))
+    old_commit = git(worktree, "rev-parse", "HEAD")
+    target_commit = "f" * 40
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(manager, "_capture_running_images", lambda: {})
+    monkeypatch.setattr(manager, "_backup_database", lambda commit: tmp_path / "backup.dump")
+    monkeypatch.setattr(manager, "_wait_for_health", lambda: None)
+    monkeypatch.setattr(manager, "_git", lambda arguments: target_commit)
+    monkeypatch.setattr(
+        manager,
+        "_inspect_repository",
+        lambda fetch: {
+            **manager.status(),
+            "current_commit": target_commit,
+            "latest_commit": target_commit,
+            "update_available": False,
+        },
+    )
+
+    def record_run(command: list[str], **kwargs):
+        commands.append(command)
+        return sage_updater.CommandResult(stdout="")
+
+    monkeypatch.setattr(manager, "_run", record_run)
+    manager._operation_lock.acquire()
+    manager._perform_update(old_commit, target_commit)
+
+    assert ["git", "merge", "--ff-only", target_commit] in commands
+    assert not any(command[:2] == ["git", "pull"] for command in commands)
+
+
+def test_run_reports_multiple_stderr_lines(tmp_path: Path) -> None:
+    remote, worktree = create_repository_pair(tmp_path)
+    manager = sage_updater.UpdateManager(agent_config(tmp_path, remote, worktree))
+
+    with pytest.raises(sage_updater.UpdateAgentError) as captured:
+        manager._run(
+            ["sh", "-c", "printf 'first detail\\nsecond detail\\n' >&2; exit 1"],
+            timeout=10,
+        )
+
+    assert "first detail；second detail" in str(captured.value)

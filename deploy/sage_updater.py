@@ -5,6 +5,7 @@ import argparse
 import hmac
 import json
 import os
+import shutil
 import signal
 import subprocess
 import threading
@@ -21,6 +22,8 @@ from typing import BinaryIO, NoReturn
 BUSY_STATES = {"checking", "backing_up", "pulling", "building", "restarting", "verifying"}
 EXPECTED_REMOTE = "https://github.com/Zheng-Yu7463/SageDataManager"
 UTC_TIMEZONE = timezone.utc  # noqa: UP017 -- host Python 3.10 lacks datetime.UTC.
+SNAP_DOCKER_BINARY = Path("/snap/docker/current/bin/docker")
+SNAP_COMPOSE_BINARY = Path("/snap/docker/current/usr/libexec/docker/cli-plugins/docker-compose")
 
 
 class UpdateAgentError(Exception):
@@ -42,6 +45,8 @@ class AgentConfig:
     expected_remote: str = EXPECTED_REMOTE
     backend_health_url: str = "http://127.0.0.1:8000/api/health"
     frontend_health_url: str = "http://127.0.0.1:8080/api/health"
+    docker_command: tuple[str, ...] = ("docker",)
+    compose_command: tuple[str, ...] = ("docker", "compose")
 
 
 @dataclass(frozen=True)
@@ -76,6 +81,19 @@ def read_dotenv(path: Path) -> dict[str, str]:
             value = value[1:-1]
         values[key.strip()] = value
     return values
+
+
+def resolve_container_commands(
+    docker_executable: str | None = None,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    executable = docker_executable or shutil.which("docker") or "docker"
+    if (
+        executable == "/snap/bin/docker"
+        and SNAP_DOCKER_BINARY.is_file()
+        and SNAP_COMPOSE_BINARY.is_file()
+    ):
+        return (str(SNAP_DOCKER_BINARY),), (str(SNAP_COMPOSE_BINARY),)
+    return (executable,), (executable, "compose")
 
 
 class UpdateManager:
@@ -169,10 +187,10 @@ class UpdateManager:
             backup_path = self._backup_database(old_commit)
             self._set_value("backup_path", backup_path.name)
 
-            self._set_progress("pulling", "git_pull", "正在 fast-forward 到 origin/main…")
+            self._set_progress("pulling", "git_merge", "正在 fast-forward 到已检查的 Commit…")
             self._run(
-                ["git", "pull", "--ff-only", self.config.remote, self.config.branch],
-                timeout=180,
+                ["git", "merge", "--ff-only", target_commit],
+                timeout=120,
             )
             actual_commit = self._git(["rev-parse", "HEAD"])
             if actual_commit != target_commit:
@@ -180,13 +198,13 @@ class UpdateManager:
 
             self._set_progress("building", "docker_build", "正在构建后端与前端镜像…")
             self._run(
-                ["docker", "compose", "build", "backend", "frontend"],
+                [*self.config.compose_command, "build", "backend", "frontend"],
                 timeout=2400,
             )
 
             self._set_progress("restarting", "compose_up", "正在重建应用容器并运行迁移…")
             self._run(
-                ["docker", "compose", "up", "-d", "backend", "frontend"],
+                [*self.config.compose_command, "up", "-d", "backend", "frontend"],
                 timeout=600,
             )
 
@@ -323,8 +341,7 @@ class UpdateManager:
         with backup_path.open("wb") as output:
             self._run(
                 [
-                    "docker",
-                    "compose",
+                    *self.config.compose_command,
                     "exec",
                     "-T",
                     "postgres",
@@ -352,11 +369,23 @@ class UpdateManager:
             if not container_id:
                 continue
             image_id = self._run(
-                ["docker", "inspect", "--format", "{{.Image}}", container_id],
+                [
+                    *self.config.docker_command,
+                    "inspect",
+                    "--format",
+                    "{{.Image}}",
+                    container_id,
+                ],
                 timeout=30,
             ).stdout.strip()
             image_name = self._run(
-                ["docker", "inspect", "--format", "{{.Config.Image}}", container_id],
+                [
+                    *self.config.docker_command,
+                    "inspect",
+                    "--format",
+                    "{{.Config.Image}}",
+                    container_id,
+                ],
                 timeout=30,
             ).stdout.strip()
             if image_id and image_name:
@@ -372,12 +401,14 @@ class UpdateManager:
         if current_commit != old_commit:
             self._run(["git", "reset", "--hard", old_commit], timeout=120)
         for image_id, image_name in old_images.values():
-            self._run(["docker", "image", "tag", image_id, image_name], timeout=60)
+            self._run(
+                [*self.config.docker_command, "image", "tag", image_id, image_name],
+                timeout=60,
+            )
         if old_images:
             self._run(
                 [
-                    "docker",
-                    "compose",
+                    *self.config.compose_command,
                     "up",
                     "-d",
                     "--no-build",
@@ -409,7 +440,7 @@ class UpdateManager:
         raise UpdateAgentError(f"新版本健康检查超时：{last_error}")
 
     def _compose(self, arguments: list[str], *, allow_empty: bool = False) -> str:
-        result = self._run(["docker", "compose", *arguments], timeout=60)
+        result = self._run([*self.config.compose_command, *arguments], timeout=60)
         output = result.stdout.strip()
         if not output and not allow_empty:
             raise UpdateAgentError("Docker Compose 没有返回预期结果。")
@@ -447,7 +478,9 @@ class UpdateManager:
         )
         if completed.returncode != 0:
             detail = (standard_error or standard_output or "未知错误").strip().splitlines()
-            summary = detail[-1] if detail else "未知错误"
+            summary = "；".join(line.strip() for line in detail[-4:] if line.strip())
+            if not summary:
+                summary = "未知错误"
             raise UpdateAgentError(f"{command[0]} {command[1]} 失败：{summary}")
         if stdout is None:
             lines = [
@@ -609,6 +642,7 @@ def config_from_environment() -> AgentConfig:
         raise UpdateAgentError("SAGE_UPDATE_REPOSITORY 必须指向 SageDataManager 仓库。")
     if len(secret) < 32:
         raise UpdateAgentError("SAGE_UPDATE_AGENT_SECRET 至少需要 32 个字符。")
+    docker_command, compose_command = resolve_container_commands()
     return AgentConfig(
         repository=repository,
         socket_path=socket_path,
@@ -623,6 +657,8 @@ def config_from_environment() -> AgentConfig:
             "SAGE_UPDATE_FRONTEND_HEALTH_URL",
             "http://127.0.0.1:8080/api/health",
         ),
+        docker_command=docker_command,
+        compose_command=compose_command,
     )
 
 
