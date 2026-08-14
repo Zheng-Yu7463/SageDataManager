@@ -33,7 +33,6 @@
 frontend/   Vue 管理端
 backend/    FastAPI 服务、领域模型与迁移
 docs/       架构与开发说明
-images/     原始界面设计参考
 compose.yaml
 ```
 
