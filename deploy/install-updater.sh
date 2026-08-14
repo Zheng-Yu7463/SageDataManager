@@ -39,7 +39,8 @@ fi
 sed "s|@@REPOSITORY@@|${repository}|g" "${service_template}" >"${service_file}"
 chmod 644 "${service_file}"
 systemctl daemon-reload
-systemctl enable --now sage-updater.service
+systemctl enable sage-updater.service
+systemctl restart sage-updater.service
 
 for attempt in {1..20}; do
   [[ -S /run/sage-updater/updater.sock ]] && break
