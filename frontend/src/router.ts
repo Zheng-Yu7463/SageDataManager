@@ -5,6 +5,7 @@ import ArchiveHealthView from '@/views/ArchiveHealthView.vue'
 import PendingFilesView from '@/views/PendingFilesView.vue'
 import ImportAssetsView from '@/views/ImportAssetsView.vue'
 import AssetDetailView from '@/views/AssetDetailView.vue'
+import AccountRegistrationView from '@/views/AccountRegistrationView.vue'
 import ActivityLogView from '@/views/ActivityLogView.vue'
 import ArchivedAssetsView from '@/views/ArchivedAssetsView.vue'
 import DashboardView from '@/views/DashboardView.vue'
@@ -20,6 +21,7 @@ export const router = createRouter({
   },
   routes: [
     { path: '/', name: 'dashboard', component: DashboardView, meta: { title: '科研资产总览' } },
+    { path: '/register/:token', name: 'account-registration', component: AccountRegistrationView, meta: { title: '完成账号注册' } },
     { path: '/search', name: 'search', component: SearchView, meta: { title: '统一检索' } },
     { path: '/papers', name: 'papers', component: AssetsView, meta: { assetType: 'paper', title: '论文目录' } },
     { path: '/settings', name: 'settings', component: SettingsView, meta: { title: '系统设置' } },

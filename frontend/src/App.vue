@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { NConfigProvider, NDialogProvider, NMessageProvider, zhCN, dateZhCN } from 'naive-ui'
 import { computed, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 
 import { getCurrentAccount, getInstanceSetupStatus } from '@/api/client'
 import AppShell from '@/components/AppShell.vue'
+import AccountRegistrationView from '@/views/AccountRegistrationView.vue'
 import { useBranding } from '@/composables/useBranding'
 import LoginView from '@/views/LoginView.vue'
 import SetupView from '@/views/SetupView.vue'
@@ -15,6 +17,9 @@ const { account, restoring, establishSession, completeSessionRestoration, expire
 const setupStatus = ref<InstanceSetupStatus | null>(null)
 const startupError = ref('')
 const startupRetrying = ref(false)
+const route = useRoute()
+const router = useRouter()
+const invitationRoute = computed(() => route.name === 'account-registration')
 
 async function restoreSession() {
   startupRetrying.value = true
@@ -56,6 +61,11 @@ function completeSetup(response: AccountLoginResponse) {
   establishSession(response)
 }
 
+function completeInvitation(response: AccountLoginResponse) {
+  establishSession(response)
+  void router.replace({ name: 'dashboard' })
+}
+
 function signOut() {
   expireSession()
 }
@@ -89,6 +99,7 @@ const themeOverrides = computed(() => ({
           <p>请设置 SAGE_AUTH_SESSION_SECRET 并重启后端。</p>
           <button class="button button--outline" type="button" @click="restoreSession">重新检查</button>
         </main>
+        <AccountRegistrationView v-else-if="invitationRoute && setupStatus?.initialized" @authenticated="completeInvitation" />
         <LoginView v-else-if="!account" @authenticated="completeLogin" />
         <AppShell v-else :account="account" @sign-out="signOut" />
       </NMessageProvider>

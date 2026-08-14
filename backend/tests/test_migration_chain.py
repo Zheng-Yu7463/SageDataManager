@@ -38,9 +38,7 @@ def test_empty_sqlite_database_upgrades_to_head(tmp_path: Path) -> None:
     with engine.connect() as connection:
         revision = connection.scalar(sa.text("SELECT version_num FROM alembic_version"))
         inspector = sa.inspect(connection)
-        activity_columns = {
-            column["name"] for column in inspector.get_columns("activities")
-        }
+        activity_columns = {column["name"] for column in inspector.get_columns("activities")}
         unclaimed_foreign_keys = inspector.get_foreign_keys("unclaimed_files")
         file_unique_constraints = inspector.get_unique_constraints("asset_files")
         relation_unique_constraints = inspector.get_unique_constraints("asset_relations")
@@ -51,20 +49,22 @@ def test_empty_sqlite_database_upgrades_to_head(tmp_path: Path) -> None:
         publication_identity_constraints = inspector.get_unique_constraints(
             "publication_identity_keys"
         )
-        activity_indexes = {
-            index["name"] for index in inspector.get_indexes("activities")
-        }
+        activity_indexes = {index["name"] for index in inspector.get_indexes("activities")}
         asset_indexes = {index["name"] for index in inspector.get_indexes("assets")}
         upload_task_checks = inspector.get_check_constraints("upload_tasks")
         upload_task_foreign_keys = inspector.get_foreign_keys("upload_tasks")
         user_columns = {column["name"] for column in inspector.get_columns("users")}
         user_indexes = {index["name"]: index for index in inspector.get_indexes("users")}
+        invitation_columns = {
+            column["name"] for column in inspector.get_columns("account_invitations")
+        }
+        invitation_checks = inspector.get_check_constraints("account_invitations")
+        invitation_foreign_keys = inspector.get_foreign_keys("account_invitations")
 
-    assert revision == "20260814_0019"
+    assert revision == "20260814_0020"
     assert {"operation_id", "operation_role"} <= activity_columns
     assert any(
-        key["constrained_columns"] == ["claimed_asset_id"]
-        and key["referred_table"] == "assets"
+        key["constrained_columns"] == ["claimed_asset_id"] and key["referred_table"] == "assets"
         for key in unclaimed_foreign_keys
     )
     assert any(
@@ -76,8 +76,7 @@ def test_empty_sqlite_database_upgrades_to_head(tmp_path: Path) -> None:
         for constraint in relation_unique_constraints
     )
     assert any(
-        constraint["name"] == "ck_file_access_grants_mode"
-        for constraint in file_access_checks
+        constraint["name"] == "ck_file_access_grants_mode" for constraint in file_access_checks
     )
     assert "first_accessed_at" in file_access_columns
     assert any(
@@ -89,17 +88,27 @@ def test_empty_sqlite_database_upgrades_to_head(tmp_path: Path) -> None:
         "ix_activities_primary_action_created_id",
     } <= activity_indexes
     assert "ix_assets_archived_at_id" in asset_indexes
-    assert any(
-        constraint["name"] == "ck_upload_tasks_status"
-        for constraint in upload_task_checks
-    )
+    assert any(constraint["name"] == "ck_upload_tasks_status" for constraint in upload_task_checks)
     assert {key["referred_table"] for key in upload_task_foreign_keys} == {
         "assets",
         "personal_access_tokens",
         "users",
     }
-    assert {"password_hash", "is_instance_owner"} <= user_columns
+    assert {"password_hash", "is_registered", "is_instance_owner"} <= user_columns
     assert user_indexes["uq_users_single_instance_owner"]["unique"] == 1
+    assert {
+        "user_id",
+        "created_by_id",
+        "token_hash",
+        "purpose",
+        "expires_at",
+        "accepted_at",
+        "revoked_at",
+    } <= invitation_columns
+    assert any(
+        constraint["name"] == "ck_account_invitations_purpose" for constraint in invitation_checks
+    )
+    assert {key["referred_table"] for key in invitation_foreign_keys} == {"users"}
 
 
 def test_publication_identity_migration_backfills_existing_records(tmp_path: Path) -> None:
@@ -223,6 +232,6 @@ def test_publication_identity_migration_can_retry_after_duplicate_preflight(
 
     with engine.connect() as connection:
         assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == (
-            "20260814_0019"
+            "20260814_0020"
         )
         assert sa.inspect(connection).has_table("publication_identity_keys")

@@ -1,17 +1,22 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Path, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import AdminDependency
 from app.db.session import get_session
+from app.domain.models import User
 from app.domain.schemas import (
     AccessTokenCreatedResponse,
     AccessTokenCreateRequest,
     AccessTokenSummary,
     AccountCreateRequest,
+    AccountInvitationAcceptRequest,
+    AccountInvitationCreatedResponse,
+    AccountInvitationCreateRequest,
+    AccountInvitationStatus,
     AccountLoginRequest,
     AccountLoginResponse,
     AccountSummary,
@@ -28,15 +33,21 @@ from app.services.access_tokens import (
 from app.services.accounts import (
     AccountAuthenticationConfigurationError,
     AccountConflictError,
+    AccountInvitationInvalidError,
+    AccountInvitationValidationError,
     AccountLoginError,
     AccountNotFoundError,
     AccountSetupConflictError,
+    InvitationPurpose,
+    accept_account_invitation,
     account_summary,
-    create_admin_account,
+    create_admin_invitation,
+    get_account_invitation,
     initialize_admin_account,
     instance_setup_status,
     list_admin_accounts,
     login_account,
+    renew_admin_invitation,
     update_admin_account,
 )
 
@@ -104,15 +115,97 @@ def admin_accounts(session: SessionDependency, _: AdminDependency) -> list[Accou
 
 @router.post("/admin-accounts", status_code=status.HTTP_201_CREATED)
 def create_admin(
-    payload: AccountCreateRequest, session: SessionDependency, _: AdminDependency
-) -> AccountSummary:
+    payload: AccountInvitationCreateRequest,
+    session: SessionDependency,
+    current_user: AdminDependency,
+) -> AccountInvitationCreatedResponse:
     try:
-        result = create_admin_account(session, payload)
+        result = create_admin_invitation(session, payload, actor=current_user)
         session.commit()
         return result
-    except (AccountConflictError, IntegrityError):
+    except AccountConflictError as error:
         session.rollback()
-        raise HTTPException(status_code=409, detail="账号名或邮箱已被使用。") from None
+        raise HTTPException(status_code=409, detail=str(error)) from None
+    except IntegrityError:
+        session.rollback()
+        raise HTTPException(status_code=409, detail="账号名已被使用。") from None
+    except Exception:
+        session.rollback()
+        raise
+
+
+@router.post("/admin-accounts/{username}/registration-invitation")
+def renew_registration_invitation(
+    username: str,
+    session: SessionDependency,
+    current_user: AdminDependency,
+) -> AccountInvitationCreatedResponse:
+    return _renew_invitation(session, username, current_user, "registration")
+
+
+@router.post("/admin-accounts/{username}/recovery-invitation")
+def create_recovery_invitation(
+    username: str,
+    session: SessionDependency,
+    current_user: AdminDependency,
+) -> AccountInvitationCreatedResponse:
+    return _renew_invitation(session, username, current_user, "recovery")
+
+
+def _renew_invitation(
+    session: Session, username: str, current_user: User, purpose: InvitationPurpose
+) -> AccountInvitationCreatedResponse:
+    try:
+        result = renew_admin_invitation(session, username, actor=current_user, purpose=purpose)
+        session.commit()
+        return result
+    except AccountNotFoundError:
+        session.rollback()
+        raise HTTPException(status_code=404, detail="账号不存在。") from None
+    except AccountConflictError as error:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from None
+    except Exception:
+        session.rollback()
+        raise
+
+
+@router.get("/invitations/{token}")
+def invitation_status(
+    token: Annotated[str, Path(min_length=60, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")],
+    session: SessionDependency,
+) -> AccountInvitationStatus:
+    try:
+        return get_account_invitation(session, token)
+    except AccountInvitationInvalidError:
+        raise HTTPException(status_code=404, detail="注册链接无效或已失效。") from None
+
+
+@router.post("/invitations/{token}/accept")
+def accept_invitation(
+    token: Annotated[str, Path(min_length=60, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")],
+    payload: AccountInvitationAcceptRequest,
+    session: SessionDependency,
+) -> AccountLoginResponse:
+    try:
+        account, session_token = accept_account_invitation(session, token, payload)
+        session.commit()
+        return AccountLoginResponse(**account.model_dump(), session_token=session_token)
+    except AccountInvitationInvalidError:
+        session.rollback()
+        raise HTTPException(status_code=404, detail="注册链接无效或已失效。") from None
+    except AccountInvitationValidationError as error:
+        session.rollback()
+        raise HTTPException(status_code=422, detail=str(error)) from None
+    except AccountConflictError as error:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from None
+    except AccountAuthenticationConfigurationError as error:
+        session.rollback()
+        raise HTTPException(status_code=503, detail=str(error)) from None
+    except IntegrityError:
+        session.rollback()
+        raise HTTPException(status_code=409, detail="邮箱已被使用。") from None
     except Exception:
         session.rollback()
         raise

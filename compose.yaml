@@ -32,6 +32,7 @@ services:
       SAGE_ALLOWED_ORIGINS: '["http://localhost:5173"]'
       SAGE_FIXED_ACCOUNT_PASSWORD: ${SAGE_FIXED_ACCOUNT_PASSWORD:-}
       SAGE_AUTH_SESSION_SECRET: ${SAGE_AUTH_SESSION_SECRET:-}
+      SAGE_ACCOUNT_INVITATION_TTL_SECONDS: ${SAGE_ACCOUNT_INVITATION_TTL_SECONDS:-604800}
       SAGE_STORAGE_ROOT: /data/sage-archive
     volumes:
       - ${SAGE_STORAGE_ROOT:-./sample-archive}:/data/sage-archive

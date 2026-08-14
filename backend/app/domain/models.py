@@ -59,11 +59,14 @@ class User(Base):
     )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    name: Mapped[str] = mapped_column(String(80), nullable=False)
-    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    name: Mapped[str | None] = mapped_column(String(80))
+    email: Mapped[str | None] = mapped_column(String(255), unique=True)
     username: Mapped[str | None] = mapped_column(String(80), unique=True, index=True)
     role: Mapped[str] = mapped_column(String(30), default="admin", nullable=False)
     password_hash: Mapped[str | None] = mapped_column(String(255))
+    is_registered: Mapped[bool] = mapped_column(
+        Boolean, default=True, server_default=text("true"), nullable=False
+    )
     is_instance_owner: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     avatar_url: Mapped[str | None] = mapped_column(String(500))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
@@ -71,6 +74,30 @@ class User(Base):
     access_tokens: Mapped[list[PersonalAccessToken]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
+
+
+class AccountInvitation(Base):
+    __tablename__ = "account_invitations"
+    __table_args__ = (
+        CheckConstraint(
+            "purpose IN ('registration', 'recovery')",
+            name="ck_account_invitations_purpose",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
+    user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    created_by_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    purpose: Mapped[str] = mapped_column(String(20), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utc_now, nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class PersonalAccessToken(Base):

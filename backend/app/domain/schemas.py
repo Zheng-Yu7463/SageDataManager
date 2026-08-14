@@ -468,11 +468,12 @@ class AccountSummary(BaseModel):
 
     id: UUID
     username: str
-    name: str
-    email: str
+    name: str | None
+    email: str | None
     role: str
     upload_username: str
     is_active: bool
+    is_registered: bool
     is_instance_owner: bool
 
 
@@ -483,9 +484,36 @@ class AccountCreateRequest(BaseModel):
     password: str = Field(min_length=10, max_length=256)
 
 
+class AccountInvitationCreateRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=80, pattern=r"^[a-z0-9]+$")
+
+
+class AccountInvitationCreatedResponse(BaseModel):
+    account: AccountSummary
+    registration_path: str
+    expires_at: datetime
+    purpose: Literal["registration", "recovery"]
+
+
+class AccountInvitationStatus(BaseModel):
+    username: str
+    expires_at: datetime
+    purpose: Literal["registration", "recovery"]
+
+
+class AccountInvitationAcceptRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    email: str | None = Field(
+        default=None,
+        min_length=3,
+        max_length=255,
+        pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$",
+    )
+    password: str = Field(min_length=10, max_length=256)
+
+
 class AccountUpdateRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=80)
-    password: str | None = Field(default=None, min_length=10, max_length=256)
     is_active: bool | None = None
 
 

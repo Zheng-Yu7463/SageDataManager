@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { Bot, Check, CircleAlert, Clipboard, ExternalLink, ImageUp, KeyRound, Palette, Plus, RefreshCw, RotateCcw, Save, ShieldCheck, Trash2, UserRound, UserRoundX, X } from '@lucide/vue'
+import { Bot, Check, CircleAlert, Clipboard, ExternalLink, ImageUp, KeyRound, Link2, Palette, Plus, RefreshCw, RotateCcw, Save, ShieldCheck, Trash2, UserRound, UserRoundX, X } from '@lucide/vue'
 import { computed, onMounted, ref } from 'vue'
 
-import { createAccessToken, createAdminAccount, getAccessTokens, getAdminAccounts, removeInstanceLogo, revokeAccessToken, updateAdminAccount, updateInstanceBranding, uploadInstanceLogo } from '@/api/client'
+import { createAccessToken, createAdminAccountInvitation, getAccessTokens, getAdminAccounts, removeInstanceLogo, renewAdminAccountInvitation, revokeAccessToken, updateAdminAccount, updateInstanceBranding, uploadInstanceLogo } from '@/api/client'
 import { useBranding } from '@/composables/useBranding'
 import { useOverlayFocus } from '@/composables/useOverlayFocus'
 import { useSession } from '@/session'
-import type { AccessTokenCreated, AccessTokenSummary, AccountSummary, AgentScope, InstanceBrandingInput } from '@/types'
+import type { AccessTokenCreated, AccessTokenSummary, AccountInvitationCreated, AccountSummary, AgentScope, InstanceBrandingInput } from '@/types'
 import { copyText } from '@/utils/textFiles'
 
 const accounts = ref<AccountSummary[]>([])
@@ -15,19 +15,15 @@ const accountsLoading = ref(true)
 const tokensLoading = ref(true)
 const updatingUsernames = ref(new Set<string>())
 const accountActionErrors = ref<Record<string, string>>({})
-const accountActionMessages = ref<Record<string, string>>({})
 const accountsError = ref('')
 const tokenLoadError = ref('')
 const createOpen = ref(false)
 const createDialog = ref<HTMLElement | null>(null)
 const creating = ref(false)
 const createError = ref('')
-const form = ref({ username: '', name: '', email: '', password: '', passwordConfirmation: '' })
-const passwordTarget = ref<AccountSummary | null>(null)
-const passwordDialog = ref<HTMLElement | null>(null)
-const passwordResetting = ref(false)
-const passwordError = ref('')
-const passwordForm = ref({ password: '', passwordConfirmation: '' })
+const form = ref({ username: '' })
+const accountInvitation = ref<AccountInvitationCreated | null>(null)
+const accountInvitationCopied = ref(false)
 const tokenDialogOpen = ref(false)
 const tokenDialog = ref<HTMLElement | null>(null)
 const tokenCreating = ref(false)
@@ -65,22 +61,15 @@ const brandingForm = ref<InstanceBrandingInput>({
 })
 
 useOverlayFocus(createOpen, createDialog, closeCreate)
-const passwordDialogOpen = computed(() => passwordTarget.value !== null)
-useOverlayFocus(passwordDialogOpen, passwordDialog, closePasswordDialog)
 useOverlayFocus(tokenDialogOpen, tokenDialog, closeTokenDialog)
 const revokeDialogOpen = computed(() => revokeTarget.value !== null)
 useOverlayFocus(revokeDialogOpen, revokeDialog, closeRevokeDialog)
 
-const activeCount = computed(() => accounts.value.filter((account) => account.is_active).length)
-const accountFormValid = computed(() => (
-  Boolean(form.value.username.trim() && form.value.name.trim() && form.value.email.trim())
-  && form.value.password.length >= 10
-  && form.value.password === form.value.passwordConfirmation
-))
-const passwordFormValid = computed(() => (
-  passwordForm.value.password.length >= 10
-  && passwordForm.value.password === passwordForm.value.passwordConfirmation
-))
+const activeCount = computed(() => accounts.value.filter((item) => item.is_active && item.is_registered).length)
+const accountFormValid = computed(() => Boolean(form.value.username.trim()))
+const accountInvitationUrl = computed(() => accountInvitation.value
+  ? `${window.location.origin}${accountInvitation.value.registration_path}`
+  : '')
 const activeTokens = computed(() => accessTokens.value.filter((token) => tokenStatus(token) === 'active'))
 const historicalTokens = computed(() => accessTokens.value.filter((token) => tokenStatus(token) !== 'active'))
 
@@ -92,7 +81,6 @@ async function loadAccounts() {
   accountsLoading.value = true
   accountsError.value = ''
   accountActionErrors.value = {}
-  accountActionMessages.value = {}
   try {
     accounts.value = await getAdminAccounts()
   } catch (reason) {
@@ -221,13 +209,28 @@ function formatTokenDate(value: string | null) {
 }
 
 function openCreate() {
-  form.value = { username: '', name: '', email: '', password: '', passwordConfirmation: '' }
+  form.value = { username: '' }
   createError.value = ''
+  accountInvitation.value = null
+  accountInvitationCopied.value = false
   createOpen.value = true
 }
 
 function closeCreate() {
-  if (!creating.value) createOpen.value = false
+  if (!creating.value) {
+    createOpen.value = false
+    accountInvitation.value = null
+  }
+}
+
+function storeInvitation(invitation: AccountInvitationCreated) {
+  accountInvitation.value = invitation
+  accountInvitationCopied.value = false
+  const existing = accounts.value.some((item) => item.id === invitation.account.id)
+  accounts.value = (existing
+    ? accounts.value.map((item) => item.id === invitation.account.id ? invitation.account : item)
+    : [...accounts.value, invitation.account]
+  ).sort((left, right) => left.username.localeCompare(right.username))
 }
 
 async function createAccount() {
@@ -235,18 +238,41 @@ async function createAccount() {
   creating.value = true
   createError.value = ''
   try {
-    const account = await createAdminAccount({
-      username: form.value.username.trim().toLowerCase(),
-      name: form.value.name.trim(),
-      email: form.value.email.trim().toLowerCase(),
-      password: form.value.password,
-    })
-    accounts.value = [...accounts.value, account].sort((left, right) => left.username.localeCompare(right.username))
-    createOpen.value = false
+    storeInvitation(await createAdminAccountInvitation(form.value.username.trim().toLowerCase()))
   } catch (reason) {
-    createError.value = reason instanceof Error ? reason.message : '无法创建账号'
+    createError.value = reason instanceof Error ? reason.message : '无法创建注册链接'
   } finally {
     creating.value = false
+  }
+}
+
+async function issueAccountInvitation(account: AccountSummary) {
+  if (updatingUsernames.value.has(account.username)) return
+  updatingUsernames.value = new Set(updatingUsernames.value).add(account.username)
+  accountActionErrors.value = { ...accountActionErrors.value, [account.username]: '' }
+  try {
+    const purpose = account.is_registered ? 'recovery' : 'registration'
+    storeInvitation(await renewAdminAccountInvitation(account.username, purpose))
+    createOpen.value = true
+  } catch (reason) {
+    accountActionErrors.value = {
+      ...accountActionErrors.value,
+      [account.username]: reason instanceof Error ? reason.message : '无法生成邀请链接',
+    }
+  } finally {
+    const next = new Set(updatingUsernames.value)
+    next.delete(account.username)
+    updatingUsernames.value = next
+  }
+}
+
+async function copyAccountInvitation() {
+  if (!accountInvitationUrl.value) return
+  try {
+    await copyText(accountInvitationUrl.value)
+    accountInvitationCopied.value = true
+  } catch {
+    createError.value = '浏览器无法写入剪贴板，请手动复制链接。'
   }
 }
 
@@ -268,38 +294,6 @@ async function toggleAccount(account: AccountSummary) {
     const nextUpdating = new Set(updatingUsernames.value)
     nextUpdating.delete(account.username)
     updatingUsernames.value = nextUpdating
-  }
-}
-
-function openPasswordDialog(account: AccountSummary) {
-  passwordTarget.value = account
-  passwordForm.value = { password: '', passwordConfirmation: '' }
-  passwordError.value = ''
-}
-
-function closePasswordDialog() {
-  if (!passwordResetting.value) passwordTarget.value = null
-}
-
-async function resetAccountPassword() {
-  if (!passwordTarget.value || !passwordFormValid.value) return
-  passwordResetting.value = true
-  passwordError.value = ''
-  const username = passwordTarget.value.username
-  try {
-    await updateAdminAccount(username, { password: passwordForm.value.password })
-    accountActionMessages.value = {
-      ...accountActionMessages.value,
-      [username]: '密码已重置',
-    }
-    const nextErrors = { ...accountActionErrors.value }
-    delete nextErrors[username]
-    accountActionErrors.value = nextErrors
-    passwordTarget.value = null
-  } catch (reason) {
-    passwordError.value = reason instanceof Error ? reason.message : '无法重置密码'
-  } finally {
-    passwordResetting.value = false
   }
 }
 
@@ -469,17 +463,16 @@ onMounted(load)
       </section>
       <p v-if="accountsError" class="settings-error" role="alert">{{ accountsError }}</p>
       <section class="accounts-panel">
-        <header><div><h2>管理员账号</h2><p>可停用不再使用的账号；当前登录账号不可自行停用。</p></div><span>{{ accounts.length }} accounts</span></header>
+        <header><div><h2>管理员账号</h2><p>新增账号时只预留 SSH 用户名；姓名、邮箱和密码由受邀者本人填写。</p></div><span>{{ accounts.length }} accounts</span></header>
         <div class="accounts-table">
           <div v-for="account in accounts" :key="account.id" class="account-row" :class="{ 'account-row--inactive': !account.is_active }">
             <span class="account-avatar">{{ account.username.slice(0, 1).toUpperCase() }}</span>
-            <div class="account-copy"><strong>{{ account.name }}</strong><small>{{ account.username }} · {{ account.email }}</small></div>
+            <div class="account-copy"><strong>{{ account.name || '等待本人注册' }}</strong><small>{{ account.username }}<template v-if="account.email"> · {{ account.email }}</template></small></div>
             <span class="account-role">{{ account.is_instance_owner ? '实例所有者' : account.role }}</span>
-            <span class="account-status" :class="{ 'account-status--inactive': !account.is_active }">{{ account.is_active ? '已启用' : '已停用' }}</span>
-            <button class="button button--outline account-toggle" :disabled="updatingUsernames.has(account.username) || account.username === currentUsername" :aria-label="`${updatingUsernames.has(account.username) ? '正在处理' : account.is_active ? '停用管理员' : '启用管理员'}：${account.name}`" :title="account.username === currentUsername ? '当前登录账号不可自行停用' : ''" @click="toggleAccount(account)"><UserRoundX v-if="account.is_active" :size="15" /><Check v-else :size="15" />{{ updatingUsernames.has(account.username) ? '处理中' : account.is_active ? '停用' : '启用' }}</button>
-            <button class="account-password-reset" type="button" :aria-label="`重置密码：${account.name}`" title="重置密码" @click="openPasswordDialog(account)"><KeyRound :size="16" /></button>
+            <span class="account-status" :class="{ 'account-status--pending': !account.is_registered, 'account-status--inactive': !account.is_active }">{{ !account.is_registered ? '待注册' : account.is_active ? '已启用' : '已停用' }}</span>
+            <button class="button button--outline account-toggle" :disabled="updatingUsernames.has(account.username) || account.username === currentUsername || !account.is_registered" :aria-label="`${updatingUsernames.has(account.username) ? '正在处理' : account.is_active ? '停用管理员' : '启用管理员'}：${account.name || account.username}`" :title="!account.is_registered ? '待注册账号不能切换状态' : account.username === currentUsername ? '当前登录账号不可自行停用' : ''" @click="toggleAccount(account)"><UserRoundX v-if="account.is_active" :size="15" /><Check v-else :size="15" />{{ updatingUsernames.has(account.username) ? '处理中' : account.is_active ? '停用' : '启用' }}</button>
+            <button class="account-invitation-button" type="button" :disabled="updatingUsernames.has(account.username) || !account.is_active" :aria-label="`${account.is_registered ? '生成密码恢复链接' : '重新生成注册链接'}：${account.name || account.username}`" :title="account.is_registered ? '生成密码恢复链接' : '重新生成注册链接'" @click="issueAccountInvitation(account)"><Link2 :size="16" /></button>
             <p v-if="accountActionErrors[account.username]" class="account-row-error" role="alert">{{ accountActionErrors[account.username] }}</p>
-            <p v-else-if="accountActionMessages[account.username]" class="account-row-success" role="status">{{ accountActionMessages[account.username] }}</p>
           </div>
         </div>
       </section>
@@ -488,35 +481,31 @@ onMounted(load)
     <div v-if="createOpen" class="settings-backdrop" @click.self="closeCreate">
       <form ref="createDialog" class="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="create-account-title" @submit.prevent="createAccount">
         <button class="settings-close" type="button" :disabled="creating" aria-label="关闭" @click="closeCreate"><X :size="18" /></button>
-        <p class="eyebrow">ADMIN ACCOUNT</p>
-        <h2 id="create-account-title">新增管理员账号</h2>
-        <p>账号名应与服务器 SSH 用户名一致；每个管理员使用自己的独立密码。</p>
-        <label>账号名<input v-model="form.username" required autofocus autocomplete="off" pattern="[a-z0-9]+" maxlength="80" placeholder="例如：newmember" /></label>
-        <label>显示名称<input v-model="form.name" required maxlength="80" placeholder="例如：张三" /></label>
-        <label>邮箱<input v-model="form.email" required type="email" maxlength="255" placeholder="例如：newmember@sage.lab" /></label>
-        <div class="account-password-grid">
-          <label>初始密码<input v-model="form.password" required type="password" autocomplete="new-password" minlength="10" maxlength="256" placeholder="至少 10 位" /></label>
-          <label>确认密码<input v-model="form.passwordConfirmation" required type="password" autocomplete="new-password" minlength="10" maxlength="256" placeholder="再次输入密码" :aria-invalid="Boolean(form.passwordConfirmation) && form.password !== form.passwordConfirmation" /></label>
-        </div>
-        <p v-if="form.passwordConfirmation && form.password !== form.passwordConfirmation" class="settings-error" role="alert">两次输入的密码不一致。</p>
-        <p v-if="createError" class="settings-error" role="alert">{{ createError }}</p>
-        <footer><button class="button button--outline" type="button" :disabled="creating" @click="closeCreate">取消</button><button class="button button--primary" :disabled="creating || !accountFormValid" type="submit"><Plus :size="16" />{{ creating ? '正在创建' : '创建管理员' }}</button></footer>
-      </form>
-    </div>
-
-    <div v-if="passwordTarget" class="settings-backdrop" @click.self="closePasswordDialog">
-      <form ref="passwordDialog" class="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="reset-password-title" @submit.prevent="resetAccountPassword">
-        <button class="settings-close" type="button" :disabled="passwordResetting" aria-label="关闭" @click="closePasswordDialog"><X :size="18" /></button>
-        <p class="eyebrow">ACCOUNT RECOVERY</p>
-        <h2 id="reset-password-title">重置 {{ passwordTarget.username }} 的密码</h2>
-        <p>保存后旧密码立即失效；不会修改账号名、服务器 SSH 用户名或现有访问令牌。</p>
-        <div class="account-password-grid">
-          <label>新密码<input v-model="passwordForm.password" required autofocus type="password" autocomplete="new-password" minlength="10" maxlength="256" placeholder="至少 10 位" /></label>
-          <label>确认新密码<input v-model="passwordForm.passwordConfirmation" required type="password" autocomplete="new-password" minlength="10" maxlength="256" placeholder="再次输入密码" :aria-invalid="Boolean(passwordForm.passwordConfirmation) && passwordForm.password !== passwordForm.passwordConfirmation" /></label>
-        </div>
-        <p v-if="passwordForm.passwordConfirmation && passwordForm.password !== passwordForm.passwordConfirmation" class="settings-error" role="alert">两次输入的密码不一致。</p>
-        <p v-if="passwordError" class="settings-error" role="alert">{{ passwordError }}</p>
-        <footer><button class="button button--outline" type="button" :disabled="passwordResetting" @click="closePasswordDialog">取消</button><button class="button button--primary" :disabled="passwordResetting || !passwordFormValid" type="submit"><KeyRound :size="16" />{{ passwordResetting ? '正在重置' : '确认重置' }}</button></footer>
+        <template v-if="accountInvitation">
+          <p class="eyebrow">ONE-TIME ACCOUNT LINK</p>
+          <h2 id="create-account-title">{{ accountInvitation.purpose === 'registration' ? '注册链接已创建' : '密码恢复链接已创建' }}</h2>
+          <div class="token-once-warning" role="alert">
+            <ShieldCheck :size="18" />
+            <p><strong>请将链接私下发送给 {{ accountInvitation.account.username }}</strong><span>新链接会使此前未使用的链接立即失效；服务端只保存令牌哈希。</span></p>
+          </div>
+          <div class="created-token-value account-invitation-value">
+            <code>{{ accountInvitationUrl }}</code>
+            <button type="button" :title="accountInvitationCopied ? '已复制' : '复制链接'" :aria-label="accountInvitationCopied ? '已复制' : '复制链接'" @click="copyAccountInvitation">
+              <Check v-if="accountInvitationCopied" :size="17" /><Clipboard v-else :size="17" />
+            </button>
+          </div>
+          <p class="account-invitation-expiry">有效至 {{ formatTokenDate(accountInvitation.expires_at) }}，成功使用一次后立即失效。</p>
+          <p v-if="createError" class="settings-error" role="alert">{{ createError }}</p>
+          <footer><button class="button button--primary" type="button" @click="closeCreate">完成</button></footer>
+        </template>
+        <template v-else>
+          <p class="eyebrow">ADMIN INVITATION</p>
+          <h2 id="create-account-title">邀请管理员</h2>
+          <p>这里只预留与服务器 SSH 用户一致的账号名。受邀者会通过一次性链接填写姓名、邮箱和自己的密码。</p>
+          <label>账号名<input v-model="form.username" required autofocus autocomplete="off" pattern="[a-z0-9]+" maxlength="80" placeholder="例如：newmember" /></label>
+          <p v-if="createError" class="settings-error" role="alert">{{ createError }}</p>
+          <footer><button class="button button--outline" type="button" :disabled="creating" @click="closeCreate">取消</button><button class="button button--primary" :disabled="creating || !accountFormValid" type="submit"><Link2 :size="16" />{{ creating ? '正在创建' : '生成注册链接' }}</button></footer>
+        </template>
       </form>
     </div>
 
@@ -576,10 +565,12 @@ onMounted(load)
 </template>
 
 <style scoped>
-.settings-heading { align-items: center; }.settings-actions { display: flex; gap: 9px; }.branding-panel { margin-bottom: 18px; background: rgba(252,253,249,.94); border: 1px solid var(--line); border-radius: 8px; }.branding-panel > header { display: flex; min-height: 70px; padding: 16px 20px; align-items: center; gap: 12px; border-bottom: 1px solid var(--line); }.branding-panel h2, .accounts-panel h2, .settings-dialog h2 { margin: 0; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 21px; font-weight: 500; }.branding-panel header p, .accounts-panel header p, .settings-dialog > p { margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.55; }.branding-panel > header > span:last-child { margin-left: auto; color: #89968e; font-size: 9px; letter-spacing: .12em; }.settings-section-icon { display: grid; width: 34px; height: 34px; color: var(--sage); place-items: center; background: var(--sage-soft); border-radius: 5px; }.branding-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 260px; }.branding-form { display: grid; padding: 20px; gap: 15px; border-right: 1px solid var(--line); }.branding-fields { display: grid; gap: 11px; }.branding-fields--names { grid-template-columns: .8fr 1fr 1fr; }.branding-fields--slogans { grid-template-columns: 1fr 1fr; }.branding-form label, .logo-control > span { display: grid; color: #526056; font-size: 11px; font-weight: 700; gap: 6px; }.branding-form input:not([type="color"]), .settings-dialog input { width: 100%; min-width: 0; padding: 9px 10px; color: var(--ink); font: inherit; font-size: 12px; background: #fff; border: 1px solid var(--line); border-radius: 5px; outline-color: var(--sage); }.branding-controls { display: grid; grid-template-columns: minmax(190px, .65fr) 1fr; gap: 20px; }.color-field > span { display: grid; grid-template-columns: 42px 1fr; }.color-field input[type="color"] { width: 42px; height: 36px; padding: 4px; background: #fff; border: 1px solid var(--line); border-right: 0; border-radius: 5px 0 0 5px; cursor: pointer; }.color-field input[type="text"] { border-radius: 0 5px 5px 0; }.logo-control { display: grid; gap: 6px; }.logo-control > div { display: flex; gap: 7px; }.logo-control small { color: var(--muted); font-size: 9px; }.branding-feedback { display: flex; min-height: 34px; align-items: center; justify-content: flex-end; gap: 12px; }.branding-feedback p { margin: 0 auto 0 0; }.settings-success { display: flex; color: var(--sage); align-items: center; font-size: 11px; gap: 5px; }.brand-preview { --preview-color: var(--sage); display: flex; min-width: 0; padding: 20px; flex-direction: column; color: #fff; background: var(--preview-color); }.brand-preview > span { font-size: 8px; font-weight: 800; letter-spacing: .16em; opacity: .65; }.brand-preview-lockup { display: flex; margin-top: 27px; align-items: center; gap: 11px; }.brand-preview-lockup img { width: 40px; height: 40px; object-fit: contain; filter: brightness(0) invert(1); }.brand-preview-lockup > div { display: grid; min-width: 0; gap: 2px; }.brand-preview-lockup strong { overflow: hidden; font-family: "Iowan Old Style", serif; font-size: 22px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }.brand-preview-lockup small { overflow: hidden; font-size: 7px; letter-spacing: .12em; opacity: .75; text-overflow: ellipsis; white-space: nowrap; }.preview-mark { position: relative; width: 34px; height: 40px; flex: 0 0 34px; }.preview-mark i { position: absolute; bottom: 5px; left: 16px; width: 1px; height: 28px; background: #fff; transform-origin: bottom; }.preview-mark i::after { position: absolute; top: 2px; width: 11px; height: 6px; content: ""; background: rgba(255,255,255,.72); border-radius: 8px 1px 8px 1px; transform: rotate(-25deg); }.preview-mark i:first-child { height: 22px; transform: rotate(-32deg); }.preview-mark i:last-child { height: 23px; transform: rotate(34deg); }.brand-preview-signature { margin-top: auto; padding-top: 42px; border-top: 1px solid rgba(255,255,255,.24); }.brand-preview-signature strong { font-family: "Iowan Old Style", "Songti SC", serif; font-size: 15px; }.brand-preview-signature p { margin: 5px 0 3px; font-size: 10px; }.brand-preview-signature small { display: block; overflow: hidden; font-size: 8px; opacity: .7; text-overflow: ellipsis; white-space: nowrap; }.settings-summary { display: flex; margin-bottom: 16px; padding: 16px 20px; align-items: center; gap: 28px; background: rgba(252,253,249,.92); border: 1px solid var(--line); border-radius: 8px; }.settings-summary > div { display: flex; min-width: 120px; align-items: center; gap: 9px; }.settings-summary svg { color: var(--sage); }.settings-summary span { display: grid; gap: 2px; }.settings-summary strong { font-family: "Iowan Old Style", "Songti SC", serif; font-size: 20px; font-weight: 500; }.settings-summary small, .settings-summary p { color: var(--muted); font-size: 11px; }.settings-summary p { margin: 0 0 0 auto; }.accounts-panel { background: rgba(252,253,249,.92); border: 1px solid var(--line); border-radius: 8px; }.accounts-panel > header { display: flex; padding: 19px 20px; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }.accounts-panel header > span { color: #89968e; font-size: 10px; }.account-row { display: grid; min-height: 68px; padding: 10px 20px; align-items: center; grid-template-columns: 34px minmax(180px, 1fr) 90px 80px auto 34px; gap: 12px; border-bottom: 1px solid #edf0eb; }.account-row:last-child { border-bottom: 0; }.account-row--inactive { opacity: .6; }.account-avatar { display: grid; width: 32px; height: 32px; color: #fff; place-items: center; background: var(--sage); border-radius: 50%; font-size: 12px; font-weight: 800; }.account-copy { display: grid; min-width: 0; gap: 3px; }.account-copy strong { font-size: 12px; }.account-copy small { overflow: hidden; color: #7c887f; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }.account-role { color: #56705f; font-size: 10px; font-weight: 700; text-transform: uppercase; }.account-status { color: var(--sage); font-size: 10px; font-weight: 700; }.account-status--inactive { color: #a6633b; }.account-toggle { min-width: 72px; justify-content: center; }.account-password-reset { display: grid; width: 32px; height: 32px; color: #5d7464; place-items: center; background: #f5f7f3; border: 1px solid var(--line); border-radius: 5px; cursor: pointer; }.account-password-reset:hover { color: #31563b; background: #edf3ed; }.settings-error { margin: 0 0 13px; color: #a6633b; font-size: 12px; }.settings-backdrop { position: fixed; z-index: 40; inset: 0; display: grid; padding: 20px; place-items: center; background: rgba(23,34,26,.48); }.settings-dialog { position: relative; display: grid; width: min(100%, 500px); padding: 28px; background: #fdfefb; border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 20px 50px rgba(24,37,29,.22); gap: 12px; }.settings-dialog label { display: grid; color: #526056; font-size: 12px; font-weight: 700; gap: 6px; }.settings-dialog footer { display: flex; margin-top: 7px; justify-content: flex-end; gap: 9px; }.settings-close { position: absolute; top: 12px; right: 12px; display: grid; width: 31px; height: 31px; color: #68776d; place-items: center; background: transparent; border: 0; border-radius: 50%; cursor: pointer; }.settings-close:hover { background: #eef2ed; } @media (max-width: 900px) { .branding-workspace { grid-template-columns: 1fr; }.branding-form { border-right: 0; }.brand-preview { min-height: 190px; }.brand-preview-signature { padding-top: 22px; } } @media (max-width: 720px) { .settings-heading { align-items: flex-start; }.settings-actions { margin-top: 3px; }.branding-panel > header > span:last-child { display: none; }.branding-fields--names, .branding-fields--slogans, .branding-controls { grid-template-columns: 1fr; }.settings-summary { align-items: flex-start; flex-wrap: wrap; gap: 17px; }.settings-summary p { width: 100%; margin-left: 0; }.account-row { padding: 12px 14px; grid-template-columns: 34px minmax(0, 1fr) 36px auto; }.account-role { display: none; }.account-status { grid-column: 2; }.account-password-reset { grid-column: 3; grid-row: 1 / 3; }.account-toggle { grid-column: 4; grid-row: 1 / 3; } } @media (max-width: 460px) { .settings-actions { width: 100%; }.settings-actions .button { min-width: 0; flex: 1; white-space: nowrap; }.branding-form, .brand-preview { padding: 16px; }.branding-feedback { align-items: stretch; flex-direction: column; }.branding-feedback .button { width: 100%; justify-content: center; }.logo-control > div { align-items: stretch; flex-direction: column; } }
+.settings-heading { align-items: center; }.settings-actions { display: flex; gap: 9px; }.branding-panel { margin-bottom: 18px; background: rgba(252,253,249,.94); border: 1px solid var(--line); border-radius: 8px; }.branding-panel > header { display: flex; min-height: 70px; padding: 16px 20px; align-items: center; gap: 12px; border-bottom: 1px solid var(--line); }.branding-panel h2, .accounts-panel h2, .settings-dialog h2 { margin: 0; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 21px; font-weight: 500; }.branding-panel header p, .accounts-panel header p, .settings-dialog > p { margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.55; }.branding-panel > header > span:last-child { margin-left: auto; color: #89968e; font-size: 9px; letter-spacing: .12em; }.settings-section-icon { display: grid; width: 34px; height: 34px; color: var(--sage); place-items: center; background: var(--sage-soft); border-radius: 5px; }.branding-workspace { display: grid; grid-template-columns: minmax(0, 1fr) 260px; }.branding-form { display: grid; padding: 20px; gap: 15px; border-right: 1px solid var(--line); }.branding-fields { display: grid; gap: 11px; }.branding-fields--names { grid-template-columns: .8fr 1fr 1fr; }.branding-fields--slogans { grid-template-columns: 1fr 1fr; }.branding-form label, .logo-control > span { display: grid; color: #526056; font-size: 11px; font-weight: 700; gap: 6px; }.branding-form input:not([type="color"]), .settings-dialog input { width: 100%; min-width: 0; padding: 9px 10px; color: var(--ink); font: inherit; font-size: 12px; background: #fff; border: 1px solid var(--line); border-radius: 5px; outline-color: var(--sage); }.branding-controls { display: grid; grid-template-columns: minmax(190px, .65fr) 1fr; gap: 20px; }.color-field > span { display: grid; grid-template-columns: 42px 1fr; }.color-field input[type="color"] { width: 42px; height: 36px; padding: 4px; background: #fff; border: 1px solid var(--line); border-right: 0; border-radius: 5px 0 0 5px; cursor: pointer; }.color-field input[type="text"] { border-radius: 0 5px 5px 0; }.logo-control { display: grid; gap: 6px; }.logo-control > div { display: flex; gap: 7px; }.logo-control small { color: var(--muted); font-size: 9px; }.branding-feedback { display: flex; min-height: 34px; align-items: center; justify-content: flex-end; gap: 12px; }.branding-feedback p { margin: 0 auto 0 0; }.settings-success { display: flex; color: var(--sage); align-items: center; font-size: 11px; gap: 5px; }.brand-preview { --preview-color: var(--sage); display: flex; min-width: 0; padding: 20px; flex-direction: column; color: #fff; background: var(--preview-color); }.brand-preview > span { font-size: 8px; font-weight: 800; letter-spacing: .16em; opacity: .65; }.brand-preview-lockup { display: flex; margin-top: 27px; align-items: center; gap: 11px; }.brand-preview-lockup img { width: 40px; height: 40px; object-fit: contain; filter: brightness(0) invert(1); }.brand-preview-lockup > div { display: grid; min-width: 0; gap: 2px; }.brand-preview-lockup strong { overflow: hidden; font-family: "Iowan Old Style", serif; font-size: 22px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }.brand-preview-lockup small { overflow: hidden; font-size: 7px; letter-spacing: .12em; opacity: .75; text-overflow: ellipsis; white-space: nowrap; }.preview-mark { position: relative; width: 34px; height: 40px; flex: 0 0 34px; }.preview-mark i { position: absolute; bottom: 5px; left: 16px; width: 1px; height: 28px; background: #fff; transform-origin: bottom; }.preview-mark i::after { position: absolute; top: 2px; width: 11px; height: 6px; content: ""; background: rgba(255,255,255,.72); border-radius: 8px 1px 8px 1px; transform: rotate(-25deg); }.preview-mark i:first-child { height: 22px; transform: rotate(-32deg); }.preview-mark i:last-child { height: 23px; transform: rotate(34deg); }.brand-preview-signature { margin-top: auto; padding-top: 42px; border-top: 1px solid rgba(255,255,255,.24); }.brand-preview-signature strong { font-family: "Iowan Old Style", "Songti SC", serif; font-size: 15px; }.brand-preview-signature p { margin: 5px 0 3px; font-size: 10px; }.brand-preview-signature small { display: block; overflow: hidden; font-size: 8px; opacity: .7; text-overflow: ellipsis; white-space: nowrap; }.settings-summary { display: flex; margin-bottom: 16px; padding: 16px 20px; align-items: center; gap: 28px; background: rgba(252,253,249,.92); border: 1px solid var(--line); border-radius: 8px; }.settings-summary > div { display: flex; min-width: 120px; align-items: center; gap: 9px; }.settings-summary svg { color: var(--sage); }.settings-summary span { display: grid; gap: 2px; }.settings-summary strong { font-family: "Iowan Old Style", "Songti SC", serif; font-size: 20px; font-weight: 500; }.settings-summary small, .settings-summary p { color: var(--muted); font-size: 11px; }.settings-summary p { margin: 0 0 0 auto; }.accounts-panel { background: rgba(252,253,249,.92); border: 1px solid var(--line); border-radius: 8px; }.accounts-panel > header { display: flex; padding: 19px 20px; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--line); }.accounts-panel header > span { color: #89968e; font-size: 10px; }.account-row { display: grid; min-height: 68px; padding: 10px 20px; align-items: center; grid-template-columns: 34px minmax(180px, 1fr) 90px 80px auto 34px; gap: 12px; border-bottom: 1px solid #edf0eb; }.account-row:last-child { border-bottom: 0; }.account-row--inactive { opacity: .6; }.account-avatar { display: grid; width: 32px; height: 32px; color: #fff; place-items: center; background: var(--sage); border-radius: 50%; font-size: 12px; font-weight: 800; }.account-copy { display: grid; min-width: 0; gap: 3px; }.account-copy strong { font-size: 12px; }.account-copy small { overflow: hidden; color: #7c887f; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }.account-role { color: #56705f; font-size: 10px; font-weight: 700; text-transform: uppercase; }.account-status { color: var(--sage); font-size: 10px; font-weight: 700; }.account-status--inactive { color: #a6633b; }.account-toggle { min-width: 72px; justify-content: center; }.account-invitation-button { display: grid; width: 32px; height: 32px; color: #5d7464; place-items: center; background: #f5f7f3; border: 1px solid var(--line); border-radius: 5px; cursor: pointer; }.account-invitation-button:hover { color: #31563b; background: #edf3ed; }.settings-error { margin: 0 0 13px; color: #a6633b; font-size: 12px; }.settings-backdrop { position: fixed; z-index: 40; inset: 0; display: grid; padding: 20px; place-items: center; background: rgba(23,34,26,.48); }.settings-dialog { position: relative; display: grid; width: min(100%, 500px); padding: 28px; background: #fdfefb; border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 20px 50px rgba(24,37,29,.22); gap: 12px; }.settings-dialog label { display: grid; color: #526056; font-size: 12px; font-weight: 700; gap: 6px; }.settings-dialog footer { display: flex; margin-top: 7px; justify-content: flex-end; gap: 9px; }.settings-close { position: absolute; top: 12px; right: 12px; display: grid; width: 31px; height: 31px; color: #68776d; place-items: center; background: transparent; border: 0; border-radius: 50%; cursor: pointer; }.settings-close:hover { background: #eef2ed; } @media (max-width: 900px) { .branding-workspace { grid-template-columns: 1fr; }.branding-form { border-right: 0; }.brand-preview { min-height: 190px; }.brand-preview-signature { padding-top: 22px; } } @media (max-width: 720px) { .settings-heading { align-items: flex-start; }.settings-actions { margin-top: 3px; }.branding-panel > header > span:last-child { display: none; }.branding-fields--names, .branding-fields--slogans, .branding-controls { grid-template-columns: 1fr; }.settings-summary { align-items: flex-start; flex-wrap: wrap; gap: 17px; }.settings-summary p { width: 100%; margin-left: 0; }.account-row { padding: 12px 14px; grid-template-columns: 34px minmax(0, 1fr) 36px auto; }.account-role { display: none; }.account-status { grid-column: 2; }.account-invitation-button { grid-column: 3; grid-row: 1 / 3; }.account-toggle { grid-column: 4; grid-row: 1 / 3; } } @media (max-width: 460px) { .settings-actions { width: 100%; }.settings-actions .button { min-width: 0; flex: 1; white-space: nowrap; }.branding-form, .brand-preview { padding: 16px; }.branding-feedback { align-items: stretch; flex-direction: column; }.branding-feedback .button { width: 100%; justify-content: center; }.logo-control > div { align-items: stretch; flex-direction: column; } }
 .account-row-error { margin: -4px 0 4px; color: #a6633b; grid-column: 2 / -1; font-size: 10px; line-height: 1.5; }
-.account-row-success { margin: -4px 0 4px; color: var(--sage); grid-column: 2 / -1; font-size: 10px; line-height: 1.5; }
-.account-password-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.account-status--pending { color: #8b6936; }
+.account-invitation-button:disabled { cursor: not-allowed; opacity: .45; }
+.account-invitation-value code { max-height: 80px; overflow-y: auto; }
+.account-invitation-expiry { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
 .agent-access-panel { margin-bottom: 18px; overflow: hidden; background: rgba(252,253,249,.94); border: 1px solid var(--line); border-radius: 8px; }
 .agent-access-header { display: flex; min-height: 70px; padding: 16px 20px; align-items: center; gap: 12px; border-bottom: 1px solid var(--line); }
 .agent-access-header h2 { margin: 0; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 21px; font-weight: 500; }
@@ -634,7 +625,6 @@ onMounted(load)
 .created-token-value { display: grid; padding: 10px; align-items: center; background: #f3f6f1; border: 1px solid var(--line); border-radius: 5px; grid-template-columns: minmax(0,1fr) 34px; gap: 8px; }
 .created-token-value code { overflow-wrap: anywhere; color: #35463b; font-size: 11px; line-height: 1.6; }
 .created-token-value button { display: grid; width: 32px; height: 32px; padding: 0; color: var(--sage); place-items: center; background: #fff; border: 1px solid var(--line); border-radius: 5px; cursor: pointer; }
-@media (max-width: 520px) { .account-password-grid { grid-template-columns: 1fr; } }
 .revoke-dialog { width: min(100%, 430px); text-align: center; }
 .revoke-dialog-icon { display: grid; width: 40px; height: 40px; margin: 0 auto; color: #9a5b3c; place-items: center; background: #fff2e9; border-radius: 50%; }
 .revoke-dialog > p { margin: 0 auto; max-width: 340px; }

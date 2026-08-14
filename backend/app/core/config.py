@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     fixed_account_password: str = ""
     auth_session_secret: str = ""
     auth_session_ttl_seconds: int = 43200
+    account_invitation_ttl_seconds: int = 604800
     file_access_ttl_seconds: int = 120
     upload_ticket_ttl_seconds: int = 86400
     agent_upload_max_bytes: int = 500_000_000

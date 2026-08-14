@@ -298,11 +298,12 @@ export interface FileAccessTicket {
 export interface AccountSummary {
   id: string
   username: string
-  name: string
-  email: string
+  name: string | null
+  email: string | null
   role: string
   upload_username: string
   is_active: boolean
+  is_registered: boolean
   is_instance_owner: boolean
 }
 
@@ -317,9 +318,27 @@ export interface AccountCreateInput {
   password: string
 }
 
+export interface AccountInvitationCreated {
+  account: AccountSummary
+  registration_path: string
+  expires_at: string
+  purpose: 'registration' | 'recovery'
+}
+
+export interface AccountInvitationStatus {
+  username: string
+  expires_at: string
+  purpose: 'registration' | 'recovery'
+}
+
+export interface AccountInvitationAcceptInput {
+  name?: string
+  email?: string
+  password: string
+}
+
 export interface AccountUpdateInput {
   name?: string
-  password?: string
   is_active?: boolean
 }
 

@@ -2,6 +2,9 @@ import type {
   ArchiveHealthSummary,
   ActivityListResponse,
   AccountCreateInput,
+  AccountInvitationAcceptInput,
+  AccountInvitationCreated,
+  AccountInvitationStatus,
   AccessTokenCreateInput,
   AccessTokenCreated,
   AccessTokenSummary,
@@ -272,8 +275,44 @@ export function getAdminAccounts() {
   return request<AccountSummary[]>('/api/auth/admin-accounts')
 }
 
-export function createAdminAccount(input: AccountCreateInput) {
-  return request<AccountSummary>('/api/auth/admin-accounts', undefined, 'POST', input)
+export function createAdminAccountInvitation(username: string) {
+  return request<AccountInvitationCreated>(
+    '/api/auth/admin-accounts',
+    undefined,
+    'POST',
+    { username },
+  )
+}
+
+export function renewAdminAccountInvitation(
+  username: string,
+  purpose: 'registration' | 'recovery',
+) {
+  return request<AccountInvitationCreated>(
+    `/api/auth/admin-accounts/${username}/${purpose}-invitation`,
+    undefined,
+    'POST',
+  )
+}
+
+export function getAccountInvitation(token: string) {
+  return request<AccountInvitationStatus>(
+    `/api/auth/invitations/${encodeURIComponent(token)}`,
+    undefined,
+    'GET',
+    undefined,
+    'none',
+  )
+}
+
+export function acceptAccountInvitation(token: string, input: AccountInvitationAcceptInput) {
+  return request<AccountLoginResponse>(
+    `/api/auth/invitations/${encodeURIComponent(token)}/accept`,
+    undefined,
+    'POST',
+    input,
+    'none',
+  )
 }
 
 export function updateAdminAccount(username: string, input: AccountUpdateInput) {

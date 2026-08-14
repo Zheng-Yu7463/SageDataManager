@@ -1,14 +1,28 @@
 from __future__ import annotations
 
+import hashlib
 import hmac
+import secrets
+from datetime import UTC, datetime, timedelta
+from typing import Literal
 
-from sqlalchemy import or_, select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.domain.models import User
-from app.domain.schemas import AccountCreateRequest, AccountSummary, AccountUpdateRequest
+from app.domain.models import AccountInvitation, User
+from app.domain.schemas import (
+    AccountCreateRequest,
+    AccountInvitationAcceptRequest,
+    AccountInvitationCreatedResponse,
+    AccountInvitationCreateRequest,
+    AccountInvitationStatus,
+    AccountSummary,
+    AccountUpdateRequest,
+)
 from app.services.security import create_session_token, hash_password, verify_password
+
+InvitationPurpose = Literal["registration", "recovery"]
 
 
 class AccountLoginError(Exception):
@@ -31,6 +45,14 @@ class AccountAuthenticationConfigurationError(Exception):
     pass
 
 
+class AccountInvitationInvalidError(Exception):
+    pass
+
+
+class AccountInvitationValidationError(Exception):
+    pass
+
+
 def account_summary(user: User) -> AccountSummary:
     if not user.username:
         raise AccountLoginError("账号尚未初始化。")
@@ -42,6 +64,7 @@ def account_summary(user: User) -> AccountSummary:
         role=user.role,
         upload_username=user.username,
         is_active=user.is_active,
+        is_registered=user.is_registered,
         is_instance_owner=user.is_instance_owner,
     )
 
@@ -50,7 +73,7 @@ def list_admin_accounts(session: Session) -> list[AccountSummary]:
     users = session.scalars(
         select(User)
         .where(User.username.is_not(None), User.role == "admin")
-        .order_by(User.is_active.desc(), User.username)
+        .order_by(User.is_active.desc(), User.is_registered.desc(), User.username)
     ).all()
     return [account_summary(user) for user in users]
 
@@ -58,8 +81,7 @@ def list_admin_accounts(session: Session) -> list[AccountSummary]:
 def instance_setup_status(session: Session) -> tuple[bool, bool]:
     initialized = session.scalar(select(User.id).limit(1)) is not None
     authentication_ready = bool(
-        settings.auth_session_secret
-        or (initialized and settings.fixed_account_password)
+        settings.auth_session_secret or (initialized and settings.fixed_account_password)
     )
     return initialized, authentication_ready
 
@@ -75,24 +97,11 @@ def initialize_admin_account(
     if initialized:
         raise AccountSetupConflictError("实例已经完成初始化，请使用管理员账号登录。")
     if not authentication_ready:
-        raise AccountAuthenticationConfigurationError(
-            "服务器尚未配置 SAGE_AUTH_SESSION_SECRET。"
-        )
+        raise AccountAuthenticationConfigurationError("服务器尚未配置 SAGE_AUTH_SESSION_SECRET。")
     user = _new_admin(payload, is_instance_owner=True)
     session.add(user)
     session.flush()
     return account_summary(user), create_session_token(user.username or "")
-
-
-def create_admin_account(session: Session, payload: AccountCreateRequest) -> AccountSummary:
-    username = payload.username.strip().lower()
-    email = payload.email.strip().lower()
-    if session.scalar(select(User.id).where(or_(User.username == username, User.email == email))):
-        raise AccountConflictError
-    user = _new_admin(payload, is_instance_owner=False)
-    session.add(user)
-    session.flush()
-    return account_summary(user)
 
 
 def _new_admin(payload: AccountCreateRequest, *, is_instance_owner: bool) -> User:
@@ -103,8 +112,177 @@ def _new_admin(payload: AccountCreateRequest, *, is_instance_owner: bool) -> Use
         role="admin",
         password_hash=hash_password(payload.password),
         is_active=True,
+        is_registered=True,
         is_instance_owner=is_instance_owner,
     )
+
+
+def _invitation_digest(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _issue_invitation(
+    session: Session,
+    user: User,
+    *,
+    actor: User,
+    purpose: InvitationPurpose,
+) -> AccountInvitationCreatedResponse:
+    now = datetime.now(UTC)
+    session.execute(
+        update(AccountInvitation)
+        .where(
+            AccountInvitation.user_id == user.id,
+            AccountInvitation.accepted_at.is_(None),
+            AccountInvitation.revoked_at.is_(None),
+        )
+        .values(revoked_at=now)
+    )
+    token = secrets.token_urlsafe(48)
+    expires_at = now + timedelta(seconds=settings.account_invitation_ttl_seconds)
+    session.add(
+        AccountInvitation(
+            user_id=user.id,
+            created_by_id=actor.id,
+            token_hash=_invitation_digest(token),
+            purpose=purpose,
+            expires_at=expires_at,
+        )
+    )
+    session.flush()
+    return AccountInvitationCreatedResponse(
+        account=account_summary(user),
+        registration_path=f"/register/{token}",
+        expires_at=expires_at,
+        purpose=purpose,
+    )
+
+
+def create_admin_invitation(
+    session: Session,
+    payload: AccountInvitationCreateRequest,
+    *,
+    actor: User,
+) -> AccountInvitationCreatedResponse:
+    username = payload.username.strip().lower()
+    if session.scalar(select(User.id).where(User.username == username)):
+        raise AccountConflictError("账号名已被使用。")
+    user = User(
+        username=username,
+        name=None,
+        email=None,
+        role="admin",
+        password_hash=None,
+        is_active=True,
+        is_registered=False,
+        is_instance_owner=False,
+    )
+    session.add(user)
+    session.flush()
+    return _issue_invitation(session, user, actor=actor, purpose="registration")
+
+
+def renew_admin_invitation(
+    session: Session,
+    username: str,
+    *,
+    actor: User,
+    purpose: InvitationPurpose,
+) -> AccountInvitationCreatedResponse:
+    user = session.scalar(
+        select(User).where(User.username == username.strip().lower(), User.role == "admin")
+    )
+    if not user:
+        raise AccountNotFoundError
+    if purpose == "registration" and user.is_registered:
+        raise AccountConflictError("账号已经完成注册。")
+    if purpose == "recovery" and not user.is_registered:
+        raise AccountConflictError("账号尚未完成注册，请重新生成注册链接。")
+    if not user.is_active:
+        raise AccountConflictError("账号已停用，不能生成邀请链接。")
+    return _issue_invitation(session, user, actor=actor, purpose=purpose)
+
+
+def get_account_invitation(session: Session, token: str) -> AccountInvitationStatus:
+    invitation = session.scalar(
+        select(AccountInvitation).where(
+            AccountInvitation.token_hash == _invitation_digest(token),
+            AccountInvitation.accepted_at.is_(None),
+            AccountInvitation.revoked_at.is_(None),
+            AccountInvitation.expires_at > datetime.now(UTC),
+        )
+    )
+    if not invitation:
+        raise AccountInvitationInvalidError
+    user = session.get(User, invitation.user_id)
+    if not user or not user.username or not user.is_active:
+        raise AccountInvitationInvalidError
+    if invitation.purpose == "registration" and user.is_registered:
+        raise AccountInvitationInvalidError
+    if invitation.purpose == "recovery" and not user.is_registered:
+        raise AccountInvitationInvalidError
+    return AccountInvitationStatus(
+        username=user.username,
+        expires_at=invitation.expires_at,
+        purpose=invitation.purpose,
+    )
+
+
+def accept_account_invitation(
+    session: Session,
+    token: str,
+    payload: AccountInvitationAcceptRequest,
+) -> tuple[AccountSummary, str]:
+    if not (settings.auth_session_secret or settings.fixed_account_password):
+        raise AccountAuthenticationConfigurationError("服务器尚未配置 SAGE_AUTH_SESSION_SECRET。")
+    invitation = session.scalar(
+        select(AccountInvitation)
+        .where(
+            AccountInvitation.token_hash == _invitation_digest(token),
+            AccountInvitation.accepted_at.is_(None),
+            AccountInvitation.revoked_at.is_(None),
+            AccountInvitation.expires_at > datetime.now(UTC),
+        )
+        .with_for_update()
+    )
+    if not invitation:
+        raise AccountInvitationInvalidError
+    user = session.get(User, invitation.user_id)
+    if not user or not user.username or not user.is_active:
+        raise AccountInvitationInvalidError
+
+    if invitation.purpose == "registration":
+        if user.is_registered:
+            raise AccountInvitationInvalidError
+        if payload.name is None or payload.email is None:
+            raise AccountInvitationValidationError("请填写显示名称和邮箱。")
+        email = payload.email.strip().lower()
+        if session.scalar(select(User.id).where(User.email == email, User.id != user.id)):
+            raise AccountConflictError("邮箱已被使用。")
+        user.name = payload.name.strip()
+        user.email = email
+        user.is_registered = True
+    elif invitation.purpose == "recovery":
+        if not user.is_registered:
+            raise AccountInvitationInvalidError
+    else:
+        raise AccountInvitationInvalidError
+
+    user.password_hash = hash_password(payload.password)
+    now = datetime.now(UTC)
+    invitation.accepted_at = now
+    session.execute(
+        update(AccountInvitation)
+        .where(
+            AccountInvitation.user_id == user.id,
+            AccountInvitation.id != invitation.id,
+            AccountInvitation.accepted_at.is_(None),
+            AccountInvitation.revoked_at.is_(None),
+        )
+        .values(revoked_at=now)
+    )
+    session.flush()
+    return account_summary(user), create_session_token(user.username)
 
 
 def update_admin_account(
@@ -114,9 +292,9 @@ def update_admin_account(
     if not user:
         raise AccountNotFoundError
     if payload.name is not None:
+        if not user.is_registered:
+            raise AccountConflictError("待注册账号的信息应由受邀者填写。")
         user.name = payload.name.strip()
-    if payload.password is not None:
-        user.password_hash = hash_password(payload.password)
     if payload.is_active is not None:
         if user.id == actor.id and not payload.is_active:
             raise AccountConflictError("不能停用当前登录账号。")
@@ -138,9 +316,7 @@ def login_account(session: Session, username: str, password: str) -> tuple[Accou
     if not password_matches and not legacy_password_matches:
         raise AccountLoginError("账号或密码错误。")
     if not (settings.auth_session_secret or settings.fixed_account_password):
-        raise AccountAuthenticationConfigurationError(
-            "服务器尚未配置 SAGE_AUTH_SESSION_SECRET。"
-        )
+        raise AccountAuthenticationConfigurationError("服务器尚未配置 SAGE_AUTH_SESSION_SECRET。")
     if legacy_password_matches:
         user.password_hash = hash_password(password)
         session.flush()
@@ -148,4 +324,10 @@ def login_account(session: Session, username: str, password: str) -> tuple[Accou
 
 
 def get_active_account(session: Session, username: str) -> User | None:
-    return session.scalar(select(User).where(User.username == username, User.is_active.is_(True)))
+    return session.scalar(
+        select(User).where(
+            User.username == username,
+            User.is_active.is_(True),
+            User.is_registered.is_(True),
+        )
+    )
