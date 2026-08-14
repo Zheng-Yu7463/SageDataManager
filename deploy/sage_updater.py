@@ -12,7 +12,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from socketserver import ThreadingMixIn, UnixStreamServer
@@ -20,6 +20,7 @@ from typing import BinaryIO, NoReturn
 
 BUSY_STATES = {"checking", "backing_up", "pulling", "building", "restarting", "verifying"}
 EXPECTED_REMOTE = "https://github.com/Zheng-Yu7463/SageDataManager"
+UTC_TIMEZONE = timezone.utc  # noqa: UP017 -- host Python 3.10 lacks datetime.UTC.
 
 
 class UpdateAgentError(Exception):
@@ -49,7 +50,7 @@ class CommandResult:
 
 
 def utc_now() -> str:
-    return datetime.now(UTC).isoformat()
+    return datetime.now(UTC_TIMEZONE).isoformat()
 
 
 def normalize_remote_url(value: str) -> str:
@@ -313,7 +314,7 @@ class UpdateManager:
         self.config.state_directory.mkdir(parents=True, exist_ok=True)
         backup_directory = self.config.state_directory / "backups"
         backup_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        timestamp = datetime.now(UTC_TIMEZONE).strftime("%Y%m%dT%H%M%SZ")
         backup_path = backup_directory / f"sage-{timestamp}-{commit[:12]}.dump"
         env_values = read_dotenv(self.config.repository / ".env")
         database_user = env_values.get("POSTGRES_USER", "sage")
@@ -522,7 +523,7 @@ class UpdateManager:
     def _append_log(self, message: str, *, persist: bool = True) -> None:
         with self._lock:
             logs = list(self._state.get("logs", []))
-            logs.append(f"{datetime.now(UTC).strftime('%H:%M:%S')} {message}")
+            logs.append(f"{datetime.now(UTC_TIMEZONE).strftime('%H:%M:%S')} {message}")
             self._state["logs"] = logs[-40:]
             if persist:
                 self._persist_state()
