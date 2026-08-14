@@ -630,7 +630,7 @@ onBeforeUnmount(stopUpdatePolling)
           <div><small>origin/main</small><strong><code>{{ latestCommitShort }}</code></strong></div>
           <span class="system-update-status" :class="`system-update-status--${systemUpdate.state}`">{{ systemUpdateStateLabel(systemUpdate) }}</span>
         </div>
-        <div v-if="systemUpdateBusy" class="system-update-progress" role="status" aria-live="polite">
+        <div v-if="systemUpdateBusy || systemUpdate.state === 'succeeded'" class="system-update-progress" role="progressbar" aria-label="系统更新进度" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="systemUpdateProgress">
           <span :style="{ width: `${systemUpdateProgress}%` }"></span>
         </div>
         <p class="system-update-message">{{ systemUpdate.message }}</p>

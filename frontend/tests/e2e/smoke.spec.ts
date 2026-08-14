@@ -717,6 +717,23 @@ test('实例所有者可在窄屏安全启动系统更新', async ({ page }) => 
   await expect(updatePanel.getByText('正在备份 PostgreSQL 数据库…')).toBeVisible()
   await expect(updatePanel.locator('.system-update-progress')).toBeVisible()
   expect(applyPayloads).toEqual([{ password: 'test-password' }])
+
+  updateState = systemUpdateStatus({
+    ...updateState,
+    state: 'succeeded',
+    phase: 'complete',
+    message: '系统已更新并通过健康检查。',
+    current_commit: latestCommit,
+    update_available: false,
+    behind_count: 0,
+    completed_at: '2026-08-15T08:08:00Z',
+    backup_path: 'sage-test.dump',
+  })
+  await expect(updatePanel.getByText('系统已更新并通过健康检查。')).toBeVisible({ timeout: 5_000 })
+  const completedProgress = updatePanel.getByRole('progressbar', { name: '系统更新进度' })
+  await expect(completedProgress).toHaveAttribute('aria-valuenow', '100')
+  await expect(completedProgress.locator('span')).toHaveAttribute('style', /width: 100%/)
+  await expect(updatePanel.getByRole('button', { name: '刷新到新版本' })).toBeVisible()
 })
 
 test('设置页令牌加载失败不影响管理员账号事实', async ({ page }) => {
