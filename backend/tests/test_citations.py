@@ -1,5 +1,5 @@
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -7,9 +7,9 @@ from app.core.config import settings
 from app.db.base import Base
 from app.db.session import get_session
 from app.domain.enums import AssetType, Visibility
+from app.domain.models import User
 from app.domain.schemas import AssetCreateRequest
 from app.main import app
-from app.services.accounts import ensure_fixed_accounts
 from app.services.assets import create_asset
 from app.services.security import create_session_token
 
@@ -24,6 +24,22 @@ def make_session() -> Session:
     return sessionmaker(bind=engine)()
 
 
+def get_or_create_owner(session: Session) -> User:
+    owner = session.scalar(select(User).where(User.is_instance_owner.is_(True)))
+    if owner is None:
+        owner = User(
+            username="zhengyu",
+            name="郑宇",
+            email="zhengyu@sage.lab",
+            role="admin",
+            is_active=True,
+            is_instance_owner=True,
+        )
+        session.add(owner)
+        session.flush()
+    return owner
+
+
 def create_publication(
     session: Session,
     *,
@@ -32,7 +48,7 @@ def create_publication(
     slug: str,
     asset_type: AssetType = AssetType.PAPER,
 ) -> str:
-    owner = ensure_fixed_accounts(session)[1]
+    owner = get_or_create_owner(session)
     paper = create_asset(
         session,
         AssetCreateRequest(
@@ -109,7 +125,7 @@ def test_bibtex_endpoints_require_admin_and_preserve_filters(
 
 def test_article_bibtex_uses_journal_instead_of_booktitle() -> None:
     session = make_session()
-    owner = ensure_fixed_accounts(session)[1]
+    owner = get_or_create_owner(session)
     paper = create_asset(
         session,
         AssetCreateRequest(

@@ -21,7 +21,7 @@ from app.domain.activity import ActivityAction
 from app.domain.enums import AssetType, Visibility
 from app.domain.models import Activity, Asset, AssetVersion, FileRecord, Tag
 from app.domain.schemas import PublicationMetadata
-from app.services.accounts import ensure_fixed_accounts
+from app.services.accounts import get_instance_owner
 from app.services.activities import record_activity
 from app.services.paper_identity import (
     normalize_identity_text,
@@ -710,8 +710,9 @@ def upsert_metadata(
     updated = 0
     skipped = 0
     with SessionLocal.begin() as session:
-        owners = {user.username: user for user in ensure_fixed_accounts(session)}
-        owner = owners["zhengyu"]
+        owner = get_instance_owner(session)
+        if owner is None:
+            raise RuntimeError("请先通过网页完成首个管理员初始化，再收录外部文献。")
         tags = {item.name: item for item in session.scalars(select(Tag)).all()}
         tag_names = {
             str(value)

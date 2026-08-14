@@ -457,12 +457,14 @@ class AccountSummary(BaseModel):
     role: str
     upload_username: str
     is_active: bool
+    is_instance_owner: bool
 
 
 class AccountCreateRequest(BaseModel):
     username: str = Field(min_length=1, max_length=80, pattern=r"^[a-z0-9]+$")
     name: str = Field(min_length=1, max_length=80)
     email: str = Field(min_length=3, max_length=255)
+    password: str = Field(min_length=10, max_length=256)
 
 
 class AccountUpdateRequest(BaseModel):
@@ -476,8 +478,9 @@ class AccountLoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=256)
 
 
-class RegistrationStatus(BaseModel):
-    enabled: bool
+class InstanceSetupStatus(BaseModel):
+    initialized: bool
+    authentication_ready: bool
 
 
 class AccountLoginResponse(AccountSummary):

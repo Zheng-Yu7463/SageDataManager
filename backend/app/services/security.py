@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
@@ -35,6 +36,31 @@ def _decode(value: str) -> bytes:
 def _sign(value: str) -> str:
     secret = settings.auth_session_secret or settings.fixed_account_password
     return _encode(hmac.new(secret.encode(), value.encode(), hashlib.sha256).digest())
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.scrypt(password.encode(), salt=salt, n=16384, r=8, p=1, dklen=32)
+    return f"scrypt$16384$8$1${_encode(salt)}${_encode(digest)}"
+
+
+def verify_password(password: str, encoded_hash: str) -> bool:
+    try:
+        scheme, n_value, r_value, p_value, salt_value, digest_value = encoded_hash.split("$")
+        if (scheme, n_value, r_value, p_value) != ("scrypt", "16384", "8", "1"):
+            return False
+        expected = _decode(digest_value)
+        actual = hashlib.scrypt(
+            password.encode(),
+            salt=_decode(salt_value),
+            n=int(n_value),
+            r=int(r_value),
+            p=int(p_value),
+            dklen=len(expected),
+        )
+        return hmac.compare_digest(actual, expected)
+    except (ValueError, TypeError):
+        return False
 
 
 def create_session_token(username: str) -> str:

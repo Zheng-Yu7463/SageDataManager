@@ -48,12 +48,23 @@ asset_tags = Table(
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (
+        Index(
+            "uq_users_single_instance_owner",
+            "is_instance_owner",
+            unique=True,
+            postgresql_where=text("is_instance_owner"),
+            sqlite_where=text("is_instance_owner = 1"),
+        ),
+    )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     name: Mapped[str] = mapped_column(String(80), nullable=False)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     username: Mapped[str | None] = mapped_column(String(80), unique=True, index=True)
     role: Mapped[str] = mapped_column(String(30), default="admin", nullable=False)
+    password_hash: Mapped[str | None] = mapped_column(String(255))
+    is_instance_owner: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     avatar_url: Mapped[str | None] = mapped_column(String(500))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 

@@ -24,6 +24,7 @@ import type {
   FileAccessTicket,
   InstanceBranding,
   InstanceBrandingInput,
+  InstanceSetupStatus,
   AssetType,
   DashboardSummary,
   FileClaimResult,
@@ -246,6 +247,14 @@ export function loginAccount(username: string, password: string) {
     { username, password },
     'none',
   )
+}
+
+export function getInstanceSetupStatus() {
+  return request<InstanceSetupStatus>('/api/auth/setup-status', undefined, 'GET', undefined, 'none')
+}
+
+export function initializeInstance(input: AccountCreateInput) {
+  return request<AccountLoginResponse>('/api/auth/setup', undefined, 'POST', input, 'none')
 }
 
 export function getCurrentAccount() {

@@ -13,9 +13,8 @@ from app.domain.models import (
     FileRecord,
     PublicationIdentityKey,
     Tag,
-    User,
 )
-from app.services.accounts import ensure_fixed_accounts
+from app.services.accounts import get_instance_owner
 from app.services.activities import record_activity
 from app.services.paper_identity import synchronize_publication_identity_keys
 
@@ -101,6 +100,9 @@ ASSETS = [
 
 def main() -> None:
     with SessionLocal.begin() as session:
+        owner = get_instance_owner(session)
+        if owner is None:
+            raise RuntimeError("请先通过网页完成首个管理员初始化，再写入演示数据。")
         session.execute(delete(Activity))
         session.execute(delete(FileRecord))
         session.execute(delete(AssetRelation))
@@ -108,10 +110,6 @@ def main() -> None:
         session.execute(delete(PublicationIdentityKey))
         session.execute(delete(Asset))
         session.execute(delete(Tag))
-        session.execute(delete(User))
-
-        fixed_accounts = {user.username: user for user in ensure_fixed_accounts(session)}
-        owner = fixed_accounts["zhengyu"]
         tag_index: dict[str, Tag] = {}
         now = datetime.now(UTC)
 

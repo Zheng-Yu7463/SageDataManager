@@ -66,7 +66,7 @@ def test_management_reads_require_an_active_administrator(
             assert client.get(path, headers=headers).status_code == 200
 
         assert client.get("/api/health").status_code == 200
-        assert client.get("/api/auth/registration-status").status_code == 200
+        assert client.get("/api/auth/setup-status").status_code == 200
         assert client.get("/api/settings/branding").status_code == 200
     finally:
         app.dependency_overrides.clear()

@@ -45,7 +45,6 @@ compose.yaml
 python backend/scripts/seed_mock_archive.py
 cp .env.example .env
 docker compose up --build -d
-docker compose exec backend python -m scripts.seed_demo
 ```
 
 访问：
@@ -55,6 +54,8 @@ docker compose exec backend python -m scripts.seed_demo
 - 健康检查：http://localhost:8000/api/health
 
 `.env` 中的 `SAGE_STORAGE_ROOT` 应设置为宿主机上的实际归档目录。首次体验可保留默认值，脚本会生成 `sample-archive/` 模拟文件。Compose 会将其挂载到后端的 `/data/sage-archive`；后端需要写权限才能完成隔离上传和原子入库。
+
+启动前将 `.env` 中的 `SAGE_AUTH_SESSION_SECRET` 替换为独立的长随机值。首次打开管理端时，页面会要求创建唯一的实例所有者；完成初始化后，如需演示目录，再执行 `docker compose exec backend python -m scripts.seed_demo`。
 
 ## 本地开发
 
@@ -67,10 +68,10 @@ cd backend
 pip install -e .
 pip install pytest ruff
 alembic upgrade head
-python -m scripts.seed_demo
 uvicorn app.main:app --reload
 ```
 
+后端启动后打开前端完成首个管理员初始化，再按需执行 `python -m scripts.seed_demo`。数据脚本只使用已存在的实例所有者，不创建或删除管理员账号。
 
 ### 模拟归档扫描
 
@@ -91,7 +92,7 @@ export SAGE_STORAGE_ROOT="$(pwd)/sample-archive"
 
 ```bash
 SAGE_UPLOAD_SSH_HOST=192.168.1.213
-SAGE_FIXED_ACCOUNT_PASSWORD=在本机 .env 中设置，勿提交到 Git
+SAGE_AUTH_SESSION_SECRET=在本机 .env 中设置长随机值，勿提交到 Git
 SAGE_UPLOAD_SSH_PORT=22
 SAGE_UPLOAD_DESTINATION_ROOT=/home/zhengyu/SageDataManager/sample-archive
 ```
@@ -149,7 +150,9 @@ python -m scripts.seed_conference_papers --migrate-existing --no-download-pdf
 
 ### 管理员账号
 
-系统首次初始化会预置 `yukai`、`zhengyu`、`zhourongyang`、`fengxuehan`、`chenshangyu` 和 `bisheng` 六个管理员账号。登录页需要手动输入账号；注册功能已预留但关闭。已有管理员可在“系统设置”预置其他管理员账号，或停用不再使用的账号；账号名应与服务器 SSH 用户名一致。共享初始密码必须保存在本机 `.env` 的 `SAGE_FIXED_ACCOUNT_PASSWORD` 中，不能提交到 Git。
+空数据库首次启动时，公开状态接口只报告实例是否已初始化，网页据此显示首个管理员引导。初始化请求会再次确认数据库中没有任何用户，并创建唯一的实例所有者；数据库唯一约束保证多进程并发请求也只能成功一次。实例中已有任何用户时，引导永久关闭，不开放公开注册。后续管理员只能由已登录管理员在“系统设置”中创建，每个账号使用独立密码；账号名应与服务器 SSH 用户名一致。
+
+新部署必须配置 `SAGE_AUTH_SESSION_SECRET`。从旧版本升级时，可暂时保留 `SAGE_FIXED_ACCOUNT_PASSWORD`：尚无独立密码的旧管理员首次成功登录后会自动写入个人密码哈希。全部旧账号完成升级后应移除该变量。
 
 品牌配置保存在数据库的单实例配置表中。公开页面可读取品牌信息和 Logo，只有已登录管理员可以修改；Logo 仅接受不超过 1 MB 的 PNG、JPEG 或 WebP 文件。`SAGE_` 环境变量前缀和 `X-Sage-Session` 请求头作为部署兼容契约保留，不受界面品牌名称影响。
 
@@ -157,7 +160,7 @@ python -m scripts.seed_conference_papers --migrate-existing --no-download-pdf
 
 AI 客户端先读取公开的 `/agent.md`，再按其中的流程调用 `/api/agent/*`。它可以查询并读取单项资产、原地更新已有元数据、登记新资产、上传并入库文件以及导出 BibTeX。每位管理员可在“系统设置 → AI 访问令牌”创建多个个人访问令牌，分别设置名称、权限和有效期。完整令牌只显示一次，服务端只保存 HMAC 摘要；令牌可以随时撤销，活动记录会同时标记所属管理员和令牌名称。
 
-令牌权限包括查询资产、登记元数据、上传文件、正式入库和导出 BibTeX。“正式入库”默认不勾选，应只授予需要完成归档闭环的可信自动化。令牌只适用于专用 Agent API，不能调用管理员、品牌、归档或删除接口。部署时必须设置 `SAGE_AUTH_SESSION_SECRET` 或 `SAGE_FIXED_ACCOUNT_PASSWORD`，否则服务器拒绝创建和验证访问令牌。
+令牌权限包括查询资产、登记元数据、上传文件、正式入库和导出 BibTeX。“正式入库”默认不勾选，应只授予需要完成归档闭环的可信自动化。令牌只适用于专用 Agent API，不能调用管理员、品牌、归档或删除接口。新部署必须设置 `SAGE_AUTH_SESSION_SECRET`，否则服务器拒绝初始化管理员以及创建和验证访问令牌；`SAGE_FIXED_ACCOUNT_PASSWORD` 仅用于旧账号升级。
 
 ### 批量导入元数据
 

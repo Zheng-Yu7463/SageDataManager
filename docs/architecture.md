@@ -50,9 +50,10 @@ POST /api/assets/{id}/relations
 DELETE /api/assets/{id}/relations/{relation_id}
 POST /api/assets/{id}/restore
 GET /api/archive/health
+GET /api/auth/setup-status
+POST /api/auth/setup
 POST /api/auth/login
 GET /api/auth/me
-GET /api/auth/registration-status
 GET /api/auth/admin-accounts
 POST /api/auth/admin-accounts
 PATCH /api/auth/admin-accounts/{username}
@@ -77,7 +78,9 @@ POST /api/archive/upload-command
 
 资产关联由当前资产、目标资产和简短关系类型组成（如 `derived_from`、`supports`、`documents`）。只能关联两条不同且未归档的资产，不允许建立相同方向、相同类型的重复关系。用户可从任一资产详情解除已有关系；建立与解除均记录到操作活动中，且不会影响文件内容或文件位置。
 
-系统初始化会预置六个管理员账号，但它们不是登录白名单。登录页要求手动输入账号；任何已预置、启用且具备管理员角色的账号都可通过本机环境变量中的共享密码登录，并获得有时效的签名会话令牌。系统设置中的管理员可预置、启用或停用账号；当前登录账号不能自行停用。注册状态接口已预留，默认关闭。SCP 命令使用当前登录账号同名的服务器用户。
+`GET /api/auth/setup-status` 是公开的只读启动状态接口，不返回用户信息。只有数据库完全没有用户时，`POST /api/auth/setup` 才能创建首个管理员并将其标记为实例所有者；提交时会在事务内重新检查状态，数据库中的部分唯一索引同时保证所有部署进程最多写入一个实例所有者。数据库已有任何用户但没有管理员时也不会重新开放引导，避免利用异常数据提升权限。
+
+系统不开放公开注册。后续管理员只能由已认证管理员创建，每个账号保存独立的 scrypt 密码哈希。旧版本中没有个人密码哈希的账号可暂时使用 `SAGE_FIXED_ACCOUNT_PASSWORD` 登录一次，成功后立即升级为个人密码哈希；新部署和会话签名使用独立的 `SAGE_AUTH_SESSION_SECRET`。管理员可启用或停用其他账号，当前登录账号不能自行停用。SCP 命令使用当前登录账号同名的服务器用户。
 
 
 扫描接口只接受服务端配置的存储根，不接受浏览器传入路径。它使用 `资产类型/资产 slug/文件` 约定匹配既有资产，只同步文件大小、类型、修改时间与健康状态；无法匹配的文件只计为待认领。

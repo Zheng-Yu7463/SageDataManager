@@ -350,7 +350,12 @@ def conference_paper(
 
 
 def existing_paper(session: Session, paper: seed_conference_papers.PublicationRecord) -> Asset:
-    owner = User(username="zhengyu", name="zhengyu", email="zhengyu@sage.lab")
+    owner = User(
+        username="zhengyu",
+        name="zhengyu",
+        email="zhengyu@sage.lab",
+        is_instance_owner=True,
+    )
     asset = Asset(
         type=AssetType.PAPER,
         slug=paper.slug,

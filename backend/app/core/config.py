@@ -13,7 +13,6 @@ class Settings(BaseSettings):
     storage_root: Path = Path("/data/sage-archive")
     upload_ssh_host: str = "192.168.1.213"
     upload_ssh_port: int = 22
-    registration_enabled: bool = False
     fixed_account_password: str = ""
     auth_session_secret: str = ""
     auth_session_ttl_seconds: int = 43200

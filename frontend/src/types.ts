@@ -294,6 +294,7 @@ export interface AccountSummary {
   role: string
   upload_username: string
   is_active: boolean
+  is_instance_owner: boolean
 }
 
 export interface AccountLoginResponse extends AccountSummary {
@@ -304,6 +305,7 @@ export interface AccountCreateInput {
   username: string
   name: string
   email: string
+  password: string
 }
 
 export interface AccountUpdateInput {
@@ -311,8 +313,9 @@ export interface AccountUpdateInput {
   is_active?: boolean
 }
 
-export interface RegistrationStatus {
-  enabled: boolean
+export interface InstanceSetupStatus {
+  initialized: boolean
+  authentication_ready: boolean
 }
 
 export interface InstanceBranding {

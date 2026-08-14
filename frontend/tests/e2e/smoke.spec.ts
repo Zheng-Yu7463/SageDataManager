@@ -31,7 +31,14 @@ async function signInWithMockAccount(page: Page) {
     role: 'admin',
     upload_username: 'testadmin',
     is_active: true,
+    is_instance_owner: true,
   }
+  await page.route('**/api/auth/setup-status', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ initialized: true, authentication_ready: true }),
+    })
+  })
   await page.route('**/api/auth/login', async (route) => {
     await route.fulfill({
       contentType: 'application/json',
@@ -49,6 +56,12 @@ async function signInWithMockAccount(page: Page) {
 }
 
 async function mockRejectedLogin(page: Page) {
+  await page.route('**/api/auth/setup-status', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ initialized: true, authentication_ready: true }),
+    })
+  })
   await page.route('**/api/auth/login', async (route) => {
     await route.fulfill({
       status: 401,
@@ -57,6 +70,74 @@ async function mockRejectedLogin(page: Page) {
     })
   })
 }
+
+test('空实例引导创建唯一的首个管理员', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 740 })
+  await mockEmptyDashboard(page)
+  await page.route('**/api/auth/setup-status', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ initialized: false, authentication_ready: true }),
+    })
+  })
+  let setupPayload: unknown
+  await page.route('**/api/auth/setup', async (route) => {
+    setupPayload = route.request().postDataJSON()
+    await route.fulfill({
+      status: 201,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: '10101010-1010-1010-1010-101010101010',
+        username: 'owner',
+        name: '实例管理员',
+        email: 'owner@example.org',
+        role: 'admin',
+        upload_username: 'owner',
+        is_active: true,
+        is_instance_owner: true,
+        session_token: 'setup-session-token',
+      }),
+    })
+  })
+
+  await page.goto('/')
+  await expect(page.getByRole('heading', { name: '初始化管理员' })).toBeVisible()
+  await page.getByLabel('管理员账号').fill('owner')
+  await page.getByLabel('显示名称').fill('实例管理员')
+  await page.getByLabel('邮箱').fill('owner@example.org')
+  await page.getByLabel('管理员密码').fill('owner-password')
+  await page.getByLabel('确认密码').fill('different-password')
+  await expect(page.getByRole('button', { name: '创建管理员并进入系统' })).toBeDisabled()
+  await expect(page.getByRole('alert')).toHaveText('两次输入的密码不一致。')
+  await page.getByLabel('确认密码').fill('owner-password')
+  await page.getByRole('button', { name: '创建管理员并进入系统' }).click()
+
+  await expect(page.getByRole('button', { name: '账户菜单：实例管理员' })).toBeVisible()
+  expect(setupPayload).toEqual({
+    username: 'owner',
+    name: '实例管理员',
+    email: 'owner@example.org',
+    password: 'owner-password',
+  })
+  await expect.poll(
+    () => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+  ).toBe(true)
+})
+
+test('已初始化实例缺少签名密钥时直接阻止登录', async ({ page }) => {
+  await page.route('**/api/auth/setup-status', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ initialized: true, authentication_ready: false }),
+    })
+  })
+
+  await page.goto('/')
+
+  await expect(page.getByRole('alert')).toContainText('认证服务尚未配置')
+  await expect(page.getByRole('button', { name: '重新检查' })).toBeVisible()
+  await expect(page.getByRole('button', { name: '进入归档系统' })).toBeHidden()
+})
 
 async function mockEmptyDashboard(page: Page) {
   await page.route('**/api/dashboard', async (route) => {
@@ -399,6 +480,7 @@ test('运行中的失效会话会立即返回登录页', async ({ page }) => {
 test('登录失败不会把匿名请求当作会话失效', async ({ page }) => {
   await mockRejectedLogin(page)
   await page.goto('/')
+  await expect(page.getByRole('button', { name: '进入归档系统' })).toBeVisible()
   await page.evaluate(() => window.localStorage.setItem('sage-session-token', 'unrelated-token'))
   await page.getByLabel('账号').fill('zhengyu')
   await page.getByLabel('密码').fill('wrong-password')
@@ -550,6 +632,7 @@ test('设置页令牌加载失败不影响管理员账号事实', async ({ page 
         role: 'admin',
         upload_username: 'testadmin',
         is_active: true,
+        is_instance_owner: true,
       }]),
     })
   })
@@ -593,6 +676,7 @@ test('并发更新管理员时各行保持独立状态', async ({ page }) => {
     role: 'admin',
     upload_username: username,
     is_active: true,
+    is_instance_owner: false,
   }))
   await page.route('**/api/auth/admin-accounts', async (route) => {
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify([
@@ -604,6 +688,7 @@ test('并发更新管理员时各行保持独立状态', async ({ page }) => {
         role: 'admin',
         upload_username: 'testadmin',
         is_active: true,
+        is_instance_owner: true,
       },
       ...managedAccounts,
     ]) })
@@ -662,6 +747,7 @@ test('AI 访问令牌保护一次性明文并归档失效记录', async ({ page 
         role: 'admin',
         upload_username: 'testadmin',
         is_active: true,
+        is_instance_owner: true,
       }]),
     })
   })
@@ -1227,6 +1313,7 @@ test('搜索与品牌文件控件提供稳定的可访问名称', async ({ page 
 })
 
 test('待认领文件必须搜索并明确选择目标资产', async ({ page }) => {
+  await mockEmptyDashboard(page)
   await signInWithMockAccount(page)
   await page.route('**/api/archive/unclaimed', async (route) => {
     await route.fulfill({

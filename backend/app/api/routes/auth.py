@@ -2,10 +2,10 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import AdminDependency
-from app.core.config import settings
 from app.db.session import get_session
 from app.domain.schemas import (
     AccessTokenCreatedResponse,
@@ -16,7 +16,7 @@ from app.domain.schemas import (
     AccountLoginResponse,
     AccountSummary,
     AccountUpdateRequest,
-    RegistrationStatus,
+    InstanceSetupStatus,
 )
 from app.services.access_tokens import (
     AccessTokenConfigurationError,
@@ -26,11 +26,15 @@ from app.services.access_tokens import (
     revoke_access_token,
 )
 from app.services.accounts import (
+    AccountAuthenticationConfigurationError,
     AccountConflictError,
     AccountLoginError,
     AccountNotFoundError,
+    AccountSetupConflictError,
     account_summary,
     create_admin_account,
+    initialize_admin_account,
+    instance_setup_status,
     list_admin_accounts,
     login_account,
     update_admin_account,
@@ -49,6 +53,41 @@ def login(payload: AccountLoginRequest, session: SessionDependency) -> AccountLo
     except AccountLoginError as error:
         session.rollback()
         raise HTTPException(status_code=401, detail=str(error)) from None
+    except AccountAuthenticationConfigurationError as error:
+        session.rollback()
+        raise HTTPException(status_code=503, detail=str(error)) from None
+
+
+@router.get("/setup-status")
+def setup_status(session: SessionDependency) -> InstanceSetupStatus:
+    initialized, authentication_ready = instance_setup_status(session)
+    return InstanceSetupStatus(
+        initialized=initialized,
+        authentication_ready=authentication_ready,
+    )
+
+
+@router.post("/setup", status_code=status.HTTP_201_CREATED)
+def setup(payload: AccountCreateRequest, session: SessionDependency) -> AccountLoginResponse:
+    try:
+        account, session_token = initialize_admin_account(session, payload)
+        session.commit()
+        return AccountLoginResponse(**account.model_dump(), session_token=session_token)
+    except AccountSetupConflictError as error:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from None
+    except AccountAuthenticationConfigurationError as error:
+        session.rollback()
+        raise HTTPException(status_code=503, detail=str(error)) from None
+    except IntegrityError:
+        session.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="实例已经完成初始化，请使用管理员账号登录。",
+        ) from None
+    except Exception:
+        session.rollback()
+        raise
 
 
 @router.get("/me")
@@ -71,7 +110,7 @@ def create_admin(
         result = create_admin_account(session, payload)
         session.commit()
         return result
-    except AccountConflictError:
+    except (AccountConflictError, IntegrityError):
         session.rollback()
         raise HTTPException(status_code=409, detail="账号名或邮箱已被使用。") from None
     except Exception:
@@ -99,11 +138,6 @@ def update_admin(
     except Exception:
         session.rollback()
         raise
-
-
-@router.get("/registration-status")
-def registration_status() -> RegistrationStatus:
-    return RegistrationStatus(enabled=settings.registration_enabled)
 
 
 @router.get("/access-tokens")

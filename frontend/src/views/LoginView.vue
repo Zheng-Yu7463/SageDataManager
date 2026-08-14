@@ -38,11 +38,11 @@ async function login() {
       <p class="login-intro">请输入管理员账号和密码。账号名也将用于生成 SCP 上传命令。</p>
       <form @submit.prevent="login">
         <label>账号<input v-model="username" required autocomplete="username" maxlength="80" pattern="[a-z0-9]+" placeholder="输入账号名" :aria-invalid="Boolean(error)" :aria-describedby="error ? 'login-error' : undefined" /></label>
-        <label>密码<div class="password-field"><KeyRound :size="16" /><input v-model="password" required type="password" autocomplete="current-password" placeholder="输入统一初始密码" :aria-invalid="Boolean(error)" :aria-describedby="error ? 'login-error' : undefined" /></div></label>
+        <label>密码<div class="password-field"><KeyRound :size="16" /><input v-model="password" required type="password" autocomplete="current-password" placeholder="输入管理员密码" :aria-invalid="Boolean(error)" :aria-describedby="error ? 'login-error' : undefined" /></div></label>
         <p v-if="error" id="login-error" class="login-error" role="alert">{{ error }}</p>
         <button class="button button--primary login-submit" :disabled="submitting || !password" type="submit"><LogIn :size="16" />{{ submitting ? '正在验证' : '进入归档系统' }}</button>
       </form>
-      <p class="login-note"><ShieldCheck :size="15" /> 注册功能暂未开放；该入口仅适用于实验室局域网。</p>
+      <p class="login-note"><ShieldCheck :size="15" /> 不开放公开注册；首个管理员只能在实例首次启动时创建。</p>
     </section>
   </main>
 </template>
