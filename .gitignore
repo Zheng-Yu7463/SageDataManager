@@ -16,10 +16,6 @@ frontend/.playwright-browsers/
 frontend/test-results/
 frontend/playwright-report/
 backend/.env
-sample-archive/real-fixtures/
+/sample-archive/
 local-fixtures/
-sample-archive/dataset/movielens-100k/
-sample-archive/dataset/mnist/
 *.egg-info/
-sample-archive/**/integration-check.*
-sample-archive/**/browser-integration-*
