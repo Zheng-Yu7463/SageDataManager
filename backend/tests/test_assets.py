@@ -50,6 +50,7 @@ from app.services.citations import (
     build_publication_citation,
     build_publication_citation_export,
 )
+from app.services.paper_identity import matching_publications
 
 
 def make_session() -> Session:
@@ -95,6 +96,29 @@ def paper_payload(
             "doi": "https://doi.org/10.18653/v1/2026.acl-long.1",
         },
     )
+
+
+def test_publication_identity_lookup_uses_exists_for_postgres_json_assets() -> None:
+    class CapturingSession:
+        def __init__(self) -> None:
+            self.statements = []
+
+        def scalars(self, statement):
+            self.statements.append(statement)
+            return []
+
+    session = CapturingSession()
+    assert matching_publications(
+        session,
+        title="A Reliable Publication Identity",
+        details={"authors": ["Sage Researcher"], "source_id": "arxiv:2608.00001"},
+    ) == []
+
+    compiled = str(
+        session.statements[0].compile(dialect=postgresql.dialect())
+    ).upper()
+    assert "EXISTS" in compiled
+    assert "DISTINCT" not in compiled
 
 
 def test_create_asset_creates_owner_tags_version_and_activity() -> None:

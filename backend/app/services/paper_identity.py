@@ -128,22 +128,18 @@ def matching_publications(
     identities = publication_identity_digests(title, details)
     if not identities:
         return []
-    indexed_statement = (
-        select(Asset)
-        .join(Asset.publication_identity_keys)
-        .where(
-            Asset.type.in_(PUBLICATION_ASSET_TYPES),
-            or_(
-                *(
-                    and_(
-                        PublicationIdentityKey.kind == identity.kind,
-                        PublicationIdentityKey.digest == identity.digest,
-                    )
-                    for identity in identities
-                )
-            ),
+    identity_filter = or_(
+        *(
+            and_(
+                PublicationIdentityKey.kind == identity.kind,
+                PublicationIdentityKey.digest == identity.digest,
+            )
+            for identity in identities
         )
-        .distinct()
+    )
+    indexed_statement = select(Asset).where(
+        Asset.type.in_(PUBLICATION_ASSET_TYPES),
+        Asset.publication_identity_keys.any(identity_filter),
     )
     if exclude_asset_id:
         indexed_statement = indexed_statement.where(Asset.id != exclude_asset_id)
