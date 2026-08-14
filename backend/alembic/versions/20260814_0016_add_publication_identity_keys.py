@@ -48,6 +48,15 @@ def _identity_values(title: str, details: dict) -> tuple[tuple[str, str], ...]:
     return tuple((kind, value) for kind, value in values if value)
 
 
+def _publication_assets_statement(assets):
+    return sa.select(assets.c.id, assets.c.title, assets.c.details).where(
+        # PostgreSQL stores this column as the native ``asset_type`` enum.
+        # Cast the column instead of binding VARCHAR values directly; PostgreSQL
+        # does not define an ``asset_type = varchar`` comparison operator.
+        sa.cast(assets.c.type, sa.String()).in_(("PAPER", "LITERATURE"))
+    )
+
+
 def upgrade() -> None:
     connection = op.get_bind()
     assets = sa.table(
@@ -58,11 +67,7 @@ def upgrade() -> None:
         sa.column("details", sa.JSON()),
     )
     seen: dict[tuple[str, str], object] = {}
-    rows = connection.execute(
-        sa.select(assets.c.id, assets.c.title, assets.c.details).where(
-            assets.c.type.in_(("PAPER", "LITERATURE"))
-        )
-    )
+    rows = connection.execute(_publication_assets_statement(assets))
     records = []
     for row in rows:
         details = row.details or {}
