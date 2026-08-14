@@ -57,6 +57,9 @@ GET /api/auth/me
 GET /api/auth/admin-accounts
 POST /api/auth/admin-accounts
 PATCH /api/auth/admin-accounts/{username}
+GET /api/settings/system-update
+POST /api/settings/system-update/check
+POST /api/settings/system-update/apply
 POST /api/files/{id}/tickets
 GET /api/files/{id}/content?ticket=...
 POST /api/archive/scans
@@ -81,6 +84,10 @@ POST /api/archive/upload-command
 `GET /api/auth/setup-status` 是公开的只读启动状态接口，不返回用户信息。只有数据库完全没有用户时，`POST /api/auth/setup` 才能创建首个管理员并将其标记为实例所有者；提交时会在事务内重新检查状态，数据库中的部分唯一索引同时保证所有部署进程最多写入一个实例所有者。数据库已有任何用户但没有管理员时也不会重新开放引导，避免利用异常数据提升权限。
 
 系统不开放公开注册。后续管理员只能由已认证管理员创建，每个账号保存独立的 scrypt 密码哈希。旧版本中没有个人密码哈希的账号可暂时使用 `SAGE_FIXED_ACCOUNT_PASSWORD` 登录一次，成功后立即升级为个人密码哈希；新部署和会话签名使用独立的 `SAGE_AUTH_SESSION_SECRET`。管理员可启用或停用其他账号，当前登录账号不能自行停用。SCP 命令使用当前登录账号同名的服务器用户。
+
+系统更新采用容器内 API 与宿主机特权代理分离的结构。FastAPI 不能执行任意宿主机命令，只能通过只读挂载的 Unix Socket 和独立共享密钥调用三个固定动作：读取状态、检查 `origin/main`、启动更新。代理不监听 TCP；执行更新还要求实例所有者重新验证当前密码。
+
+宿主机代理只接受固定仓库、固定远端和 `main` 分支。它在工作区干净且本地没有额外提交时才允许 fast-forward，先通过 Compose 内的 PostgreSQL 创建自定义格式备份，再拉取代码、构建应用镜像、重启前后端并检查健康状态。代理在进程内串行化操作并将状态写入 `/var/lib/sage-updater`；构建或健康检查失败时恢复旧 Commit 和旧镜像，但不会自动恢复数据库。
 
 
 扫描接口只接受服务端配置的存储根，不接受浏览器传入路径。它使用 `资产类型/资产 slug/文件` 约定匹配既有资产，只同步文件大小、类型、修改时间与健康状态；无法匹配的文件只计为待认领。

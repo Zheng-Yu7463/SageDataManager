@@ -1,12 +1,12 @@
 <script setup lang="ts">
-import { Bot, Check, CircleAlert, Clipboard, ExternalLink, ImageUp, KeyRound, Link2, Palette, Plus, RefreshCw, RotateCcw, Save, ShieldCheck, Trash2, UserRound, UserRoundX, X } from '@lucide/vue'
-import { computed, onMounted, ref } from 'vue'
+import { Bot, Check, CircleAlert, Clipboard, ExternalLink, GitMerge, ImageUp, KeyRound, Link2, Palette, Plus, RefreshCw, RotateCcw, Save, ServerCog, ShieldCheck, Trash2, UserRound, UserRoundX, X } from '@lucide/vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
-import { createAccessToken, createAdminAccountInvitation, getAccessTokens, getAdminAccounts, removeInstanceLogo, renewAdminAccountInvitation, revokeAccessToken, updateAdminAccount, updateInstanceBranding, uploadInstanceLogo } from '@/api/client'
+import { applySystemUpdate, checkSystemUpdate, createAccessToken, createAdminAccountInvitation, getAccessTokens, getAdminAccounts, getSystemUpdateStatus, removeInstanceLogo, renewAdminAccountInvitation, revokeAccessToken, updateAdminAccount, updateInstanceBranding, uploadInstanceLogo } from '@/api/client'
 import { useBranding } from '@/composables/useBranding'
 import { useOverlayFocus } from '@/composables/useOverlayFocus'
 import { useSession } from '@/session'
-import type { AccessTokenCreated, AccessTokenSummary, AccountInvitationCreated, AccountSummary, AgentScope, InstanceBrandingInput } from '@/types'
+import type { AccessTokenCreated, AccessTokenSummary, AccountInvitationCreated, AccountSummary, AgentScope, InstanceBrandingInput, SystemUpdateStatus } from '@/types'
 import { copyText } from '@/utils/textFiles'
 
 const accounts = ref<AccountSummary[]>([])
@@ -50,7 +50,7 @@ const logoInput = ref<HTMLInputElement | null>(null)
 const { branding, applyBranding, pageEyebrow } = useBranding()
 const { account } = useSession()
 const currentUsername = computed(() => account.value?.username ?? '')
-const loading = computed(() => accountsLoading.value || tokensLoading.value)
+const loading = computed(() => accountsLoading.value || tokensLoading.value || systemUpdateLoading.value)
 const brandingForm = ref<InstanceBrandingInput>({
   product_name: branding.product_name,
   product_subtitle: branding.product_subtitle,
@@ -60,10 +60,20 @@ const brandingForm = ref<InstanceBrandingInput>({
   primary_color: branding.primary_color,
 })
 
+const systemUpdate = ref<SystemUpdateStatus | null>(null)
+const systemUpdateLoading = ref(true)
+const systemUpdateError = ref('')
+const updateDialogOpen = ref(false)
+const updateDialog = ref<HTMLElement | null>(null)
+const updatePassword = ref('')
+const updateSubmitting = ref(false)
+const updateSubmitError = ref('')
+let updatePollTimer: ReturnType<typeof setInterval> | null = null
 useOverlayFocus(createOpen, createDialog, closeCreate)
 useOverlayFocus(tokenDialogOpen, tokenDialog, closeTokenDialog)
 const revokeDialogOpen = computed(() => revokeTarget.value !== null)
 useOverlayFocus(revokeDialogOpen, revokeDialog, closeRevokeDialog)
+useOverlayFocus(updateDialogOpen, updateDialog, closeUpdateDialog)
 
 const activeCount = computed(() => accounts.value.filter((item) => item.is_active && item.is_registered).length)
 const accountFormValid = computed(() => Boolean(form.value.username.trim()))
@@ -72,6 +82,33 @@ const accountInvitationUrl = computed(() => accountInvitation.value
   : '')
 const activeTokens = computed(() => accessTokens.value.filter((token) => tokenStatus(token) === 'active'))
 const historicalTokens = computed(() => accessTokens.value.filter((token) => tokenStatus(token) !== 'active'))
+
+const isInstanceOwner = computed(() => account.value?.is_instance_owner === true)
+const systemUpdateBusy = computed(() => {
+  const state = systemUpdate.value?.state
+  return state === 'checking'
+    || state === 'backing_up'
+    || state === 'pulling'
+    || state === 'building'
+    || state === 'restarting'
+    || state === 'verifying'
+})
+const currentCommitShort = computed(() => systemUpdate.value?.current_commit?.slice(0, 8) || '—')
+const latestCommitShort = computed(() => systemUpdate.value?.latest_commit?.slice(0, 8) || '—')
+const systemUpdateProgress = computed(() => {
+  const state = systemUpdate.value?.state
+  if (!state) return 0
+  const progress: Partial<Record<SystemUpdateStatus['state'], number>> = {
+    checking: 8,
+    backing_up: 20,
+    pulling: 35,
+    building: 62,
+    restarting: 82,
+    verifying: 94,
+    succeeded: 100,
+  }
+  return progress[state] ?? 0
+})
 
 function withoutPlaintextToken({ token: _token, ...summary }: AccessTokenCreated): AccessTokenSummary {
   return summary
@@ -102,8 +139,24 @@ async function loadTokens() {
   }
 }
 
+async function loadSystemUpdate(silent = false) {
+  if (!silent) systemUpdateLoading.value = true
+  if (!silent) systemUpdateError.value = ''
+  try {
+    systemUpdate.value = await getSystemUpdateStatus()
+    if (systemUpdateBusy.value) startUpdatePolling()
+    else stopUpdatePolling()
+  } catch (reason) {
+    if (!silent) {
+      systemUpdateError.value = reason instanceof Error ? reason.message : '无法读取系统版本'
+    }
+  } finally {
+    if (!silent) systemUpdateLoading.value = false
+  }
+}
+
 async function load() {
-  await Promise.all([loadAccounts(), loadTokens()])
+  await Promise.all([loadAccounts(), loadTokens(), loadSystemUpdate()])
 }
 
 const scopeOptions: { value: AgentScope; label: string; description: string }[] = [
@@ -346,7 +399,89 @@ async function restoreDefaultLogo() {
   }
 }
 
-onMounted(load)
+function systemUpdateStateLabel(status: SystemUpdateStatus | null) {
+  if (!status) return '读取中'
+  const labels: Record<SystemUpdateStatus['state'], string> = {
+    unavailable: '未配置',
+    idle: '已是最新',
+    available: '有可用更新',
+    checking: '正在检查',
+    backing_up: '正在备份',
+    pulling: '正在拉取',
+    building: '正在构建',
+    restarting: '正在重启',
+    verifying: '正在验证',
+    succeeded: '更新成功',
+    failed: '更新失败',
+  }
+  return labels[status.state] || status.state
+}
+
+function stopUpdatePolling() {
+  if (updatePollTimer) {
+    clearInterval(updatePollTimer)
+    updatePollTimer = null
+  }
+}
+
+function startUpdatePolling() {
+  if (updatePollTimer) return
+  updatePollTimer = setInterval(() => {
+    void loadSystemUpdate(true)
+  }, 2000)
+}
+
+async function checkForSystemUpdate() {
+  if (systemUpdateBusy.value || systemUpdateLoading.value) return
+  systemUpdateLoading.value = true
+  systemUpdateError.value = ''
+  try {
+    systemUpdate.value = await checkSystemUpdate()
+  } catch (reason) {
+    systemUpdateError.value = reason instanceof Error ? reason.message : '检查更新失败'
+  } finally {
+    systemUpdateLoading.value = false
+  }
+}
+
+function openUpdateDialog() {
+  if (!systemUpdate.value?.update_available || !isInstanceOwner.value) return
+  updatePassword.value = ''
+  updateSubmitError.value = ''
+  updateDialogOpen.value = true
+}
+
+function closeUpdateDialog() {
+  if (updateSubmitting.value) return
+  updateDialogOpen.value = false
+  updatePassword.value = ''
+  updateSubmitError.value = ''
+}
+
+async function submitSystemUpdate() {
+  if (!updatePassword.value || updateSubmitting.value) return
+  updateSubmitting.value = true
+  updateSubmitError.value = ''
+  try {
+    systemUpdate.value = await applySystemUpdate(updatePassword.value)
+    updateDialogOpen.value = false
+    updatePassword.value = ''
+    startUpdatePolling()
+  } catch (reason) {
+    updateSubmitError.value = reason instanceof Error ? reason.message : '无法启动系统更新'
+  } finally {
+    updateSubmitting.value = false
+  }
+}
+
+function reloadApplication() {
+  window.location.reload()
+}
+
+onMounted(() => {
+  void load()
+})
+onBeforeUnmount(stopUpdatePolling)
 </script>
 
 <template>
@@ -355,7 +490,7 @@ onMounted(load)
       <div>
         <p class="eyebrow">{{ pageEyebrow('ADMINISTRATION') }}</p>
         <h1>系统设置</h1>
-        <p>配置当前 DataManager 实例的品牌与管理员账号。</p>
+        <p>配置当前 DataManager 实例的品牌、访问权限与系统版本。</p>
       </div>
       <div class="settings-actions"><button class="button button--outline" :disabled="loading" @click="load"><RefreshCw :size="16" />刷新</button><button class="button button--primary" @click="openCreate"><Plus :size="16" />新增管理员</button></div>
     </header>
@@ -477,6 +612,67 @@ onMounted(load)
         </div>
       </section>
     </template>
+
+    <section class="system-update-panel" aria-labelledby="system-update-title">
+      <header>
+        <span class="settings-section-icon"><ServerCog :size="18" /></span>
+        <div><h2 id="system-update-title">系统与更新</h2><p>从固定的 origin/main 拉取代码，备份数据库后重新构建应用容器。</p></div>
+        <div class="system-update-actions">
+          <button class="button button--outline" type="button" :disabled="systemUpdateLoading || systemUpdateBusy || !systemUpdate?.enabled" @click="checkForSystemUpdate"><RefreshCw :size="15" :class="{ 'spin-icon': systemUpdateLoading }" />检查更新</button>
+          <button v-if="isInstanceOwner && systemUpdate?.update_available" class="button button--primary" type="button" :disabled="systemUpdateBusy" @click="openUpdateDialog"><GitMerge :size="15" />立即更新</button>
+        </div>
+      </header>
+      <div v-if="systemUpdateLoading && !systemUpdate" class="settings-inline-loading" role="status"><span class="tiny-spinner"></span>正在读取系统版本…</div>
+      <div v-else-if="systemUpdate" class="system-update-content">
+        <div class="system-version-grid">
+          <div><small>当前 Commit</small><strong><code>{{ currentCommitShort }}</code></strong></div>
+          <span class="system-version-arrow">→</span>
+          <div><small>origin/main</small><strong><code>{{ latestCommitShort }}</code></strong></div>
+          <span class="system-update-status" :class="`system-update-status--${systemUpdate.state}`">{{ systemUpdateStateLabel(systemUpdate) }}</span>
+        </div>
+        <div v-if="systemUpdateBusy" class="system-update-progress" role="status" aria-live="polite">
+          <span :style="{ width: `${systemUpdateProgress}%` }"></span>
+        </div>
+        <p class="system-update-message">{{ systemUpdate.message }}</p>
+        <p v-if="systemUpdateError || systemUpdate.error" class="settings-error system-update-error" role="alert">{{ systemUpdateError || systemUpdate.error }}</p>
+        <div v-if="!systemUpdate.enabled" class="system-update-unavailable">
+          <CircleAlert :size="17" />
+          <p><strong>需要先在服务器安装更新代理</strong><code>sudo bash deploy/install-updater.sh</code></p>
+        </div>
+        <ol v-if="systemUpdate.commits.length" class="system-update-commits">
+          <li v-for="commit in systemUpdate.commits.slice(0, 5)" :key="commit.sha">
+            <code>{{ commit.short_sha }}</code><span>{{ commit.subject }}</span><small>{{ commit.author }}</small>
+          </li>
+        </ol>
+        <div v-if="systemUpdate.logs.length && (systemUpdateBusy || systemUpdate.state === 'failed')" class="system-update-log">
+          <code v-for="line in systemUpdate.logs.slice(-8)" :key="line">{{ line }}</code>
+        </div>
+        <div class="system-update-notes">
+          <span v-if="systemUpdate.backup_path">数据库备份：<code>{{ systemUpdate.backup_path }}</code></span>
+          <span v-if="!isInstanceOwner">只有实例所有者可以执行更新。</span>
+          <button v-if="systemUpdate.state === 'succeeded'" class="button button--outline" type="button" @click="reloadApplication"><RefreshCw :size="14" />刷新到新版本</button>
+        </div>
+      </div>
+      <p v-else-if="systemUpdateError" class="settings-error system-update-load-error" role="alert">{{ systemUpdateError }}</p>
+    </section>
+
+    <div v-if="updateDialogOpen" class="settings-backdrop" @click.self="closeUpdateDialog">
+      <form ref="updateDialog" class="settings-dialog system-update-dialog" role="alertdialog" aria-modal="true" aria-labelledby="system-update-confirm-title" @submit.prevent="submitSystemUpdate">
+        <button class="settings-close" type="button" :disabled="updateSubmitting" aria-label="关闭" @click="closeUpdateDialog"><X :size="18" /></button>
+        <span class="revoke-dialog-icon"><GitMerge :size="20" /></span>
+        <p class="eyebrow">FAST-FORWARD UPDATE</p>
+        <h2 id="system-update-confirm-title">更新到 {{ latestCommitShort }}</h2>
+        <p>系统将备份 PostgreSQL、拉取 {{ systemUpdate?.behind_count }} 个提交并重新构建前后端。期间网页会短暂无法访问。</p>
+        <div class="system-update-confirm-version"><code>{{ currentCommitShort }}</code><span>→</span><code>{{ latestCommitShort }}</code></div>
+        <div class="token-once-warning">
+          <CircleAlert :size="18" />
+          <p><strong>更新只接受 origin/main 的 fast-forward</strong><span>发现未提交文件、本地额外提交、构建错误或健康检查失败时会停止并尝试恢复旧应用。</span></p>
+        </div>
+        <label>确认当前账号密码<input v-model="updatePassword" required autofocus type="password" autocomplete="current-password" maxlength="256" placeholder="输入密码后开始更新" /></label>
+        <p v-if="updateSubmitError" class="settings-error" role="alert">{{ updateSubmitError }}</p>
+        <footer><button class="button button--outline" type="button" :disabled="updateSubmitting" @click="closeUpdateDialog">取消</button><button class="button button--danger" type="submit" :disabled="updateSubmitting || !updatePassword"><GitMerge :size="16" />{{ updateSubmitting ? '正在启动' : '备份并更新' }}</button></footer>
+      </form>
+    </div>
 
     <div v-if="createOpen" class="settings-backdrop" @click.self="closeCreate">
       <form ref="createDialog" class="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="create-account-title" @submit.prevent="createAccount">
@@ -634,4 +830,66 @@ onMounted(load)
 @media (max-width: 900px) { .token-row { grid-template-columns: 34px minmax(150px,.8fr) minmax(200px,1fr) 34px; }.token-dates { display: none; } }
 @media (max-width: 720px) { .agent-access-header { align-items: flex-start; flex-wrap: wrap; }.agent-access-actions { width: 100%; margin-left: 46px; }.token-row { padding: 13px 14px; grid-template-columns: 32px minmax(0,1fr) 32px; }.token-scopes { grid-column: 2 / -1; }.token-revoked { grid-column: 3; grid-row: 1; }.token-revoke { grid-column: 3; grid-row: 1; } }
 @media (max-width: 460px) { .agent-access-actions { margin-left: 0; }.agent-access-actions .button { min-width: 0; flex: 1; justify-content: center; }.token-dialog { padding: 22px 17px; }.scope-picker > button { grid-template-columns: 20px minmax(0,1fr); }.scope-picker em { display: none; } }
+.system-update-panel { margin-top: 18px; overflow: hidden; background: rgba(252,253,249,.94); border: 1px solid var(--line); border-radius: 8px; }
+.system-update-panel > header { display: flex; min-height: 72px; padding: 16px 20px; align-items: center; gap: 12px; border-bottom: 1px solid var(--line); }
+.system-update-panel h2 { margin: 0; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 21px; font-weight: 500; }
+.system-update-panel header p { margin: 5px 0 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.system-update-actions { display: flex; margin-left: auto; gap: 8px; }
+.system-update-content { padding: 20px; }
+.system-version-grid { display: grid; align-items: center; grid-template-columns: minmax(120px,1fr) auto minmax(120px,1fr) auto; gap: 18px; }
+.system-version-grid > div { display: grid; gap: 5px; }
+.system-version-grid small { color: var(--muted); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; }
+.system-version-grid strong { font-size: 15px; font-weight: 600; }
+.system-version-grid code { color: #354b3c; font-family: "SFMono-Regular", Consolas, monospace; }
+.system-version-arrow { color: #99a69d; }
+.system-update-status { padding: 5px 8px; color: #52665a; background: #edf2ec; border-radius: 999px; font-size: 9px; font-weight: 800; white-space: nowrap; }
+.system-update-status--available { color: #86592e; background: #fff1df; }
+.system-update-status--failed { color: #984b38; background: #fff0eb; }
+.system-update-status--succeeded { color: #315f3e; background: #e6f3e8; }
+.system-update-status--checking,
+.system-update-status--backing_up,
+.system-update-status--pulling,
+.system-update-status--building,
+.system-update-status--restarting,
+.system-update-status--verifying { color: #3d5f46; background: #e8f0e8; }
+.system-update-progress { height: 4px; margin-top: 18px; overflow: hidden; background: #e6ebe5; border-radius: 999px; }
+.system-update-progress span { display: block; height: 100%; background: var(--sage); border-radius: inherit; transition: width .45s ease; }
+.system-update-message { margin: 15px 0 0; color: #65736a; font-size: 11px; line-height: 1.6; }
+.system-update-error { margin-top: 10px; }
+.system-update-load-error { padding: 18px 20px; }
+.system-update-unavailable { display: flex; margin-top: 14px; padding: 12px; align-items: flex-start; color: #7d5a39; background: #fff8ef; border: 1px solid #eddbc6; border-radius: 6px; gap: 9px; }
+.system-update-unavailable p { display: grid; margin: 0; gap: 5px; }
+.system-update-unavailable strong { font-size: 11px; }
+.system-update-unavailable code { font-size: 10px; user-select: all; }
+.system-update-commits { display: grid; margin: 16px 0 0; padding: 0; list-style: none; border: 1px solid #e6ebe5; border-radius: 6px; }
+.system-update-commits li { display: grid; min-height: 38px; padding: 8px 10px; align-items: center; grid-template-columns: 64px minmax(0,1fr) auto; gap: 10px; border-bottom: 1px solid #edf0eb; }
+.system-update-commits li:last-child { border-bottom: 0; }
+.system-update-commits code { color: var(--sage); font-size: 9px; }
+.system-update-commits span { overflow: hidden; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.system-update-commits small { color: var(--muted); font-size: 9px; }
+.system-update-log { display: grid; max-height: 150px; margin-top: 14px; padding: 11px; overflow-y: auto; color: #cbd8ce; background: #26332a; border-radius: 6px; gap: 4px; }
+.system-update-log code { font-size: 9px; line-height: 1.5; white-space: pre-wrap; }
+.system-update-notes { display: flex; min-height: 30px; margin-top: 12px; align-items: center; color: var(--muted); font-size: 9px; gap: 12px; }
+.system-update-notes .button { margin-left: auto; }
+.system-update-dialog { width: min(100%, 520px); }
+.system-update-dialog > h2,
+.system-update-dialog > p { text-align: center; }
+.system-update-confirm-version { display: grid; padding: 12px; place-items: center; color: #53645a; background: #f1f5f0; border-radius: 6px; grid-template-columns: 1fr auto 1fr; gap: 12px; }
+.system-update-confirm-version code:first-child { justify-self: end; }
+.system-update-confirm-version code:last-child { justify-self: start; color: var(--sage); }
+.spin-icon { animation: update-spin .8s linear infinite; }
+@keyframes update-spin { to { transform: rotate(360deg); } }
+@media (max-width: 720px) {
+  .system-update-panel > header { align-items: flex-start; flex-wrap: wrap; }
+  .system-update-actions { width: 100%; margin-left: 46px; }
+  .system-version-grid { grid-template-columns: 1fr auto 1fr; gap: 10px; }
+  .system-update-status { grid-column: 1 / -1; justify-self: start; }
+  .system-update-commits li { grid-template-columns: 56px minmax(0,1fr); }
+  .system-update-commits small { display: none; }
+}
+@media (max-width: 460px) {
+  .system-update-actions { margin-left: 0; }
+  .system-update-actions .button { flex: 1; justify-content: center; }
+  .system-update-content { padding: 16px; }
+}
 </style>

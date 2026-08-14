@@ -38,6 +38,7 @@ import type {
   UploadFinalizeResult,
   UploadStatusResult,
   ScanRunSummary,
+  SystemUpdateStatus,
   UnclaimedFileSummary,
 } from '@/types'
 import { expireSession, getSessionToken } from '@/session'
@@ -365,4 +366,18 @@ export async function uploadInstanceLogo(file: File) {
 
 export function removeInstanceLogo() {
   return request<InstanceBranding>('/api/settings/branding/logo', undefined, 'DELETE')
+}
+
+export function getSystemUpdateStatus(signal?: AbortSignal) {
+  return request<SystemUpdateStatus>('/api/settings/system-update', signal)
+}
+
+export function checkSystemUpdate() {
+  return request<SystemUpdateStatus>('/api/settings/system-update/check', undefined, 'POST')
+}
+
+export function applySystemUpdate(password: string) {
+  return request<SystemUpdateStatus>('/api/settings/system-update/apply', undefined, 'POST', {
+    password,
+  })
 }

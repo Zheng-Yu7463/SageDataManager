@@ -381,3 +381,45 @@ export interface AccessTokenCreateInput {
   scopes: AgentScope[]
   expires_in_days: number
 }
+
+export type SystemUpdateState =
+  | 'unavailable'
+  | 'idle'
+  | 'available'
+  | 'checking'
+  | 'backing_up'
+  | 'pulling'
+  | 'building'
+  | 'restarting'
+  | 'verifying'
+  | 'succeeded'
+  | 'failed'
+
+export interface SystemUpdateCommit {
+  sha: string
+  short_sha: string
+  subject: string
+  author: string
+  committed_at: string
+}
+
+export interface SystemUpdateStatus {
+  enabled: boolean
+  state: SystemUpdateState
+  phase: string | null
+  message: string
+  branch: string | null
+  current_commit: string | null
+  latest_commit: string | null
+  update_available: boolean
+  behind_count: number
+  ahead_count: number
+  worktree_clean: boolean | null
+  remote_url: string | null
+  commits: SystemUpdateCommit[]
+  started_at: string | null
+  completed_at: string | null
+  error: string | null
+  backup_path: string | null
+  logs: string[]
+}

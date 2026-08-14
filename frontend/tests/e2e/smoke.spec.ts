@@ -14,6 +14,30 @@ function configuredPassword() {
   return line.slice('SAGE_FIXED_ACCOUNT_PASSWORD='.length)
 }
 
+function systemUpdateStatus(overrides: Record<string, unknown> = {}) {
+  return {
+    enabled: false,
+    state: 'unavailable',
+    phase: null,
+    message: '服务器尚未安装更新代理。',
+    branch: 'main',
+    current_commit: null,
+    latest_commit: null,
+    update_available: false,
+    behind_count: 0,
+    ahead_count: 0,
+    worktree_clean: null,
+    remote_url: null,
+    commits: [],
+    started_at: null,
+    completed_at: null,
+    error: null,
+    backup_path: null,
+    logs: [],
+    ...overrides,
+  }
+}
+
 async function signIn(page: Page) {
   await page.goto('/')
   await page.getByLabel('账号').fill('zhengyu')
@@ -32,6 +56,7 @@ async function signInWithMockAccount(page: Page) {
     upload_username: 'testadmin',
     is_active: true,
     is_instance_owner: true,
+    is_registered: true,
   }
   await page.route('**/api/auth/setup-status', async (route) => {
     await route.fulfill({
@@ -47,6 +72,12 @@ async function signInWithMockAccount(page: Page) {
   })
   await page.route('**/api/auth/me', async (route) => {
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify(account) })
+  })
+  await page.route('**/api/settings/system-update', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(systemUpdateStatus()),
+    })
   })
   await page.goto('/')
   await page.getByLabel('账号').fill('testadmin')
@@ -95,6 +126,7 @@ test('空实例引导创建唯一的首个管理员', async ({ page }) => {
         upload_username: 'owner',
         is_active: true,
         is_instance_owner: true,
+        is_registered: true,
         session_token: 'setup-session-token',
       }),
     })
@@ -606,6 +638,87 @@ test('品牌写操作共享同一个事务状态', async ({ page }) => {
   await expect(page.getByLabel('产品名称')).toBeEnabled()
 })
 
+test('实例所有者可在窄屏安全启动系统更新', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await mockEmptyDashboard(page)
+  await mockEmptySettingsCollections(page)
+  await signInWithMockAccount(page)
+  await page.unroute('**/api/settings/system-update')
+
+  const currentCommit = 'a'.repeat(40)
+  const latestCommit = 'b'.repeat(40)
+  let updateState = systemUpdateStatus({
+    enabled: true,
+    state: 'available',
+    message: '发现 2 个可用提交。',
+    current_commit: currentCommit,
+    latest_commit: latestCommit,
+    update_available: true,
+    behind_count: 2,
+    worktree_clean: true,
+    remote_url: 'https://github.com/Zheng-Yu7463/SageDataManager.git',
+    commits: [
+      {
+        sha: latestCommit,
+        short_sha: 'bbbbbbbb',
+        subject: 'feat: improve archive update flow',
+        author: 'SAGE Maintainer',
+        committed_at: '2026-08-15T08:00:00Z',
+      },
+      {
+        sha: 'c'.repeat(40),
+        short_sha: 'cccccccc',
+        subject: 'fix: preserve update status',
+        author: 'SAGE Maintainer',
+        committed_at: '2026-08-15T07:00:00Z',
+      },
+    ],
+  })
+  await page.route('**/api/settings/system-update', async (route) => {
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(updateState) })
+  })
+
+  const applyPayloads: unknown[] = []
+  await page.route('**/api/settings/system-update/apply', async (route) => {
+    applyPayloads.push(route.request().postDataJSON())
+    updateState = systemUpdateStatus({
+      ...updateState,
+      state: 'backing_up',
+      phase: 'backing_up',
+      message: '正在备份 PostgreSQL 数据库…',
+      started_at: '2026-08-15T08:05:00Z',
+      logs: ['[08:05:00] Update accepted', '[08:05:01] Backing up PostgreSQL'],
+    })
+    await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify(updateState) })
+  })
+
+  await page.goto('/settings')
+  const updatePanel = page.locator('.system-update-panel')
+  await expect(updatePanel.getByRole('heading', { name: '系统与更新' })).toBeVisible()
+  await expect(updatePanel).toContainText('aaaaaaaa')
+  await expect(updatePanel).toContainText('bbbbbbbb')
+  await expect(updatePanel).toContainText('feat: improve archive update flow')
+  await expect.poll(
+    () => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+  ).toBe(true)
+  const panelBox = await updatePanel.boundingBox()
+  expect(panelBox).not.toBeNull()
+  expect(panelBox!.x).toBeGreaterThanOrEqual(0)
+  expect(panelBox!.x + panelBox!.width).toBeLessThanOrEqual(390)
+
+  await updatePanel.getByRole('button', { name: '立即更新' }).click()
+  const dialog = page.getByRole('alertdialog', { name: '更新到 bbbbbbbb' })
+  await expect(dialog).toBeVisible()
+  await expect(dialog).toContainText('2 个提交')
+  await dialog.getByLabel('确认当前账号密码').fill('test-password')
+  await dialog.getByRole('button', { name: '备份并更新' }).click()
+
+  await expect(dialog).toBeHidden()
+  await expect(updatePanel.getByText('正在备份 PostgreSQL 数据库…')).toBeVisible()
+  await expect(updatePanel.locator('.system-update-progress')).toBeVisible()
+  expect(applyPayloads).toEqual([{ password: 'test-password' }])
+})
+
 test('设置页令牌加载失败不影响管理员账号事实', async ({ page }) => {
   await page.route('**/api/dashboard', async (route) => {
     await route.fulfill({
@@ -633,6 +746,7 @@ test('设置页令牌加载失败不影响管理员账号事实', async ({ page 
         upload_username: 'testadmin',
         is_active: true,
         is_instance_owner: true,
+        is_registered: true,
       }]),
     })
   })
@@ -677,6 +791,7 @@ test('并发更新管理员时各行保持独立状态', async ({ page }) => {
     upload_username: username,
     is_active: true,
     is_instance_owner: false,
+    is_registered: true,
   }))
   await page.route('**/api/auth/admin-accounts', async (route) => {
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify([
@@ -689,6 +804,7 @@ test('并发更新管理员时各行保持独立状态', async ({ page }) => {
         upload_username: 'testadmin',
         is_active: true,
         is_instance_owner: true,
+        is_registered: true,
       },
       ...managedAccounts,
     ]) })
@@ -748,6 +864,7 @@ test('AI 访问令牌保护一次性明文并归档失效记录', async ({ page 
         upload_username: 'testadmin',
         is_active: true,
         is_instance_owner: true,
+        is_registered: true,
       }]),
     })
   })

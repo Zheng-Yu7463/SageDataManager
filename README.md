@@ -24,6 +24,7 @@
 - 初始管理员账号的密码登录与有时效的会话令牌；
 - 受控文件下载，以及 PDF、图像、文本、CSV 和 JSON 的浏览器预览；
 - 面向 AI 客户端的公开 `agent.md`、个人访问令牌和隔离的 Agent API；
+- 由实例所有者触发的网页更新：检查 `origin/main`、备份 PostgreSQL、重新构建并验证服务；
 
 下一阶段可继续接入增量扫描与 OIDC 等实验室统一认证。
 
@@ -55,6 +56,45 @@ docker compose up --build -d
 `.env` 中的 `SAGE_STORAGE_ROOT` 应设置为宿主机上的实际归档目录。首次体验可保留默认值，脚本会生成 `sample-archive/` 模拟文件。Compose 会将其挂载到后端的 `/data/sage-archive`；后端需要写权限才能完成隔离上传和原子入库。
 
 启动前将 `.env` 中的 `SAGE_AUTH_SESSION_SECRET` 替换为独立的长随机值。首次打开管理端时，页面会要求创建唯一的实例所有者；完成初始化后，如需演示目录，再执行 `docker compose exec backend python -m scripts.seed_demo`。
+
+## 网页更新（直接跟踪 main）
+
+该功能不要求 GitHub Release。服务器仍以 Git 仓库的 `origin/main` 作为部署通道；网页只显示当前 Commit、远端最新 Commit 和待更新提交，由实例所有者确认当前密码后启动更新。普通管理员可以查看和检查版本，但不能执行更新。
+
+首次部署或从旧版本升级后，在仓库根目录执行一次：
+
+```bash
+git pull --ff-only
+sudo bash deploy/install-updater.sh
+```
+
+安装脚本会：
+
+- 在 `.env` 缺少配置时生成独立的 `SAGE_UPDATE_AGENT_SECRET`；
+- 安装并启动仅监听 Unix Socket 的 `sage-updater` systemd 服务；
+- 将该 Socket 只读挂载到后端容器，并重新构建后端和前端；
+- 不开放新的 TCP 端口，也不向浏览器暴露宿主机命令执行能力。
+
+安装完成后进入“系统设置 → 系统与更新”。更新流程固定为：
+
+1. 校验当前分支是 `main`、工作区干净、没有本地额外提交，且 `origin` 指向本仓库；
+2. 将 PostgreSQL 自定义格式备份写入 `/var/lib/sage-updater/backups/`；
+3. 执行 `git pull --ff-only origin main`；
+4. 重新构建并启动 `backend`、`frontend`；
+5. 验证前后端健康检查；失败时恢复旧 Commit 和旧应用镜像，数据库备份保留供人工恢复。
+
+因此，服务器上临时修改过的 Dockerfile、未提交文件或本地提交都会阻止网页更新。应先明确提交、丢弃或迁移这些改动，再重新检查更新。数据库不会在失败时自动回滚，避免对已运行的新迁移做未经确认的破坏性恢复。
+
+常用诊断命令：
+
+```bash
+systemctl status sage-updater --no-pager
+journalctl -u sage-updater -n 200 --no-pager
+docker compose ps
+docker compose logs --tail 200 backend frontend
+```
+
+更新代理本身或 systemd 模板发生变化时，应在拉取代码后重新执行 `sudo bash deploy/install-updater.sh`，使正在运行的代理和服务定义一并刷新。
 
 ## 本地开发
 
