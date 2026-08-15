@@ -154,7 +154,6 @@ class UpdateManager:
             inspected = self._inspect_repository(fetch=False)
             if not inspected["worktree_clean"]:
                 detail = "Git 工作区存在未提交内容，拒绝自动更新。"
-                self._set_failure(detail)
                 raise UpdateAgentError(detail)
             if not inspected["update_available"]:
                 self._replace_state(inspected)
@@ -181,6 +180,13 @@ class UpdateManager:
             )
             thread.start()
             return self.status()
+        except UpdateConflictError:
+            self._operation_lock.release()
+            raise
+        except UpdateAgentError as error:
+            self._set_failure(str(error))
+            self._operation_lock.release()
+            raise
         except Exception:
             self._operation_lock.release()
             raise

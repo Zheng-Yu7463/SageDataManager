@@ -162,6 +162,51 @@ def test_start_update_still_rejects_a_dirty_worktree(
 
     assert manager.status()["state"] == "failed"
 
+
+def test_start_update_records_preflight_errors_in_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote, worktree = create_repository_pair(tmp_path)
+    manager = sage_updater.UpdateManager(agent_config(tmp_path, remote, worktree))
+
+    def reject_preflight(*, fetch: bool):
+        raise sage_updater.UpdateAgentError("origin 地址不一致。")
+
+    monkeypatch.setattr(manager, "_inspect_repository", reject_preflight)
+
+    with pytest.raises(sage_updater.UpdateAgentError, match="origin"):
+        manager.start_update()
+
+    status = manager.status()
+    assert status["state"] == "failed"
+    assert status["error"] == "origin 地址不一致。"
+
+
+def test_start_update_keeps_already_current_status_out_of_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote, worktree = create_repository_pair(tmp_path)
+    manager = sage_updater.UpdateManager(agent_config(tmp_path, remote, worktree))
+    monkeypatch.setattr(
+        manager,
+        "_inspect_repository",
+        lambda fetch: {
+            **manager.status(),
+            "state": "idle",
+            "message": "当前已经是最新版本。",
+            "update_available": False,
+            "worktree_clean": True,
+        },
+    )
+
+    with pytest.raises(sage_updater.UpdateConflictError, match="最新版本"):
+        manager.start_update()
+
+    assert manager.status()["state"] == "idle"
+
+
 def test_snap_docker_uses_packaged_clients_without_the_snap_launcher(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
