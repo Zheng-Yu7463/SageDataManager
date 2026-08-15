@@ -211,6 +211,7 @@ def open_file_delivery(
     mode: str,
     *,
     actor: User,
+    credential_name: str | None = None,
     audit_access: bool = True,
 ) -> OpenedFileDelivery:
     record = _file_record(session, file_id)
@@ -242,6 +243,7 @@ def open_file_delivery(
                 session,
                 asset=asset,
                 actor=actor,
+                credential_name=credential_name,
                 action=action,
                 description=f"{action_label}了文件 {record.file_name}",
             )

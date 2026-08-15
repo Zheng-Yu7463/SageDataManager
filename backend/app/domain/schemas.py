@@ -77,6 +77,27 @@ class AssetListResponse(BaseModel):
     publication_facets: PublicationCatalogueFacets | None = None
 
 
+class AgentAssetListItem(BaseModel):
+    id: UUID
+    type: AssetType
+    slug: str
+    title: str
+    status: str
+    visibility: Visibility
+    tags: list[str] = Field(default_factory=list)
+    source_id: str | None = None
+    file_count: int = 0
+    default_upload_directory: str
+    updated_at: datetime
+
+
+class AgentAssetListResponse(BaseModel):
+    items: list[AgentAssetListItem]
+    total: int
+    page: int
+    page_size: int
+
+
 class ArchivedAssetListResponse(BaseModel):
     items: list[AssetSummary]
     total: int
@@ -383,8 +404,22 @@ class UploadStatusResponse(BaseModel):
     expires_at: datetime
 
 
+class AgentUploadStatusResponse(BaseModel):
+    upload_id: UUID
+    status: Literal["waiting", "ready", "completed", "cancelled"]
+    uploaded_file_count: int
+    total_size: int
+    expires_at: datetime
+
+
+class AgentUploadCancelResponse(BaseModel):
+    upload_id: UUID
+    status: Literal["cancelled"]
+
+
 AgentScope = Literal[
     "assets:read",
+    "files:read",
     "metadata:write",
     "files:upload",
     "archive:finalize",
@@ -394,7 +429,7 @@ AgentScope = Literal[
 
 class AccessTokenCreateRequest(BaseModel):
     name: str = Field(min_length=2, max_length=100)
-    scopes: list[AgentScope] = Field(min_length=1, max_length=5)
+    scopes: list[AgentScope] = Field(min_length=1, max_length=6)
     expires_in_days: int = Field(default=90, ge=1, le=365)
 
     @field_validator("name", mode="before")
@@ -444,7 +479,9 @@ class AgentUploadCreateResponse(BaseModel):
     upload_token: str
     expires_at: datetime
     file_upload_url_template: str
+    status_url: str
     finalize_url: str
+    cancel_url: str
 
 
 class AgentUploadedFileResponse(BaseModel):

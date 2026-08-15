@@ -61,7 +61,7 @@ def test_empty_sqlite_database_upgrades_to_head(tmp_path: Path) -> None:
         invitation_checks = inspector.get_check_constraints("account_invitations")
         invitation_foreign_keys = inspector.get_foreign_keys("account_invitations")
 
-    assert revision == "20260814_0020"
+    assert revision == "20260815_0021"
     assert {"operation_id", "operation_role"} <= activity_columns
     assert any(
         key["constrained_columns"] == ["claimed_asset_id"] and key["referred_table"] == "assets"

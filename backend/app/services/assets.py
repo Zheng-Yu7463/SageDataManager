@@ -45,6 +45,10 @@ class AssetNotFoundError(Exception):
     pass
 
 
+class AssetConflictError(Exception):
+    pass
+
+
 class AssetRelationError(Exception):
     def __init__(self, message: str):
         self.message = message
@@ -244,10 +248,12 @@ def update_asset(
     *,
     actor: User,
     credential_name: str | None = None,
+    expected_revision: datetime | None = None,
 ) -> AssetSummary:
     asset = session.scalar(
         select(Asset)
         .where(Asset.id == asset_id, Asset.archived_at.is_(None))
+        .with_for_update()
         .options(
             selectinload(Asset.owner),
             selectinload(Asset.tags),
@@ -257,6 +263,15 @@ def update_asset(
     )
     if not asset:
         raise AssetNotFoundError
+    if expected_revision is not None:
+        stored_revision = asset.updated_at
+        if stored_revision.tzinfo is None:
+            stored_revision = stored_revision.replace(tzinfo=UTC)
+        requested_revision = expected_revision
+        if requested_revision.tzinfo is None:
+            requested_revision = requested_revision.replace(tzinfo=UTC)
+        if stored_revision.astimezone(UTC) != requested_revision.astimezone(UTC):
+            raise AssetConflictError
     next_title = payload.title.strip() if payload.title is not None else asset.title
     try:
         next_details = (

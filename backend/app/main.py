@@ -24,61 +24,150 @@ app.include_router(router, prefix=settings.api_prefix)
 @app.get("/agent.md", include_in_schema=False)
 def agent_instructions() -> PlainTextResponse:
     return PlainTextResponse(
-        """# DataManager Agent Interface
+        r"""# DataManager Agent Interface
 
-This DataManager exposes a scoped HTTP API for authorized AI agents.
+Protocol version: 1.0
+Document version: 2026-08-15
 
-## Discovery
+This instance exposes a scoped HTTP API for authorized file-management agents.
+Use paths relative to the instance origin. The OpenAPI schema is authoritative
+for request and response shapes.
 
-- OpenAPI schema: `/api/openapi.json`
-- Agent identity: `GET /api/agent/me`
-- Agent endpoints: `/api/agent/*`
+## Discovery and authentication
 
-## Authentication
+- Discovery: `GET /.well-known/datamanager-agent.json`
+- OpenAPI: `GET /api/openapi.json`
+- Identity and granted scopes: `GET /api/agent/me`
+- API base: `/api/agent`
 
-Send a personal access token in every agent request:
+Send the personal access token on every request:
 
 `Authorization: Bearer sdm_pat_<public-id>_<secret>`
 
-Tokens are created by a human administrator in System Settings.
-Never place a token in this document, source code, URLs, logs, or asset metadata.
+Never put a token in a URL, log, source file, asset metadata, or this document.
+Upload tasks also return a short-lived `upload_token`. It must be supplied as
+`X-Sage-Upload-Token` for file upload, status, and cancellation, and in the
+JSON body for finalization. An upload task is bound to the PAT that created it.
 
-## Required workflow
+## Scope matrix
 
-1. Search before creating: `GET /api/agent/assets?query=...`.
-2. Read the matching record: `GET /api/agent/assets/{asset_id}`.
-3. Update stale metadata in place: `PATCH /api/agent/assets/{asset_id}`.
-   The `details` field replaces the complete object; read it first and preserve
-   fields that are not changing.
-4. Create metadata only when no matching asset exists: `POST /api/agent/assets`.
-5. Create an isolated upload task: `POST /api/agent/uploads`.
-6. Upload each file with `PUT` to the returned `file_upload_url_template`.
-   Send the upload token in `X-Sage-Upload-Token` and use the same personal
-   access token that created the task. When the local SHA-256 is known, send
-   it in `X-Sage-Content-SHA256`; a mismatch rejects the file before staging.
-   The response always returns the SHA-256 calculated from received bytes.
-7. Finalize after every upload succeeds. `POST` to `finalize_url`
-   with `{"upload_token":"..."}`.
-   Finalization is idempotent: after a lost response, retry it with the same
-   upload ID and tokens. A completed task rejects additional file uploads.
-   Finalization stores SHA-256 for every file and rejects duplicate content
-   already attached to the same asset.
-8. On a file conflict, do not overwrite or rename the file without user direction.
+| Scope | Operations |
+| --- | --- |
+| `assets:read` | Search/list assets and read full asset details |
+| `files:read` | Preview or download indexed files |
+| `metadata:write` | Create assets and update asset metadata |
+| `files:upload` | Create, inspect, cancel, and upload files to isolated tasks |
+| `archive:finalize` | Validate and move a staged task into the formal archive |
+| `citations:export` | Export one publication as BibTeX |
 
-## Catalogue policy
+Agent tokens cannot archive assets, change settings, scan storage, manage users,
+or manage access tokens. There is no `assets:archive` Agent scope.
 
-- `paper`: work authored by the lab, including submissions and publications.
-- `literature`: external papers, preprints, journal articles, annotations, and notes.
-- Preserve official source identifiers and BibTeX metadata when available.
-- Do not infer unknown citation fields.
+## Catalogue workflow
 
-## Safety
+1. Search before creating:
+   `GET /api/agent/assets?query=<encoded-query>&page=1&page_size=10`.
+2. Continue pagination until `page * page_size >= total`. List records are
+   compact by design and omit full `details`, summaries, owners, and file lists.
+3. Read a candidate with `GET /api/agent/assets/{asset_id}`.
+4. Create only when no existing record matches: `POST /api/agent/assets`.
+5. To update, copy the latest detail response's `updated_at` value into the
+   `X-Sage-Asset-Revision` header on
+   `PATCH /api/agent/assets/{asset_id}`.
+6. A PATCH `details` value replaces the entire details object. Preserve every
+   existing field that is not intentionally changing. Omitted top-level fields
+   remain unchanged.
+7. On `409` stale-revision conflict, read the asset again, merge deliberately,
+   and retry once with the new revision. Never blindly overwrite concurrent work.
 
-- Never request `assets:archive` or administrative settings.
-  These capabilities are unavailable to agent tokens.
-- Upload paths must be relative to the task and must not contain `..`.
-- File conflicts, symlinks, and invalid paths are rejected before formal archival.
-- All agent actions are attributed to the human account and token name.
+Asset types are `paper`, `dataset`, `literature`, `project`, and `model`.
+Use `paper` for lab-authored work and `literature` for external publications.
+Preserve official identifiers and citation data. Do not infer unknown fields.
+
+## Reading files
+
+Asset detail responses contain indexed file IDs. Read one with:
+
+`GET /api/agent/files/{file_id}/content?mode=download`
+
+Use `mode=preview` only for supported text, PDF, JSON, YAML, CSV, and image
+types. The endpoint streams bytes, supports `Range`, and returns
+`Cache-Control: private, no-store`.
+
+## Upload workflow
+
+1. Create a task with `POST /api/agent/uploads`:
+   `{"asset_id":"<uuid>","target_subdirectory":"original"}`.
+2. The first directory component must be allowed for the asset type:
+
+| Type | Allowed first component |
+| --- | --- |
+| `paper` | `manuscript`, `supplementary`, `source`, `reviews` |
+| `dataset` | `raw`, `processed`, `documentation`, `scripts` |
+| `literature` | `original`, `annotations`, `notes` |
+| `project` | `documentation`, `code`, `data`, `outputs` |
+| `model` | `weights`, `checkpoints`, `configs`, `evaluation` |
+
+3. Upload every non-empty file with `PUT` to
+   `file_upload_url_template`. Percent-encode each `relative_path` segment
+   as UTF-8 while preserving `/` separators. Paths must be relative, may not
+   contain `.` or `..` components, and must not use system-reserved names.
+4. Send `X-Sage-Upload-Token`. When available, also send the lowercase
+   64-character SHA-256 in `X-Sage-Content-SHA256`. The response contains the
+   checksum calculated from received bytes.
+5. Maximum size is 500,000,000 bytes per file. A `413` response means the
+   whole file was rejected and no partial file remains.
+6. Recover after interruption with `GET` on `status_url`, sending the PAT
+   and `X-Sage-Upload-Token`. States are `waiting`, `ready`, `completed`,
+   and `cancelled`.
+7. Cancel an unused task with `DELETE` on `cancel_url`, using the same two
+   credentials. Cancellation is idempotent and safely removes staged files.
+8. After all uploads succeed, `POST` to `finalize_url` with
+   `{"upload_token":"<upload-token>"}`. Finalization is idempotent after a
+   lost response. It stores SHA-256 values and rejects duplicate content.
+9. Never overwrite or silently rename a conflicting path. Ask the user how to
+   resolve a `409` file conflict.
+
+The task's `expires_at` is authoritative. Do not start or retry work after it.
+
+## Error handling
+
+- `400`: malformed header or request; correct it before retrying.
+- `401`: PAT or required upload header is missing/invalid; stop and obtain
+  valid credentials.
+- `403`: missing scope or credential/task mismatch; do not broaden scopes
+  without the administrator's approval.
+- `404`: resource is absent or its asset is archived; search again.
+- `409`: state, revision, metadata, path, checksum, or content conflict;
+  inspect the detail and resolve the cause before retrying.
+- `413`: file exceeds the configured limit; do not retry the same payload.
+- `422`: request does not match the schema; correct fields and types.
+- `429` or `5xx`: retry idempotent reads with bounded exponential backoff.
+  Retry uploads only after checking task status. Retry finalization with the
+  same upload ID and tokens.
+
+## Minimal examples
+
+Assume `BASE_URL`, `SAGE_TOKEN`, `ASSET_ID`, and `FILE_ID` are already
+set in the process environment.
+
+```sh
+curl -fsS "$BASE_URL/api/agent/me" \
+  -H "Authorization: Bearer $SAGE_TOKEN"
+
+curl -fsS "$BASE_URL/api/agent/assets?query=example&page=1&page_size=10" \
+  -H "Authorization: Bearer $SAGE_TOKEN"
+
+curl -fsS "$BASE_URL/api/agent/assets/$ASSET_ID" \
+  -H "Authorization: Bearer $SAGE_TOKEN"
+
+curl -fSL "$BASE_URL/api/agent/files/$FILE_ID/content?mode=download" \
+  -H "Authorization: Bearer $SAGE_TOKEN" \
+  -o downloaded-file
+```
+
+All Agent mutations and file reads are attributed to the human account and PAT
+name in the activity log.
 """,
         media_type="text/markdown; charset=utf-8",
     )
@@ -88,10 +177,51 @@ Never place a token in this document, source code, URLs, logs, or asset metadata
 def agent_discovery() -> JSONResponse:
     return JSONResponse(
         {
+            "schema_version": "1.0",
+            "documentation_version": "2026-08-15",
             "name": settings.app_name,
             "instructions": "/agent.md",
             "openapi": "/api/openapi.json",
             "api_base": "/api/agent",
-            "authentication": "bearer",
+            "authentication": {
+                "type": "http_bearer",
+                "header": "Authorization",
+            },
+            "capabilities": [
+                "asset_search",
+                "asset_metadata",
+                "file_read",
+                "direct_upload",
+                "upload_recovery",
+                "archive_finalize",
+                "citation_export",
+            ],
+            "scopes": {
+                "assets:read": ["GET /assets", "GET /assets/{asset_id}"],
+                "files:read": ["GET /files/{file_id}/content"],
+                "metadata:write": ["POST /assets", "PATCH /assets/{asset_id}"],
+                "files:upload": [
+                    "POST /uploads",
+                    "GET /uploads/{upload_id}",
+                    "DELETE /uploads/{upload_id}",
+                    "PUT /uploads/{upload_id}/files/{relative_path}",
+                ],
+                "archive:finalize": ["POST /uploads/{upload_id}/finalize"],
+                "citations:export": ["GET /assets/{asset_id}/citation/bibtex"],
+            },
+            "limits": {
+                "default_page_size": 10,
+                "maximum_page_size": 100,
+                "maximum_file_size_bytes": settings.agent_upload_max_bytes,
+                "upload_path_encoding": "percent-encoded UTF-8 segments",
+            },
+            "asset_types": ["paper", "dataset", "literature", "project", "model"],
+            "upload_directories": {
+                "paper": ["manuscript", "supplementary", "source", "reviews"],
+                "dataset": ["raw", "processed", "documentation", "scripts"],
+                "literature": ["original", "annotations", "notes"],
+                "project": ["documentation", "code", "data", "outputs"],
+                "model": ["weights", "checkpoints", "configs", "evaluation"],
+            },
         }
     )

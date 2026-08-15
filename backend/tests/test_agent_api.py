@@ -1,6 +1,7 @@
 import hashlib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,8 +13,15 @@ from sqlalchemy.pool import StaticPool
 from app.core.config import settings
 from app.db.base import Base
 from app.db.session import get_session
-from app.domain.enums import AssetType, Visibility
-from app.domain.models import Activity, Asset, FileRecord, PersonalAccessToken, User
+from app.domain.enums import AssetType, HealthStatus, Visibility
+from app.domain.models import (
+    Activity,
+    Asset,
+    FileRecord,
+    PersonalAccessToken,
+    UploadTask,
+    User,
+)
 from app.domain.schemas import AccessTokenCreateRequest
 from app.main import app
 from app.services.access_tokens import AccessTokenConfigurationError, create_access_token
@@ -83,10 +91,35 @@ def test_agent_discovery_is_public_and_contains_no_secret() -> None:
     assert instructions.headers["content-type"].startswith("text/markdown")
     assert "Authorization: Bearer" in instructions.text
     assert "sdm_pat_<public-id>_<secret>" in instructions.text
-    assert discovery.json()["openapi"] == "/api/openapi.json"
+    discovery_data = discovery.json()
+    assert discovery_data["openapi"] == "/api/openapi.json"
+    assert discovery_data["schema_version"] == "1.0"
+    assert "file_read" in discovery_data["capabilities"]
+    assert discovery_data["scopes"]["files:read"] == [
+        "GET /files/{file_id}/content"
+    ]
+    assert discovery_data["limits"]["maximum_file_size_bytes"] == 500_000_000
+    assert "X-Sage-Asset-Revision" in instructions.text
+    assert "archive:finalize" in instructions.text
     openapi = client.get("/api/openapi.json").json()
     get_assets = openapi["paths"]["/api/agent/assets"]["get"]
     assert get_assets["security"] == [{"HTTPBearer": []}]
+    file_content = openapi["paths"]["/api/agent/files/{file_id}/content"]["get"]
+    assert file_content["summary"] == "Read or download an indexed file"
+    patch_asset = openapi["paths"]["/api/agent/assets/{asset_id}"]["patch"]
+    revision_header = next(
+        parameter
+        for parameter in patch_asset["parameters"]
+        if parameter["name"] == "X-Sage-Asset-Revision"
+    )
+    assert revision_header["required"] is True
+    assert "409" in patch_asset["responses"]
+    upload_file = openapi["paths"][
+        "/api/agent/uploads/{upload_id}/files/{relative_path}"
+    ]["put"]
+    assert {"400", "401", "403", "409", "413", "422"} <= set(
+        upload_file["responses"]
+    )
 
 
 def test_personal_tokens_are_shown_once_hashed_and_revocable(monkeypatch) -> None:
@@ -322,10 +355,14 @@ def test_agent_can_read_and_update_existing_metadata_with_audit_identity(monkeyp
         detail = client.get(f"/api/agent/assets/{asset.id}", headers=bearer(plaintext))
         assert detail.status_code == 200
         assert detail.json()["slug"] == asset.slug
+        original_revision = detail.json()["updated_at"]
 
         updated = client.patch(
             f"/api/agent/assets/{asset.id}",
-            headers=bearer(plaintext),
+            headers={
+                **bearer(plaintext),
+                "X-Sage-Asset-Revision": original_revision,
+            },
             json={"summary": "Updated by an authorized metadata agent."},
         )
         assert updated.status_code == 200
@@ -333,11 +370,26 @@ def test_agent_can_read_and_update_existing_metadata_with_audit_identity(monkeyp
         updated_at = session.get(Asset, asset.id).updated_at
         replayed = client.patch(
             f"/api/agent/assets/{asset.id}",
-            headers=bearer(plaintext),
+            headers={
+                **bearer(plaintext),
+                "X-Sage-Asset-Revision": updated.json()["updated_at"],
+            },
             json={"summary": "Updated by an authorized metadata agent."},
         )
         assert replayed.status_code == 200
         assert session.get(Asset, asset.id).updated_at == updated_at
+        stale = client.patch(
+            f"/api/agent/assets/{asset.id}",
+            headers={
+                **bearer(plaintext),
+                "X-Sage-Asset-Revision": original_revision,
+            },
+            json={"summary": "Stale overwrite"},
+        )
+        assert stale.status_code == 409
+        assert session.get(Asset, asset.id).summary == (
+            "Updated by an authorized metadata agent."
+        )
         activities = session.scalars(
             select(Activity).where(Activity.action == "updated_metadata")
         ).all()
@@ -359,7 +411,10 @@ def test_read_only_agent_cannot_update_existing_metadata(monkeypatch) -> None:
     try:
         response = TestClient(app).patch(
             f"/api/agent/assets/{asset.id}",
-            headers=bearer(plaintext),
+            headers={
+                **bearer(plaintext),
+                "X-Sage-Asset-Revision": datetime.now(UTC).isoformat(),
+            },
             json={"summary": "This update must be rejected."},
         )
         assert response.status_code == 403
@@ -437,6 +492,15 @@ def test_agent_can_upload_and_finalize_a_file(tmp_path: Path, monkeypatch) -> No
             "literature/agent-upload-paper/original/official/paper.pdf"
         ]
         assert list(finalized.json()["checksums"].values()) == [expected_checksum]
+        task_headers = {
+            **bearer(plaintext),
+            "X-Sage-Upload-Token": task_data["upload_token"],
+        }
+        completed_status = client.get(task_data["status_url"], headers=task_headers)
+        rejected_cancel = client.delete(task_data["cancel_url"], headers=task_headers)
+        assert completed_status.status_code == 200
+        assert completed_status.json()["status"] == "completed"
+        assert rejected_cancel.status_code == 409
         replayed = client.post(
             task_data["finalize_url"],
             headers=bearer(plaintext),
@@ -672,6 +736,214 @@ def test_agent_upload_cleans_partial_file_when_stream_exceeds_limit(
 
         assert response.status_code == 413
         assert not (tmp_path / ".uploads").exists()
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
+def test_agent_asset_list_is_compact_and_uses_ai_friendly_default_page_size(
+    monkeypatch,
+) -> None:
+    session = make_session()
+    user, asset = create_user_and_asset(session)
+    asset.details = {"source_id": "fixture-source", "large": "x" * 10_000}
+    monkeypatch.setattr(settings, "auth_session_secret", "agent-test-secret")
+    plaintext = create_token(session, user, ["assets:read"])
+    session.commit()
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        response = TestClient(app).get("/api/agent/assets", headers=bearer(plaintext))
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["page_size"] == 10
+        assert payload["total"] == 1
+        item = payload["items"][0]
+        assert item["source_id"] == "fixture-source"
+        assert item["file_count"] == 0
+        assert "summary" not in item
+        assert "details" not in item
+        assert "owner" not in item
+        assert "upload_directories" not in item
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
+def test_agent_metadata_update_requires_revision_header(monkeypatch) -> None:
+    session = make_session()
+    user, asset = create_user_and_asset(session)
+    monkeypatch.setattr(settings, "auth_session_secret", "agent-test-secret")
+    plaintext = create_token(session, user, ["metadata:write"])
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        response = TestClient(app).patch(
+            f"/api/agent/assets/{asset.id}",
+            headers=bearer(plaintext),
+            json={"summary": "Must not be accepted without a revision."},
+        )
+
+        assert response.status_code == 422
+        session.refresh(asset)
+        assert asset.summary == "Agent API integration fixture"
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
+def test_access_token_accepts_the_complete_scope_set() -> None:
+    payload = AccessTokenCreateRequest(
+        name="full-access-agent",
+        scopes=[
+            "assets:read",
+            "files:read",
+            "metadata:write",
+            "files:upload",
+            "archive:finalize",
+            "citations:export",
+        ],
+    )
+
+    assert len(payload.scopes) == 6
+
+
+def test_agent_can_range_read_an_indexed_file_with_pat_audit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    session = make_session()
+    user, asset = create_user_and_asset(session)
+    archived_file = (
+        tmp_path / "literature" / asset.slug / "original" / "agent-fixture.txt"
+    )
+    archived_file.parent.mkdir(parents=True)
+    content = b"0123456789"
+    archived_file.write_bytes(content)
+    metadata = archived_file.stat()
+    record = FileRecord(
+        asset=asset,
+        relative_path=archived_file.relative_to(tmp_path).as_posix(),
+        file_name=archived_file.name,
+        file_kind="document",
+        mime_type="text/plain",
+        file_size=len(content),
+        checksum=hashlib.sha256(content).hexdigest(),
+        health_status=HealthStatus.HEALTHY,
+        modified_at=datetime.fromtimestamp(metadata.st_mtime, UTC),
+    )
+    session.add(record)
+    session.commit()
+    monkeypatch.setattr(settings, "auth_session_secret", "agent-test-secret")
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    plaintext = create_token(
+        session,
+        user,
+        ["files:read"],
+        name="file-reader",
+    )
+    read_only_metadata_token = create_token(session, user, ["assets:read"])
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        client = TestClient(app)
+        denied = client.get(
+            f"/api/agent/files/{record.id}/content",
+            headers=bearer(read_only_metadata_token),
+        )
+        response = client.get(
+            f"/api/agent/files/{record.id}/content",
+            headers={**bearer(plaintext), "Range": "bytes=2-5"},
+        )
+
+        assert denied.status_code == 403
+        assert response.status_code == 206
+        assert response.content == b"2345"
+        assert response.headers["content-range"] == "bytes 2-5/10"
+        assert response.headers["cache-control"] == "private, no-store"
+        activity = session.scalars(
+            select(Activity).where(Activity.action == "downloaded_file")
+        ).one()
+        assert activity.credential_name == "file-reader"
+        assert activity.actor_id == user.id
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
+def test_agent_can_recover_and_cancel_its_upload_task(
+    tmp_path: Path, monkeypatch
+) -> None:
+    session = make_session()
+    user, asset = create_user_and_asset(session)
+    monkeypatch.setattr(settings, "auth_session_secret", "agent-test-secret")
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    plaintext = create_token(
+        session,
+        user,
+        ["files:upload"],
+        name="upload-manager",
+    )
+    other_plaintext = create_token(
+        session,
+        user,
+        ["files:upload"],
+        name="other-upload-manager",
+    )
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        client = TestClient(app)
+        created = client.post(
+            "/api/agent/uploads",
+            headers=bearer(plaintext),
+            json={"asset_id": str(asset.id), "target_subdirectory": "original"},
+        )
+        assert created.status_code == 201
+        task = created.json()
+        task_headers = {
+            **bearer(plaintext),
+            "X-Sage-Upload-Token": task["upload_token"],
+        }
+
+        waiting = client.get(task["status_url"], headers=task_headers)
+        assert waiting.status_code == 200
+        assert waiting.json()["status"] == "waiting"
+
+        uploaded = client.put(
+            task["file_upload_url_template"].replace("{relative_path}", "notes.txt"),
+            headers=task_headers,
+            content=b"temporary notes",
+        )
+        assert uploaded.status_code == 200
+        ready = client.get(task["status_url"], headers=task_headers)
+        assert ready.status_code == 200
+        assert ready.json()["status"] == "ready"
+        assert ready.json()["uploaded_file_count"] == 1
+
+        wrong_pat = client.get(
+            task["status_url"],
+            headers={
+                **bearer(other_plaintext),
+                "X-Sage-Upload-Token": task["upload_token"],
+            },
+        )
+        assert wrong_pat.status_code == 403
+
+        cancelled = client.delete(task["cancel_url"], headers=task_headers)
+        assert cancelled.status_code == 200
+        assert cancelled.json()["status"] == "cancelled"
+        assert not (tmp_path / ".uploads").exists()
+
+        status_after_cancel = client.get(task["status_url"], headers=task_headers)
+        replayed_cancel = client.delete(task["cancel_url"], headers=task_headers)
+        rejected_upload = client.put(
+            task["file_upload_url_template"].replace("{relative_path}", "late.txt"),
+            headers=task_headers,
+            content=b"late",
+        )
+        assert status_after_cancel.json()["status"] == "cancelled"
+        assert replayed_cancel.status_code == 200
+        assert rejected_upload.status_code == 403
+        upload_task = session.get(UploadTask, UUID(task["upload_id"]))
+        assert upload_task is not None
+        assert upload_task.status == "cancelled"
     finally:
         app.dependency_overrides.clear()
         session.close()

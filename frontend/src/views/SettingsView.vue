@@ -34,7 +34,7 @@ const createdToken = ref<AccessTokenCreated | null>(null)
 const tokenForm = ref({
   name: '',
   expiresInDays: 90,
-  scopes: ['assets:read', 'metadata:write', 'files:upload', 'citations:export'] as AgentScope[],
+  scopes: ['assets:read', 'files:read', 'metadata:write', 'files:upload', 'citations:export'] as AgentScope[],
 })
 const revokeTarget = ref<AccessTokenSummary | null>(null)
 const revokeDialog = ref<HTMLElement | null>(null)
@@ -239,7 +239,8 @@ async function refreshSettings() {
 }
 
 const scopeOptions: { value: AgentScope; label: string; description: string }[] = [
-  { value: 'assets:read', label: '查询资产', description: '搜索并读取资产与文件索引' },
+  { value: 'assets:read', label: '查询资产', description: '搜索并读取资产元数据与文件索引' },
+  { value: 'files:read', label: '读取文件', description: '预览或下载已索引的归档文件' },
   { value: 'metadata:write', label: '登记元数据', description: '创建论文、文献及其他资产记录' },
   { value: 'files:upload', label: '上传文件', description: '创建隔离任务并写入文件' },
   { value: 'archive:finalize', label: '正式入库', description: '将校验通过的文件移入正式归档' },
@@ -250,7 +251,7 @@ function openTokenDialog() {
   tokenForm.value = {
     name: '',
     expiresInDays: 90,
-    scopes: ['assets:read', 'metadata:write', 'files:upload', 'citations:export'],
+    scopes: ['assets:read', 'files:read', 'metadata:write', 'files:upload', 'citations:export'],
   }
   tokenError.value = ''
   tokenCopied.value = false

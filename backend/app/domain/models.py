@@ -180,7 +180,10 @@ class Asset(Base):
 class UploadTask(Base):
     __tablename__ = "upload_tasks"
     __table_args__ = (
-        CheckConstraint("status IN ('active', 'completed')", name="ck_upload_tasks_status"),
+        CheckConstraint(
+            "status IN ('active', 'completed', 'cancelled')",
+            name="ck_upload_tasks_status",
+        ),
         CheckConstraint(
             "transfer_mode IN ('scp', 'agent')", name="ck_upload_tasks_transfer_mode"
         ),

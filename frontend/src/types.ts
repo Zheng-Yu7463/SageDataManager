@@ -360,7 +360,7 @@ export interface InstanceBranding {
 
 export type InstanceBrandingInput = Omit<InstanceBranding, 'logo_url' | 'revision'>
 
-export type AgentScope = 'assets:read' | 'metadata:write' | 'files:upload' | 'archive:finalize' | 'citations:export'
+export type AgentScope = 'assets:read' | 'files:read' | 'metadata:write' | 'files:upload' | 'archive:finalize' | 'citations:export'
 
 export interface AccessTokenSummary {
   id: string

@@ -20,8 +20,10 @@ from app.domain.activity import ActivityAction
 from app.domain.enums import HealthStatus
 from app.domain.models import Asset, FileRecord, PersonalAccessToken, UploadTask, User
 from app.domain.schemas import (
+    AgentUploadCancelResponse,
     AgentUploadCreateResponse,
     AgentUploadedFileResponse,
+    AgentUploadStatusResponse,
     UploadCommandRequest,
     UploadCommandResponse,
     UploadFinalizeResponse,
@@ -248,19 +250,26 @@ def create_agent_upload(
         upload_token=upload_token,
         expires_at=expires_at,
         file_upload_url_template=f"/api/agent/uploads/{upload_id}/files/{{relative_path}}",
+        status_url=f"/api/agent/uploads/{upload_id}",
         finalize_url=f"/api/agent/uploads/{upload_id}/finalize",
+        cancel_url=f"/api/agent/uploads/{upload_id}",
     )
 
 
-def validate_agent_upload(
+def _agent_upload_task(
     session: Session,
     upload_id: UUID,
     upload_token: str,
     actor: User,
     access_token: PersonalAccessToken,
+    *,
+    for_update: bool = False,
 ) -> UploadTask:
     claims = read_upload_token(upload_token)
-    task = session.get(UploadTask, upload_id)
+    statement = select(UploadTask).where(UploadTask.id == upload_id)
+    if for_update:
+        statement = statement.with_for_update()
+    task = session.scalar(statement)
     if (
         not claims
         or claims.upload_id != upload_id
@@ -271,9 +280,28 @@ def validate_agent_upload(
         or task.asset_id != claims.asset_id
         or task.target_subdirectory != claims.target_subdirectory
         or task.transfer_mode != "agent"
-        or task.status != "active"
     ):
         raise UploadTicketError("上传凭据无效或已过期，请重新创建上传任务。")
+    return task
+
+
+def validate_agent_upload(
+    session: Session,
+    upload_id: UUID,
+    upload_token: str,
+    actor: User,
+    access_token: PersonalAccessToken,
+) -> UploadTask:
+    task = _agent_upload_task(
+        session,
+        upload_id,
+        upload_token,
+        actor,
+        access_token,
+        for_update=True,
+    )
+    if task.status != "active":
+        raise UploadTicketError("上传任务已结束，请重新创建上传任务。")
     return task
 
 
@@ -438,6 +466,116 @@ def upload_status(
         total_size=total_size,
         expires_at=task.expires_at,
     )
+
+
+def agent_upload_status(
+    session: Session,
+    storage_root: Path,
+    upload_id: UUID,
+    upload_token: str,
+    *,
+    actor: User,
+    access_token: PersonalAccessToken,
+) -> AgentUploadStatusResponse:
+    task = _agent_upload_task(session, upload_id, upload_token, actor, access_token)
+    if task.status == "completed" and task.result:
+        result = UploadFinalizeResponse.model_validate(task.result)
+        return AgentUploadStatusResponse(
+            upload_id=task.id,
+            status="completed",
+            uploaded_file_count=result.imported_file_count,
+            total_size=result.total_size,
+            expires_at=task.expires_at,
+        )
+    if task.status == "cancelled":
+        return AgentUploadStatusResponse(
+            upload_id=task.id,
+            status="cancelled",
+            uploaded_file_count=0,
+            total_size=0,
+            expires_at=task.expires_at,
+        )
+
+    try:
+        root = storage_root.resolve(strict=True)
+    except (FileNotFoundError, NotADirectoryError) as error:
+        raise UploadContentError("存储根不可用，无法检测上传进度。") from error
+    if not root.is_dir():
+        raise UploadContentError("存储根不可用，无法检测上传进度。")
+    staging_root = root / UPLOAD_STAGING_DIRECTORY
+    if staging_root.is_symlink():
+        raise UploadContentError("上传临时区不是有效目录，无法检测上传进度。")
+    staging_directory = staging_root / str(upload_id)
+    if not staging_directory.exists():
+        return AgentUploadStatusResponse(
+            upload_id=task.id,
+            status="waiting",
+            uploaded_file_count=0,
+            total_size=0,
+            expires_at=task.expires_at,
+        )
+    try:
+        files = _staged_files(staging_directory, completion_marker_required=False)
+    except UploadNotReadyError:
+        files = []
+    try:
+        total_size = sum(path.stat().st_size for path in files)
+    except OSError as error:
+        raise UploadContentError("上传文件正在变化，请稍后重试。") from error
+    return AgentUploadStatusResponse(
+        upload_id=task.id,
+        status="ready" if files else "waiting",
+        uploaded_file_count=len(files),
+        total_size=total_size,
+        expires_at=task.expires_at,
+    )
+
+
+def cancel_agent_upload(
+    session: Session,
+    storage_root: Path,
+    upload_id: UUID,
+    upload_token: str,
+    *,
+    actor: User,
+    access_token: PersonalAccessToken,
+) -> AgentUploadCancelResponse:
+    task = _agent_upload_task(
+        session,
+        upload_id,
+        upload_token,
+        actor,
+        access_token,
+        for_update=True,
+    )
+    if task.status == "completed":
+        raise UploadContentError("已完成的上传任务不能取消。")
+    if task.status == "cancelled":
+        return AgentUploadCancelResponse(upload_id=task.id, status="cancelled")
+
+    try:
+        root = storage_root.resolve(strict=True)
+    except (FileNotFoundError, NotADirectoryError) as error:
+        raise UploadContentError("存储根不可用，无法取消上传任务。") from error
+    if not root.is_dir():
+        raise UploadContentError("存储根不可用，无法取消上传任务。")
+    staging_root = root / UPLOAD_STAGING_DIRECTORY
+    if staging_root.is_symlink():
+        raise UploadContentError("上传临时区不是有效目录，无法取消上传任务。")
+    staging_directory = staging_root / str(upload_id)
+    if staging_directory.is_symlink() or (
+        staging_directory.exists() and not staging_directory.is_dir()
+    ):
+        raise UploadContentError("上传任务临时目录无效，无法安全清理。")
+    if staging_directory.exists():
+        shutil.rmtree(staging_directory)
+    if staging_root.exists() and not any(staging_root.iterdir()):
+        staging_root.rmdir()
+
+    task.status = "cancelled"
+    task.completed_at = datetime.now(UTC)
+    session.flush()
+    return AgentUploadCancelResponse(upload_id=task.id, status="cancelled")
 
 
 def _open_staged_files(
@@ -615,6 +753,8 @@ def finalize_upload(
         raise UploadTicketError("上传凭据无效或已过期，请重新生成上传命令。")
     if task.status == "completed" and task.result:
         return UploadFinalizeResponse.model_validate(task.result)
+    if task.status != "active":
+        raise UploadTicketError("上传任务已取消，请重新创建上传任务。")
 
     asset = session.scalar(
         select(Asset).where(Asset.id == claims.asset_id).with_for_update()
