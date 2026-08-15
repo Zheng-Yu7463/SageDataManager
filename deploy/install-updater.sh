@@ -53,8 +53,9 @@ if [[ ! -S /run/sage-updater/updater.sock ]]; then
 fi
 
 cd "${repository}"
-docker compose up --build -d --force-recreate --no-deps backend
-docker compose up --build -d frontend
+release_commit="$(git rev-parse HEAD)"
+SAGE_RELEASE_COMMIT="${release_commit}" docker compose up --build -d --force-recreate --no-deps backend
+SAGE_RELEASE_COMMIT="${release_commit}" docker compose up --build -d frontend
 
 echo
 echo "SageDataManager 更新代理已启用。"

@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     update_agent_socket: Path = Path("/run/sage-updater/updater.sock")
     update_agent_secret: str = ""
     update_agent_timeout_seconds: int = 60
+    release_commit: str = "unknown"
 
     model_config = SettingsConfigDict(
         env_file=".env",

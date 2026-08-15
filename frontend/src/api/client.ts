@@ -376,8 +376,9 @@ export function checkSystemUpdate() {
   return request<SystemUpdateStatus>('/api/settings/system-update/check', undefined, 'POST')
 }
 
-export function applySystemUpdate(password: string) {
+export function applySystemUpdate(password: string, targetCommit: string) {
   return request<SystemUpdateStatus>('/api/settings/system-update/apply', undefined, 'POST', {
     password,
+    target_commit: targetCommit,
   })
 }

@@ -9,6 +9,8 @@ from app.main import app
 from app.services.security import hash_password
 from app.services.system_updates import UpdateAgentUnavailableError
 
+TARGET_COMMIT = "b" * 40
+
 
 def update_status(**overrides: object) -> dict[str, object]:
     value: dict[str, object] = {
@@ -18,7 +20,7 @@ def update_status(**overrides: object) -> dict[str, object]:
         "message": "发现 2 个可用提交。",
         "branch": "main",
         "current_commit": "a" * 40,
-        "latest_commit": "b" * 40,
+        "latest_commit": TARGET_COMMIT,
         "update_available": True,
         "behind_count": 2,
         "ahead_count": 0,
@@ -113,7 +115,7 @@ def test_only_instance_owner_can_apply_an_update(monkeypatch) -> None:
     try:
         response = TestClient(app).post(
             "/api/settings/system-update/apply",
-            json={"password": "secure-password"},
+            json={"password": "secure-password", "target_commit": TARGET_COMMIT},
         )
     finally:
         app.dependency_overrides.clear()
@@ -123,11 +125,11 @@ def test_only_instance_owner_can_apply_an_update(monkeypatch) -> None:
 
 
 def test_owner_password_is_rechecked_before_update(monkeypatch) -> None:
-    calls: list[tuple[str, str]] = []
+    calls: list[tuple[str, str, dict[str, str]]] = []
     monkeypatch.setattr(
         settings_routes,
         "request_update_agent",
-        lambda method, path: calls.append((method, path))
+        lambda method, path, payload: calls.append((method, path, payload))
         or update_status(state="backing_up", phase="database_backup"),
     )
     app.dependency_overrides[require_admin] = lambda: account(owner=True)
@@ -135,11 +137,11 @@ def test_owner_password_is_rechecked_before_update(monkeypatch) -> None:
     try:
         denied = client.post(
             "/api/settings/system-update/apply",
-            json={"password": "wrong-password"},
+            json={"password": "wrong-password", "target_commit": TARGET_COMMIT},
         )
         accepted = client.post(
             "/api/settings/system-update/apply",
-            json={"password": "secure-password"},
+            json={"password": "secure-password", "target_commit": TARGET_COMMIT},
         )
     finally:
         app.dependency_overrides.clear()
@@ -147,11 +149,11 @@ def test_owner_password_is_rechecked_before_update(monkeypatch) -> None:
     assert denied.status_code == 403
     assert accepted.status_code == 202
     assert accepted.json()["state"] == "backing_up"
-    assert calls == [("POST", "/v1/update")]
+    assert calls == [("POST", "/v1/update", {"target_commit": TARGET_COMMIT})]
 
 
 def test_mutating_endpoint_returns_service_unavailable_when_agent_is_offline(monkeypatch) -> None:
-    def unavailable(method: str, path: str) -> dict[str, object]:
+    def unavailable(method: str, path: str, payload: dict[str, str]) -> dict[str, object]:
         raise UpdateAgentUnavailableError("无法连接宿主机更新服务。")
 
     monkeypatch.setattr(settings_routes, "request_update_agent", unavailable)
@@ -159,7 +161,7 @@ def test_mutating_endpoint_returns_service_unavailable_when_agent_is_offline(mon
     try:
         response = TestClient(app).post(
             "/api/settings/system-update/apply",
-            json={"password": "secure-password"},
+            json={"password": "secure-password", "target_commit": TARGET_COMMIT},
         )
     finally:
         app.dependency_overrides.clear()

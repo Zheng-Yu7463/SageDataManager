@@ -47,7 +47,11 @@ def disabled_update_status(message: str | None = None) -> dict[str, Any]:
     }
 
 
-def request_update_agent(method: str, path: str) -> dict[str, Any]:
+def request_update_agent(
+    method: str,
+    path: str,
+    payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if not update_agent_configured():
         raise UpdateAgentUnavailableError("宿主机更新服务尚未配置。")
 
@@ -59,8 +63,17 @@ def request_update_agent(method: str, path: str) -> dict[str, Any]:
         "Accept": "application/json",
         "Authorization": f"Bearer {settings.update_agent_secret}",
     }
+    request_body = None
+    if payload is not None:
+        request_body = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
     try:
-        connection.request(method, path, body=b"" if method == "POST" else None, headers=headers)
+        connection.request(
+            method,
+            path,
+            body=request_body if request_body is not None else (b"" if method == "POST" else None),
+            headers=headers,
+        )
         response = connection.getresponse()
         raw_body = response.read()
     except (OSError, TimeoutError, http.client.HTTPException) as error:

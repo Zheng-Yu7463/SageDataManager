@@ -533,6 +533,7 @@ class SystemUpdateStatus(BaseModel):
     branch: str | None = None
     current_commit: str | None = None
     latest_commit: str | None = None
+    checked_at: str | None = None
     update_available: bool = False
     behind_count: int = 0
     ahead_count: int = 0
@@ -543,11 +544,15 @@ class SystemUpdateStatus(BaseModel):
     completed_at: str | None = None
     error: str | None = None
     backup_path: str | None = None
+    operation_id: str | None = None
+    agent_restart_required: bool = False
+    installer_restart_required: bool = False
     logs: list[str] = Field(default_factory=list)
 
 
 class SystemUpdateApplyRequest(BaseModel):
     password: str = Field(min_length=1, max_length=256)
+    target_commit: str = Field(pattern=r"^[0-9a-f]{40}$")
 
 
 class AccountLoginRequest(BaseModel):

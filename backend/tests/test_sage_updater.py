@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 import sys
 import threading
@@ -69,6 +70,103 @@ def wait_for_manager_state(
             return status
         time.sleep(0.01)
     raise AssertionError(f"更新代理未进入预期状态：{manager.status()}")
+
+def prepare_checked_update(manager, target_commit: str) -> None:
+    manager._replace_state(
+        {
+            **manager.status(),
+            "state": "available",
+            "latest_commit": target_commit,
+            "checked_at": sage_updater.utc_now(),
+            "update_available": True,
+        }
+    )
+
+def test_committed_recovery_reports_successful_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote, worktree = create_repository_pair(tmp_path)
+    manager = sage_updater.UpdateManager(agent_config(tmp_path, remote, worktree))
+    old_commit = git(worktree, "rev-parse", "HEAD")
+    images = {
+        "backend": {
+            "image_name": "sage-data-manager-backend",
+            "rollback_tag": "sage-data-manager-rollback-backend:operation-id",
+        }
+    }
+    manager._replace_state(
+        {
+            **manager.status(),
+            "state": "recovering",
+            "phase": "interrupted_recovery",
+            "interrupted_phase": "committed",
+            "old_commit": old_commit,
+            "target_commit": "f" * 40,
+            "rollback_images": images,
+            "backup_path": "backup.dump",
+        }
+    )
+    restored: list[tuple[str, dict[str, dict[str, str]]]] = []
+
+    def fail_new_release(*, expected_commit: str) -> None:
+        raise sage_updater.UpdateAgentError(f"{expected_commit} 未就绪")
+
+    monkeypatch.setattr(manager, "_wait_for_health", fail_new_release)
+    monkeypatch.setattr(
+        manager,
+        "_rollback_application",
+        lambda commit, rollback: restored.append((commit, rollback)),
+    )
+    monkeypatch.setattr(manager, "_cleanup_rollback_images", lambda rollback: None)
+    monkeypatch.setattr(
+        manager,
+        "_inspect_repository",
+        lambda fetch: {**manager.status(), "state": "idle", "phase": None},
+    )
+    manager._operation_lock.acquire()
+
+    manager._recover_interrupted_update()
+
+    status = manager.status()
+    assert restored == [(old_commit, images)]
+    assert status["state"] == "failed"
+    assert status["message"] == "新版本复验失败，旧应用已恢复。"
+    assert "已恢复旧应用" in str(status["error"])
+    assert status["backup_path"] == "backup.dump"
+
+
+
+def test_persisted_busy_state_starts_interrupted_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote, worktree = create_repository_pair(tmp_path)
+    config = agent_config(tmp_path, remote, worktree)
+    config.state_directory.mkdir(parents=True)
+    (config.state_directory / "status.json").write_text(
+        json.dumps({"state": "building", "phase": "docker_build", "logs": []}),
+        encoding="utf-8",
+    )
+    recovered = threading.Event()
+
+    def record_recovery(manager) -> None:
+        recovered.set()
+        manager._operation_lock.release()
+
+    monkeypatch.setattr(
+        sage_updater.UpdateManager,
+        "_recover_interrupted_update",
+        record_recovery,
+    )
+
+    manager = sage_updater.UpdateManager(config)
+
+    assert recovered.wait(timeout=1)
+    assert manager.status()["state"] == "recovering"
+    assert manager.status()["interrupted_phase"] == "docker_build"
+
+
 
 
 def test_remote_url_normalization_accepts_https_and_ssh_forms() -> None:
@@ -163,6 +261,7 @@ def test_start_update_reuses_the_remote_ref_fetched_by_check(
     manager = sage_updater.UpdateManager(agent_config(tmp_path, remote, worktree))
     current_commit = git(worktree, "rev-parse", "HEAD")
     target_commit = "f" * 40
+    prepare_checked_update(manager, target_commit)
     fetch_values: list[bool] = []
 
     monkeypatch.setattr(
@@ -187,11 +286,25 @@ def test_start_update_reuses_the_remote_ref_fetched_by_check(
 
     monkeypatch.setattr(sage_updater.threading, "Thread", DeferredThread)
 
-    status = manager.start_update()
+    status = manager.start_update(target_commit)
 
     assert fetch_values == [False]
     assert status["state"] == "backing_up"
     assert status["latest_commit"] == target_commit
+
+def test_start_update_rejects_a_commit_other_than_the_checked_target(tmp_path: Path) -> None:
+    remote, worktree = create_repository_pair(tmp_path)
+    manager = sage_updater.UpdateManager(agent_config(tmp_path, remote, worktree))
+    checked_commit = "f" * 40
+    prepare_checked_update(manager, checked_commit)
+
+    with pytest.raises(sage_updater.UpdateConflictError, match="最近检查结果"):
+        manager.start_update("e" * 40)
+
+    assert manager.status()["state"] == "available"
+    assert manager.status()["latest_commit"] == checked_commit
+
+
 
 
 def test_start_update_still_rejects_a_dirty_worktree(
@@ -200,6 +313,8 @@ def test_start_update_still_rejects_a_dirty_worktree(
 ) -> None:
     remote, worktree = create_repository_pair(tmp_path)
     manager = sage_updater.UpdateManager(agent_config(tmp_path, remote, worktree))
+    target_commit = "f" * 40
+    prepare_checked_update(manager, target_commit)
     monkeypatch.setattr(
         manager,
         "_inspect_repository",
@@ -207,7 +322,7 @@ def test_start_update_still_rejects_a_dirty_worktree(
     )
 
     with pytest.raises(sage_updater.UpdateAgentError, match="未提交"):
-        manager.start_update()
+        manager.start_update(target_commit)
 
     assert manager.status()["state"] == "failed"
 
@@ -218,6 +333,8 @@ def test_start_update_records_preflight_errors_in_status(
 ) -> None:
     remote, worktree = create_repository_pair(tmp_path)
     manager = sage_updater.UpdateManager(agent_config(tmp_path, remote, worktree))
+    target_commit = "f" * 40
+    prepare_checked_update(manager, target_commit)
 
     def reject_preflight(*, fetch: bool):
         raise sage_updater.UpdateAgentError("origin 地址不一致。")
@@ -225,7 +342,7 @@ def test_start_update_records_preflight_errors_in_status(
     monkeypatch.setattr(manager, "_inspect_repository", reject_preflight)
 
     with pytest.raises(sage_updater.UpdateAgentError, match="origin"):
-        manager.start_update()
+        manager.start_update(target_commit)
 
     status = manager.status()
     assert status["state"] == "failed"
@@ -238,6 +355,8 @@ def test_start_update_keeps_already_current_status_out_of_failure(
 ) -> None:
     remote, worktree = create_repository_pair(tmp_path)
     manager = sage_updater.UpdateManager(agent_config(tmp_path, remote, worktree))
+    target_commit = "f" * 40
+    prepare_checked_update(manager, target_commit)
     monkeypatch.setattr(
         manager,
         "_inspect_repository",
@@ -251,7 +370,7 @@ def test_start_update_keeps_already_current_status_out_of_failure(
     )
 
     with pytest.raises(sage_updater.UpdateConflictError, match="最新版本"):
-        manager.start_update()
+        manager.start_update(target_commit)
 
     assert manager.status()["state"] == "idle"
 
@@ -275,6 +394,46 @@ def test_snap_docker_uses_packaged_clients_without_the_snap_launcher(
     assert compose_command == (str(compose_binary),)
 
 
+def test_protect_running_images_creates_stable_rollback_tags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote, worktree = create_repository_pair(tmp_path)
+    manager = sage_updater.UpdateManager(agent_config(tmp_path, remote, worktree))
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(
+        manager,
+        "_compose",
+        lambda arguments, allow_empty=False: f"container-{arguments[-1]}",
+    )
+
+    def record_run(command: list[str], **kwargs):
+        commands.append(command)
+        service = command[-1].removeprefix("container-")
+        if "{{.Image}}" in command:
+            return sage_updater.CommandResult(stdout=f"sha256:{service}")
+        if "{{.Config.Image}}" in command:
+            return sage_updater.CommandResult(stdout=f"sage-data-manager-{service}")
+        return sage_updater.CommandResult(stdout="")
+
+    monkeypatch.setattr(manager, "_run", record_run)
+
+    images = manager._protect_running_images("operation-id")
+
+    assert images["backend"]["rollback_tag"] == (
+        "sage-data-manager-rollback-backend:operation-id"
+    )
+    assert [
+        "docker",
+        "image",
+        "tag",
+        "sha256:backend",
+        "sage-data-manager-rollback-backend:operation-id",
+    ] in commands
+    assert manager.status()["rollback_images"] == images
+
+
 def test_update_uses_the_commit_fetched_during_preflight(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -285,9 +444,10 @@ def test_update_uses_the_commit_fetched_during_preflight(
     target_commit = "f" * 40
     commands: list[list[str]] = []
 
-    monkeypatch.setattr(manager, "_capture_running_images", lambda: {})
+    monkeypatch.setattr(manager, "_protect_running_images", lambda operation_id: {})
     monkeypatch.setattr(manager, "_backup_database", lambda commit: tmp_path / "backup.dump")
-    monkeypatch.setattr(manager, "_wait_for_health", lambda: None)
+    monkeypatch.setattr(manager, "_wait_for_health", lambda **kwargs: None)
+    monkeypatch.setattr(manager, "_updater_files_changed", lambda: (False, False))
     monkeypatch.setattr(manager, "_git", lambda arguments: target_commit)
     monkeypatch.setattr(
         manager,
@@ -306,7 +466,7 @@ def test_update_uses_the_commit_fetched_during_preflight(
 
     monkeypatch.setattr(manager, "_run", record_run)
     manager._operation_lock.acquire()
-    manager._perform_update(old_commit, target_commit)
+    manager._perform_update(old_commit, target_commit, "operation-id")
 
     assert ["git", "merge", "--ff-only", target_commit] in commands
     assert not any(command[:2] == ["git", "pull"] for command in commands)

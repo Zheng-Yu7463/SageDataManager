@@ -17,6 +17,7 @@ Environment=HOME=/root
 ExecStart=/usr/bin/python3 @@REPOSITORY@@/deploy/sage_updater.py
 Restart=always
 RestartSec=3
+TimeoutStopSec=45min
 RuntimeDirectory=sage-updater
 RuntimeDirectoryPreserve=yes
 RuntimeDirectoryMode=0750

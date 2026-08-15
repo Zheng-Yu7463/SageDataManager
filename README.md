@@ -77,15 +77,18 @@ sudo bash deploy/install-updater.sh
 
 安装完成后进入“系统设置 → 系统与更新”。更新流程固定为：
 
-1. 校验当前分支是 `main`、工作区干净、没有本地额外提交，且 `origin` 指向本仓库；
-2. 将 PostgreSQL 自定义格式备份写入 `/var/lib/sage-updater/backups/`；
-3. 获取 `origin/main`，并以 `--ff-only` 合并预检时锁定的 Commit；
-4. 重新构建并启动 `backend`、`frontend`；
-5. 验证前后端健康检查；失败时恢复旧 Commit 和旧应用镜像，数据库备份保留供人工恢复。
+1. 获取并锁定检查结果中的完整 Commit SHA；执行前再次校验当前分支、工作区、`origin` 和 `origin/main` 均未偏离该结果；
+2. 为当前运行的 `backend`、`frontend` 镜像创建本次操作专用的回滚标签；
+3. 检查数据库容量和备份目录可用空间，将 PostgreSQL 自定义格式备份写入临时文件，使用 `pg_restore --list` 校验后原子落盘；
+4. 以 `--ff-only` 合并锁定的 Commit，使用该 SHA 标记并重新构建、启动前后端镜像；
+5. 通过 `/api/ready` 验证数据库连接、Alembic 版本和后端运行 Commit，同时验证前端入口、脚本资源及两个容器的镜像 Commit；
+6. 验证失败时恢复旧 Commit 和受保护的旧应用镜像；数据库备份保留供人工恢复，数据库迁移不会自动降级。
 
-“检查更新”会立即创建后台检查任务，页面通过状态接口轮询结果；GitHub 连接较慢时不会占用浏览器请求。重复触发时，页面会接管现有任务并继续展示其进度。
+“检查更新”会立即创建后台检查任务，页面通过状态接口轮询结果；“立即更新”只接受这次检查返回的完整 Commit SHA。重复触发时，页面会接管现有任务并继续展示其进度。代理会将每个阶段、目标 Commit、旧 Commit 和回滚镜像持久化到 `/var/lib/sage-updater/status.json`；代理或宿主机意外重启后会先恢复或复验中断任务，不会直接开始新更新。
 
-因此，服务器上临时修改过的 Dockerfile、未提交文件或本地提交都会阻止网页更新。应先明确提交、丢弃或迁移这些改动，再重新检查更新。数据库不会在失败时自动回滚，避免对已运行的新迁移做未经确认的破坏性恢复。
+成功更新后默认只保留最近 10 份有效数据库备份，可通过 systemd 环境变量 `SAGE_UPDATE_BACKUP_RETENTION` 调整。因此，服务器上临时修改过的 Dockerfile、未提交文件或本地提交都会阻止网页更新；应先明确提交、丢弃或迁移这些改动，再重新检查更新。
+
+数据库不会在失败时自动回滚，避免对已运行的新迁移做未经确认的破坏性恢复。应用回滚成功时页面会明确显示旧应用已恢复；应用回滚不完整时必须在服务器人工处理，并根据已保留的 dump 决定是否恢复数据库。
 
 常用诊断命令：
 
@@ -96,7 +99,7 @@ docker compose ps
 docker compose logs --tail 200 backend frontend
 ```
 
-更新代理本身或 systemd 模板发生变化时，应在拉取代码后重新执行 `sudo bash deploy/install-updater.sh`，使正在运行的代理和服务定义一并刷新。
+更新中若 `deploy/sage_updater.py` 发生变化，成功后代理会退出并由 systemd 自动加载新代码；若安装脚本或 systemd 模板变化，设置页会提示在服务器重新执行 `sudo bash deploy/install-updater.sh`。
 
 ## 本地开发
 

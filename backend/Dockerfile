@@ -3,13 +3,17 @@ FROM python:3.13-slim AS runtime
 ARG PYPI_INDEX_URL=https://pypi.org/simple
 ARG PYPI_TIMEOUT=120
 ARG PYPI_RETRIES=3
+ARG SAGE_RELEASE_COMMIT=unknown
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    SAGE_RELEASE_COMMIT="${SAGE_RELEASE_COMMIT}" \
     PATH="/app/.venv/bin:$PATH" \
     PYTHONPATH="/app"
 
 WORKDIR /app
+
+LABEL org.opencontainers.image.revision="${SAGE_RELEASE_COMMIT}"
 
 COPY --from=ghcr.io/astral-sh/uv:0.8.3 /uv /uvx /bin/
 COPY pyproject.toml uv.lock* ./

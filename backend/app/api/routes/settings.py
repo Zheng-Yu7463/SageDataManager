@@ -124,9 +124,18 @@ def delete_branding_logo(
         raise
 
 
-def _update_agent_response(method: str, path: str) -> SystemUpdateStatus:
+def _update_agent_response(
+    method: str,
+    path: str,
+    payload: dict[str, str] | None = None,
+) -> SystemUpdateStatus:
     try:
-        return SystemUpdateStatus.model_validate(request_update_agent(method, path))
+        response = (
+            request_update_agent(method, path)
+            if payload is None
+            else request_update_agent(method, path, payload)
+        )
+        return SystemUpdateStatus.model_validate(response)
     except UpdateAgentUnavailableError as error:
         if method != "GET":
             raise HTTPException(status_code=503, detail=str(error)) from None
@@ -160,4 +169,8 @@ def apply_system_update(
     )
     if not password_matches and not legacy_matches:
         raise HTTPException(status_code=403, detail="当前账号密码不正确。")
-    return _update_agent_response("POST", "/v1/update")
+    return _update_agent_response(
+        "POST",
+        "/v1/update",
+        {"target_commit": payload.target_commit},
+    )

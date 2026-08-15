@@ -12,6 +12,10 @@ RUN pnpm build
 
 FROM nginx:1.29-alpine AS runtime
 
+ARG SAGE_RELEASE_COMMIT=unknown
+
+LABEL org.opencontainers.image.revision="${SAGE_RELEASE_COMMIT}"
+
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 

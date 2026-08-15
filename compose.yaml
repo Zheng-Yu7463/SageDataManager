@@ -24,6 +24,7 @@ services:
         PYPI_INDEX_URL: ${SAGE_PYPI_INDEX_URL:-https://pypi.org/simple}
         PYPI_TIMEOUT: ${SAGE_PYPI_TIMEOUT:-120}
         PYPI_RETRIES: ${SAGE_PYPI_RETRIES:-3}
+        SAGE_RELEASE_COMMIT: ${SAGE_RELEASE_COMMIT:-unknown}
     environment:
       SAGE_DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-sage}:${POSTGRES_PASSWORD:-sage}@postgres:5432/${POSTGRES_DB:-sage}
       SAGE_UPLOAD_SSH_HOST: ${SAGE_UPLOAD_SSH_HOST:-192.168.1.213}
@@ -48,6 +49,8 @@ services:
   frontend:
     build:
       context: ./frontend
+      args:
+        SAGE_RELEASE_COMMIT: ${SAGE_RELEASE_COMMIT:-unknown}
     depends_on:
       - backend
     ports:

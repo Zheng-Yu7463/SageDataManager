@@ -387,6 +387,7 @@ export type SystemUpdateState =
   | 'idle'
   | 'available'
   | 'checking'
+  | 'recovering'
   | 'backing_up'
   | 'pulling'
   | 'building'
@@ -411,6 +412,7 @@ export interface SystemUpdateStatus {
   branch: string | null
   current_commit: string | null
   latest_commit: string | null
+  checked_at: string | null
   update_available: boolean
   behind_count: number
   ahead_count: number
@@ -421,5 +423,9 @@ export interface SystemUpdateStatus {
   completed_at: string | null
   error: string | null
   backup_path: string | null
+  operation_id: string | null
+  agent_restart_required: boolean
+  installer_restart_required: boolean
+
   logs: string[]
 }

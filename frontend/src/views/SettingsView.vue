@@ -87,6 +87,7 @@ const isInstanceOwner = computed(() => account.value?.is_instance_owner === true
 const systemUpdateBusy = computed(() => {
   const state = systemUpdate.value?.state
   return state === 'checking'
+    || state === 'recovering'
     || state === 'backing_up'
     || state === 'pulling'
     || state === 'building'
@@ -100,6 +101,7 @@ const systemUpdateProgress = computed(() => {
   if (!state) return 0
   const progress: Partial<Record<SystemUpdateStatus['state'], number>> = {
     checking: 8,
+    recovering: 12,
     backing_up: 20,
     pulling: 35,
     building: 62,
@@ -406,6 +408,7 @@ function systemUpdateStateLabel(status: SystemUpdateStatus | null) {
     idle: '已是最新',
     available: '有可用更新',
     checking: '正在检查',
+    recovering: '正在恢复',
     backing_up: '正在备份',
     pulling: '正在拉取',
     building: '正在构建',
@@ -454,7 +457,7 @@ async function checkForSystemUpdate() {
 }
 
 function openUpdateDialog() {
-  if (!systemUpdate.value?.update_available || !isInstanceOwner.value) return
+  if (!systemUpdate.value?.update_available || !systemUpdate.value.checked_at || !isInstanceOwner.value) return
   updatePassword.value = ''
   updateSubmitError.value = ''
   updateDialogOpen.value = true
@@ -472,7 +475,9 @@ async function submitSystemUpdate() {
   updateSubmitting.value = true
   updateSubmitError.value = ''
   try {
-    systemUpdate.value = await applySystemUpdate(updatePassword.value)
+    const targetCommit = systemUpdate.value?.latest_commit
+    if (!targetCommit) throw new Error('缺少已检查的目标 Commit，请重新检查更新')
+    systemUpdate.value = await applySystemUpdate(updatePassword.value, targetCommit)
     updateDialogOpen.value = false
     updatePassword.value = ''
     startUpdatePolling()
@@ -628,7 +633,7 @@ onBeforeUnmount(stopUpdatePolling)
         <div><h2 id="system-update-title">系统与更新</h2><p>从固定的 origin/main 拉取代码，备份数据库后重新构建应用容器。</p></div>
         <div class="system-update-actions">
           <button class="button button--outline" type="button" :disabled="systemUpdateLoading || systemUpdateBusy || !systemUpdate?.enabled" @click="checkForSystemUpdate"><RefreshCw :size="15" :class="{ 'spin-icon': systemUpdateLoading || systemUpdate?.state === 'checking' }" />{{ systemUpdate?.state === 'checking' ? '正在检查' : '检查更新' }}</button>
-          <button v-if="isInstanceOwner && systemUpdate?.update_available" class="button button--primary" type="button" :disabled="systemUpdateBusy" @click="openUpdateDialog"><GitMerge :size="15" />立即更新</button>
+          <button v-if="isInstanceOwner && systemUpdate?.update_available" class="button button--primary" type="button" :disabled="systemUpdateBusy || !systemUpdate.checked_at" :title="systemUpdate.checked_at ? '' : '请先检查更新以锁定目标 Commit'" @click="openUpdateDialog"><GitMerge :size="15" />立即更新</button>
         </div>
       </header>
       <div v-if="systemUpdateLoading && !systemUpdate" class="settings-inline-loading" role="status"><span class="tiny-spinner"></span>正在读取系统版本…</div>
@@ -659,6 +664,7 @@ onBeforeUnmount(stopUpdatePolling)
         <div class="system-update-notes">
           <span v-if="systemUpdate.backup_path">数据库备份：<code>{{ systemUpdate.backup_path }}</code></span>
           <span v-if="!isInstanceOwner">只有实例所有者可以执行更新。</span>
+          <span v-if="systemUpdate.installer_restart_required">更新代理配置有变化，请在服务器重新运行安装脚本。</span>
           <button v-if="systemUpdate.state === 'succeeded'" class="button button--outline" type="button" @click="reloadApplication"><RefreshCw :size="14" />刷新到新版本</button>
         </div>
       </div>
@@ -855,6 +861,7 @@ onBeforeUnmount(stopUpdatePolling)
 .system-update-status--available { color: #86592e; background: #fff1df; }
 .system-update-status--failed { color: #984b38; background: #fff0eb; }
 .system-update-status--succeeded { color: #315f3e; background: #e6f3e8; }
+.system-update-status--recovering,
 .system-update-status--checking,
 .system-update-status--backing_up,
 .system-update-status--pulling,
