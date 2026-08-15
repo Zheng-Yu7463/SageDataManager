@@ -140,7 +140,7 @@ def get_system_update_status(current_user: AdminDependency) -> SystemUpdateStatu
     return _update_agent_response("GET", "/v1/status")
 
 
-@router.post("/system-update/check")
+@router.post("/system-update/check", status_code=status.HTTP_202_ACCEPTED)
 def check_system_update(current_user: AdminDependency) -> SystemUpdateStatus:
     return _update_agent_response("POST", "/v1/check")
 

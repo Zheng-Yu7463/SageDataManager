@@ -134,13 +134,26 @@ class UpdateManager:
         if not self._operation_lock.acquire(blocking=False):
             raise UpdateConflictError("已有系统更新操作正在运行。")
         try:
-            self._set_progress("checking", "fetch", "正在读取 origin/main…", reset=True)
+            self._set_progress("checking", "fetch", "正在连接 GitHub 获取 origin/main…", reset=True)
+            thread = threading.Thread(
+                target=self._perform_check,
+                name="sage-system-update-check",
+                daemon=True,
+            )
+            thread.start()
+            return self.status()
+        except Exception:
+            self._operation_lock.release()
+            raise
+
+    def _perform_check(self) -> None:
+        try:
             inspected = self._inspect_repository(fetch=True)
             self._replace_state(inspected)
-            return self.status()
         except UpdateAgentError as error:
             self._set_failure(str(error))
-            raise
+        except Exception as error:
+            self._set_failure(f"检查更新失败：{error}")
         finally:
             self._operation_lock.release()
 
@@ -616,7 +629,7 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
             return
         try:
             if self.path == "/v1/check":
-                self._json(200, self.server.manager.check())
+                self._json(202, self.server.manager.check())
                 return
             if self.path == "/v1/update":
                 self._json(202, self.server.manager.start_update())

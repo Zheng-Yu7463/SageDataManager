@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib.util
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -55,6 +57,20 @@ def agent_config(tmp_path: Path, remote: Path, worktree: Path):
     )
 
 
+def wait_for_manager_state(
+    manager,
+    terminal_states: set[str],
+    timeout: float = 2,
+) -> dict[str, object]:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status = manager.status()
+        if status["state"] in terminal_states:
+            return status
+        time.sleep(0.01)
+    raise AssertionError(f"更新代理未进入预期状态：{manager.status()}")
+
+
 def test_remote_url_normalization_accepts_https_and_ssh_forms() -> None:
     assert sage_updater.normalize_remote_url(
         "git@github.com:Zheng-Yu7463/SageDataManager.git"
@@ -87,9 +103,9 @@ def test_check_reports_new_remote_commits(tmp_path: Path) -> None:
     git(publisher, "push", "origin", "main")
 
     manager = sage_updater.UpdateManager(agent_config(tmp_path, remote, worktree))
-    status = manager.check()
+    manager.check()
+    status = wait_for_manager_state(manager, {"available", "failed"})
 
-    assert status["state"] == "available"
     assert status["update_available"] is True
     assert status["behind_count"] == 1
     assert status["commits"][0]["subject"] == "add update feature"
@@ -100,10 +116,43 @@ def test_check_rejects_a_dirty_worktree(tmp_path: Path) -> None:
     manager = sage_updater.UpdateManager(agent_config(tmp_path, remote, worktree))
     (worktree / "local-note.txt").write_text("do not overwrite\n", encoding="utf-8")
 
-    with pytest.raises(sage_updater.UpdateAgentError, match="未提交"):
-        manager.check()
+    manager.check()
+    status = wait_for_manager_state(manager, {"failed"})
 
-    assert manager.status()["state"] == "failed"
+    assert "未提交" in str(status["error"])
+
+
+def test_check_returns_immediately_while_fetch_runs_in_background(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote, worktree = create_repository_pair(tmp_path)
+    manager = sage_updater.UpdateManager(agent_config(tmp_path, remote, worktree))
+    original_inspect = manager._inspect_repository
+    fetch_started = threading.Event()
+    release_fetch = threading.Event()
+
+    def delayed_inspect(*, fetch: bool):
+        fetch_started.set()
+        if not release_fetch.wait(timeout=2):
+            raise AssertionError("测试未释放后台 fetch")
+        return original_inspect(fetch=fetch)
+
+    monkeypatch.setattr(manager, "_inspect_repository", delayed_inspect)
+    started_at = time.monotonic()
+    accepted = manager.check()
+
+    try:
+        assert time.monotonic() - started_at < 0.5
+        assert accepted["state"] == "checking"
+        assert fetch_started.wait(timeout=1)
+        with pytest.raises(sage_updater.UpdateConflictError, match="正在运行"):
+            manager.check()
+    finally:
+        release_fetch.set()
+
+    status = wait_for_manager_state(manager, {"idle", "failed"})
+    assert status["state"] == "idle"
 
 
 def test_start_update_reuses_the_remote_ref_fetched_by_check(

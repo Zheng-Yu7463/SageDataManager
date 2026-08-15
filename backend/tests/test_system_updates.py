@@ -62,6 +62,28 @@ def test_update_status_is_visible_to_an_administrator(monkeypatch) -> None:
     assert calls == [("GET", "/v1/status")]
 
 
+def test_check_update_accepts_a_background_operation(monkeypatch) -> None:
+    calls: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        settings_routes,
+        "request_update_agent",
+        lambda method, path: calls.append((method, path))
+        or update_status(
+            state="checking",
+            phase="fetch",
+            message="正在连接 GitHub 获取 origin/main…",
+        ),
+    )
+    app.dependency_overrides[require_admin] = lambda: account(owner=False)
+    try:
+        response = TestClient(app).post("/api/settings/system-update/check")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 202
+    assert response.json()["state"] == "checking"
+    assert calls == [("POST", "/v1/check")]
+
 def test_unconfigured_update_agent_is_reported_without_exposing_an_error(monkeypatch) -> None:
     def unavailable(method: str, path: str) -> dict[str, object]:
         raise UpdateAgentUnavailableError("宿主机更新服务尚未配置。")

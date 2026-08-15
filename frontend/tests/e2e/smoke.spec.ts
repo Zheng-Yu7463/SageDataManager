@@ -638,6 +638,64 @@ test('品牌写操作共享同一个事务状态', async ({ page }) => {
   await expect(page.getByLabel('产品名称')).toBeEnabled()
 })
 
+test('检查更新在后台运行并由页面轮询结果', async ({ page }) => {
+  await mockEmptyDashboard(page)
+  await mockEmptySettingsCollections(page)
+  await signInWithMockAccount(page)
+  await page.unroute('**/api/settings/system-update')
+
+  const currentCommit = 'a'.repeat(40)
+  const latestCommit = 'b'.repeat(40)
+  let checkRequests = 0
+  let updateState = systemUpdateStatus({
+    enabled: true,
+    state: 'idle',
+    message: '当前已经是最新版本。',
+    current_commit: currentCommit,
+    latest_commit: currentCommit,
+    worktree_clean: true,
+  })
+  await page.route('**/api/settings/system-update', async (route) => {
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(updateState) })
+  })
+  await page.route('**/api/settings/system-update/check', async (route) => {
+    checkRequests += 1
+    updateState = systemUpdateStatus({
+      ...updateState,
+      state: 'checking',
+      phase: 'fetch',
+      message: '正在连接 GitHub 获取 origin/main…',
+    })
+    await route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      body: JSON.stringify(updateState),
+    })
+  })
+
+  await page.goto('/settings')
+  const updatePanel = page.locator('.system-update-panel')
+  const checkButton = updatePanel.getByRole('button', { name: '检查更新' })
+  await checkButton.click()
+
+  await expect(updatePanel.getByRole('button', { name: '正在检查' })).toBeDisabled()
+  await expect(updatePanel.getByText('正在连接 GitHub 获取 origin/main…')).toBeVisible()
+  await expect(updatePanel).not.toContainText('无法连接宿主机更新服务')
+
+  updateState = systemUpdateStatus({
+    ...updateState,
+    state: 'available',
+    phase: null,
+    message: '发现 1 个可用提交。',
+    latest_commit: latestCommit,
+    update_available: true,
+    behind_count: 1,
+  })
+  await expect(updatePanel.getByText('发现 1 个可用提交。')).toBeVisible({ timeout: 5_000 })
+  await expect(updatePanel.getByRole('button', { name: '检查更新' })).toBeEnabled()
+  expect(checkRequests).toBe(1)
+})
+
 test('实例所有者可在窄屏安全启动系统更新', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await mockEmptyDashboard(page)

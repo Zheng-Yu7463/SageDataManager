@@ -437,8 +437,17 @@ async function checkForSystemUpdate() {
   systemUpdateError.value = ''
   try {
     systemUpdate.value = await checkSystemUpdate()
+    if (systemUpdateBusy.value) startUpdatePolling()
   } catch (reason) {
-    systemUpdateError.value = reason instanceof Error ? reason.message : '检查更新失败'
+    const message = reason instanceof Error ? reason.message : '检查更新失败'
+    await loadSystemUpdate(true)
+    const operationAlreadyRunning = message === '已有系统更新操作正在运行。'
+    if (systemUpdateBusy.value || operationAlreadyRunning) {
+      systemUpdateError.value = ''
+      startUpdatePolling()
+    } else {
+      systemUpdateError.value = message
+    }
   } finally {
     systemUpdateLoading.value = false
   }
@@ -618,7 +627,7 @@ onBeforeUnmount(stopUpdatePolling)
         <span class="settings-section-icon"><ServerCog :size="18" /></span>
         <div><h2 id="system-update-title">系统与更新</h2><p>从固定的 origin/main 拉取代码，备份数据库后重新构建应用容器。</p></div>
         <div class="system-update-actions">
-          <button class="button button--outline" type="button" :disabled="systemUpdateLoading || systemUpdateBusy || !systemUpdate?.enabled" @click="checkForSystemUpdate"><RefreshCw :size="15" :class="{ 'spin-icon': systemUpdateLoading }" />检查更新</button>
+          <button class="button button--outline" type="button" :disabled="systemUpdateLoading || systemUpdateBusy || !systemUpdate?.enabled" @click="checkForSystemUpdate"><RefreshCw :size="15" :class="{ 'spin-icon': systemUpdateLoading || systemUpdate?.state === 'checking' }" />{{ systemUpdate?.state === 'checking' ? '正在检查' : '检查更新' }}</button>
           <button v-if="isInstanceOwner && systemUpdate?.update_available" class="button button--primary" type="button" :disabled="systemUpdateBusy" @click="openUpdateDialog"><GitMerge :size="15" />立即更新</button>
         </div>
       </header>
