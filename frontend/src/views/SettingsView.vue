@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { Bot, Check, CircleAlert, Clipboard, ExternalLink, GitMerge, ImageUp, KeyRound, Link2, Palette, Plus, RefreshCw, RotateCcw, Save, ServerCog, ShieldCheck, Trash2, UserRound, UserRoundX, X } from '@lucide/vue'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeRouteLeave } from 'vue-router'
 
-import { applySystemUpdate, checkSystemUpdate, createAccessToken, createAdminAccountInvitation, getAccessTokens, getAdminAccounts, getSystemUpdateStatus, removeInstanceLogo, renewAdminAccountInvitation, revokeAccessToken, updateAdminAccount, updateInstanceBranding, uploadInstanceLogo } from '@/api/client'
+import { applySystemUpdate, checkSystemUpdate, createAccessToken, createAdminAccountInvitation, getAccessTokens, getAdminAccounts, getInstanceBranding, getSystemUpdateStatus, removeInstanceLogo, renewAdminAccountInvitation, revokeAccessToken, updateAdminAccount, updateInstanceBranding, uploadInstanceLogo } from '@/api/client'
 import { useBranding } from '@/composables/useBranding'
 import { useOverlayFocus } from '@/composables/useOverlayFocus'
 import { useSession } from '@/session'
-import type { AccessTokenCreated, AccessTokenSummary, AccountInvitationCreated, AccountSummary, AgentScope, InstanceBrandingInput, SystemUpdateStatus } from '@/types'
+import type { AccessTokenCreated, AccessTokenSummary, AccountInvitationCreated, AccountSummary, AgentScope, InstanceBranding, InstanceBrandingInput, SystemUpdateStatus } from '@/types'
 import { copyText } from '@/utils/textFiles'
 
 const accounts = ref<AccountSummary[]>([])
@@ -40,25 +41,35 @@ const revokeDialog = ref<HTMLElement | null>(null)
 const revoking = ref(false)
 const revokeError = ref('')
 const tokenHistoryOpen = ref(false)
-const brandingOperation = ref<'saving' | 'uploading-logo' | 'removing-logo' | null>(null)
+const brandingOperation = ref<'saving' | 'updating-logo' | null>(null)
 const brandingUpdating = computed(() => brandingOperation.value !== null)
 const brandingSaving = computed(() => brandingOperation.value === 'saving')
-const logoUpdating = computed(() => brandingOperation.value === 'uploading-logo' || brandingOperation.value === 'removing-logo')
+const logoUpdating = computed(() => brandingOperation.value === 'updating-logo')
+const brandingLoading = ref(true)
 const brandingMessage = ref('')
 const brandingError = ref('')
 const logoInput = ref<HTMLInputElement | null>(null)
 const { branding, applyBranding, pageEyebrow } = useBranding()
 const { account } = useSession()
 const currentUsername = computed(() => account.value?.username ?? '')
-const loading = computed(() => accountsLoading.value || tokensLoading.value || systemUpdateLoading.value)
-const brandingForm = ref<InstanceBrandingInput>({
-  product_name: branding.product_name,
-  product_subtitle: branding.product_subtitle,
-  organization_name: branding.organization_name,
-  slogan: branding.slogan,
-  slogan_secondary: branding.slogan_secondary,
-  primary_color: branding.primary_color,
-})
+const loading = computed(() => accountsLoading.value || tokensLoading.value || brandingLoading.value || systemUpdateLoading.value)
+const savedBranding = ref<InstanceBranding>({ ...branding })
+const brandingForm = ref<InstanceBrandingInput>(brandingInput(savedBranding.value))
+const pendingLogoFile = ref<File | null>(null)
+const pendingLogoUrl = ref<string | null>(null)
+const pendingLogoRemoval = ref(false)
+const brandingDirty = computed(() => JSON.stringify(brandingForm.value) !== JSON.stringify(brandingInput(savedBranding.value)))
+const logoDirty = computed(() => pendingLogoFile.value !== null || pendingLogoRemoval.value)
+const brandingHasUnsavedChanges = computed(() => brandingDirty.value || logoDirty.value)
+const previewLogoUrl = computed(() => pendingLogoRemoval.value ? null : pendingLogoUrl.value || savedBranding.value.logo_url)
+const brandingContrastRatio = computed(() => colorContrastRatio(brandingForm.value.primary_color))
+const brandingFormValid = computed(() => (
+  Object.entries(brandingForm.value)
+    .filter(([key]) => key !== 'primary_color')
+    .every(([, value]) => value.trim().length > 0)
+  && /^#[0-9A-Fa-f]{6}$/.test(brandingForm.value.primary_color)
+  && brandingContrastRatio.value >= 4.5
+))
 
 const systemUpdate = ref<SystemUpdateStatus | null>(null)
 const systemUpdateLoading = ref(true)
@@ -116,6 +127,66 @@ function withoutPlaintextToken({ token: _token, ...summary }: AccessTokenCreated
   return summary
 }
 
+function brandingInput(value: InstanceBranding): InstanceBrandingInput {
+  return {
+    product_name: value.product_name,
+    product_subtitle: value.product_subtitle,
+    organization_name: value.organization_name,
+    slogan: value.slogan,
+    slogan_secondary: value.slogan_secondary,
+    primary_color: value.primary_color,
+  }
+}
+
+function colorContrastRatio(hex: string) {
+  if (!/^#[0-9A-Fa-f]{6}$/.test(hex)) return 0
+  const channels = [1, 3, 5].map((index) => Number.parseInt(hex.slice(index, index + 2), 16) / 255)
+  const linear = channels.map((channel) => channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4)
+  const luminance = 0.2126 * linear[0]! + 0.7152 * linear[1]! + 0.0722 * linear[2]!
+  return 1.05 / (luminance + 0.05)
+}
+
+function applyBrandingSnapshot(next: InstanceBranding, resetTextDraft: boolean) {
+  savedBranding.value = { ...next }
+  applyBranding(next)
+  if (resetTextDraft) brandingForm.value = brandingInput(next)
+}
+
+function clearPendingLogo() {
+  if (pendingLogoUrl.value) URL.revokeObjectURL(pendingLogoUrl.value)
+  pendingLogoFile.value = null
+  pendingLogoUrl.value = null
+  pendingLogoRemoval.value = false
+  if (logoInput.value) logoInput.value.value = ''
+}
+
+function resetBrandingDraft() {
+  brandingForm.value = brandingInput(savedBranding.value)
+  clearPendingLogo()
+  brandingError.value = ''
+  brandingMessage.value = ''
+}
+
+function preventUnsavedBrandingExit(event: BeforeUnloadEvent) {
+  if (!brandingHasUnsavedChanges.value) return
+  event.preventDefault()
+  event.returnValue = ''
+}
+
+async function loadBrandingSettings() {
+  brandingLoading.value = true
+  brandingError.value = ''
+  try {
+    const latest = await getInstanceBranding()
+    applyBrandingSnapshot(latest, true)
+    clearPendingLogo()
+  } catch (reason) {
+    brandingError.value = reason instanceof Error ? reason.message : '无法读取品牌设置'
+  } finally {
+    brandingLoading.value = false
+  }
+}
+
 async function loadAccounts() {
   accountsLoading.value = true
   accountsError.value = ''
@@ -158,7 +229,13 @@ async function loadSystemUpdate(silent = false) {
 }
 
 async function load() {
-  await Promise.all([loadAccounts(), loadTokens(), loadSystemUpdate()])
+  await Promise.all([loadAccounts(), loadTokens(), loadBrandingSettings(), loadSystemUpdate()])
+}
+
+async function refreshSettings() {
+  if (brandingHasUnsavedChanges.value && !window.confirm('刷新会丢弃尚未保存的品牌更改，是否继续？')) return
+  brandingMessage.value = ''
+  await load()
 }
 
 const scopeOptions: { value: AgentScope; label: string; description: string }[] = [
@@ -353,14 +430,13 @@ async function toggleAccount(account: AccountSummary) {
 }
 
 async function saveBranding() {
-  if (brandingUpdating.value) return
+  if (brandingUpdating.value || !brandingDirty.value || !brandingFormValid.value) return
   brandingOperation.value = 'saving'
   brandingError.value = ''
   brandingMessage.value = ''
   try {
-    const updated = await updateInstanceBranding(brandingForm.value)
-    applyBranding(updated)
-    brandingForm.value.primary_color = updated.primary_color
+    const updated = await updateInstanceBranding(brandingForm.value, savedBranding.value.revision)
+    applyBrandingSnapshot(updated, true)
     brandingMessage.value = '品牌设置已应用'
   } catch (reason) {
     brandingError.value = reason instanceof Error ? reason.message : '无法保存品牌设置'
@@ -369,36 +445,63 @@ async function saveBranding() {
   }
 }
 
-async function selectLogo(event: Event) {
+function selectLogo(event: Event) {
   const file = (event.target as HTMLInputElement).files?.[0]
   if (!file || brandingUpdating.value) return
-  brandingOperation.value = 'uploading-logo'
   brandingError.value = ''
   brandingMessage.value = ''
-  try {
-    applyBranding(await uploadInstanceLogo(file))
-    brandingMessage.value = 'Logo 已更新'
-  } catch (reason) {
-    brandingError.value = reason instanceof Error ? reason.message : '无法上传 Logo'
-  } finally {
-    brandingOperation.value = null
+
+  if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) {
+    brandingError.value = '仅支持 PNG、JPEG 或 WebP 图片。'
     if (logoInput.value) logoInput.value.value = ''
+    return
+  }
+  if (file.size > 1_000_000) {
+    brandingError.value = 'Logo 文件不能超过 1 MB。'
+    if (logoInput.value) logoInput.value.value = ''
+    return
+  }
+
+  clearPendingLogo()
+  pendingLogoFile.value = file
+  pendingLogoUrl.value = URL.createObjectURL(file)
+  brandingMessage.value = '已选择新 Logo，请确认预览后应用'
+}
+
+function stageDefaultLogo() {
+  if (brandingUpdating.value) return
+  clearPendingLogo()
+  brandingError.value = ''
+  brandingMessage.value = ''
+  if (savedBranding.value.logo_url) {
+    pendingLogoRemoval.value = true
+    brandingMessage.value = '已预览默认标志，应用后生效'
   }
 }
 
-async function restoreDefaultLogo() {
-  if (brandingUpdating.value) return
-  brandingOperation.value = 'removing-logo'
+async function applyLogoChange() {
+  if (brandingUpdating.value || !logoDirty.value) return
+  brandingOperation.value = 'updating-logo'
   brandingError.value = ''
   brandingMessage.value = ''
   try {
-    applyBranding(await removeInstanceLogo())
-    brandingMessage.value = '已恢复默认标志'
+    const updated = pendingLogoFile.value
+      ? await uploadInstanceLogo(pendingLogoFile.value, savedBranding.value.revision)
+      : await removeInstanceLogo(savedBranding.value.revision)
+    applyBrandingSnapshot(updated, false)
+    clearPendingLogo()
+    brandingMessage.value = 'Logo 已应用'
   } catch (reason) {
-    brandingError.value = reason instanceof Error ? reason.message : '无法恢复默认标志'
+    brandingError.value = reason instanceof Error ? reason.message : '无法更新 Logo'
   } finally {
     brandingOperation.value = null
   }
+}
+
+function cancelLogoChange() {
+  clearPendingLogo()
+  brandingError.value = ''
+  brandingMessage.value = ''
 }
 
 function systemUpdateStateLabel(status: SystemUpdateStatus | null) {
@@ -492,10 +595,20 @@ function reloadApplication() {
   window.location.reload()
 }
 
+onBeforeRouteLeave(() => {
+  if (!brandingHasUnsavedChanges.value) return true
+  return window.confirm('品牌设置尚未保存，确定离开此页面吗？')
+})
+
 onMounted(() => {
+  window.addEventListener('beforeunload', preventUnsavedBrandingExit)
   void load()
 })
-onBeforeUnmount(stopUpdatePolling)
+onBeforeUnmount(() => {
+  stopUpdatePolling()
+  window.removeEventListener('beforeunload', preventUnsavedBrandingExit)
+  clearPendingLogo()
+})
 </script>
 
 <template>
@@ -506,7 +619,7 @@ onBeforeUnmount(stopUpdatePolling)
         <h1>系统设置</h1>
         <p>配置当前 DataManager 实例的品牌、访问权限与系统版本。</p>
       </div>
-      <div class="settings-actions"><button class="button button--outline" :disabled="loading" @click="load"><RefreshCw :size="16" />刷新</button><button class="button button--primary" @click="openCreate"><Plus :size="16" />新增管理员</button></div>
+      <div class="settings-actions"><button class="button button--outline" :disabled="loading" @click="refreshSettings"><RefreshCw :size="16" />刷新</button><button class="button button--primary" @click="openCreate"><Plus :size="16" />新增管理员</button></div>
     </header>
 
     <section class="branding-panel" aria-labelledby="branding-title">
@@ -518,24 +631,45 @@ onBeforeUnmount(stopUpdatePolling)
       <div class="branding-workspace">
         <form class="branding-form" @submit.prevent="saveBranding">
           <div class="branding-fields branding-fields--names">
-            <label>产品名称<input v-model="brandingForm.product_name" :disabled="brandingUpdating" required maxlength="80" placeholder="例如：SAGE" /></label>
-            <label>产品副标题<input v-model="brandingForm.product_subtitle" :disabled="brandingUpdating" required maxlength="120" placeholder="例如：RESEARCH ARCHIVE" /></label>
-            <label>组织名称<input v-model="brandingForm.organization_name" :disabled="brandingUpdating" required maxlength="120" placeholder="例如：SAGE Lab" /></label>
+            <label>产品名称<input v-model="brandingForm.product_name" :disabled="brandingUpdating || brandingLoading" required maxlength="80" placeholder="例如：SAGE" /></label>
+            <label>产品副标题<input v-model="brandingForm.product_subtitle" :disabled="brandingUpdating || brandingLoading" required maxlength="120" placeholder="例如：RESEARCH ARCHIVE" /></label>
+            <label>组织名称<input v-model="brandingForm.organization_name" :disabled="brandingUpdating || brandingLoading" required maxlength="120" placeholder="例如：SAGE Lab" /></label>
           </div>
           <div class="branding-fields branding-fields--slogans">
-            <label>主标语<input v-model="brandingForm.slogan" :disabled="brandingUpdating" required maxlength="160" placeholder="例如：科学 · 数据 · 成长 · 卓越" /></label>
-            <label>辅助标语<input v-model="brandingForm.slogan_secondary" :disabled="brandingUpdating" required maxlength="160" placeholder="例如：Science · Archive · Growth · Excellence" /></label>
+            <label>主标语<input v-model="brandingForm.slogan" :disabled="brandingUpdating || brandingLoading" required maxlength="160" placeholder="例如：科学 · 数据 · 成长 · 卓越" /></label>
+            <label>辅助标语<input v-model="brandingForm.slogan_secondary" :disabled="brandingUpdating || brandingLoading" required maxlength="160" placeholder="例如：Science · Archive · Growth · Excellence" /></label>
           </div>
           <div class="branding-controls">
-            <label class="color-field">品牌主色<span><input v-model="brandingForm.primary_color" type="color" :disabled="brandingUpdating" /><input v-model="brandingForm.primary_color" :disabled="brandingUpdating" required maxlength="7" pattern="#[0-9A-Fa-f]{6}" aria-label="品牌主色色值" /></span></label>
-            <div class="logo-control"><span>实例 Logo</span><div><input ref="logoInput" class="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp" aria-label="选择实例 Logo 图片" :disabled="brandingUpdating" @change="selectLogo" /><button class="button button--outline" type="button" :disabled="brandingUpdating" @click="logoInput?.click()"><ImageUp :size="15" />{{ logoUpdating ? '处理中' : '上传图片' }}</button><button v-if="branding.logo_url" class="button button--quiet" type="button" :disabled="brandingUpdating" @click="restoreDefaultLogo"><RotateCcw :size="15" />恢复默认</button></div><small>PNG、JPEG 或 WebP，最大 1 MB</small></div>
+            <label class="color-field">
+              品牌主色
+              <span><input v-model="brandingForm.primary_color" type="color" :disabled="brandingUpdating || brandingLoading" aria-label="选择品牌主色" /><input v-model="brandingForm.primary_color" :disabled="brandingUpdating || brandingLoading" required maxlength="7" pattern="#[0-9A-Fa-f]{6}" aria-label="品牌主色色值" /></span>
+              <small :class="{ 'color-contrast--invalid': brandingContrastRatio < 4.5 }">与白色文字对比度 {{ brandingContrastRatio.toFixed(2) }}:1 · 最低 4.5:1</small>
+            </label>
+            <div class="logo-control">
+              <span>实例 Logo</span>
+              <div>
+                <input ref="logoInput" class="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp" aria-label="选择实例 Logo 图片" :disabled="brandingUpdating || brandingLoading" @change="selectLogo" />
+                <button class="button button--outline" type="button" :disabled="brandingUpdating || brandingLoading" @click="logoInput?.click()"><ImageUp :size="15" />选择图片</button>
+                <button v-if="savedBranding.logo_url && !pendingLogoRemoval" class="button button--quiet" type="button" :disabled="brandingUpdating" @click="stageDefaultLogo"><RotateCcw :size="15" />恢复默认</button>
+              </div>
+              <small>PNG、JPEG 或 WebP，最大 1 MB；选择后先在右侧预览</small>
+              <div v-if="logoDirty" class="logo-pending-actions">
+                <button class="button button--primary" type="button" :disabled="brandingUpdating" @click="applyLogoChange"><Save :size="15" />{{ logoUpdating ? '正在应用' : '应用 Logo' }}</button>
+                <button class="button button--quiet" type="button" :disabled="brandingUpdating" @click="cancelLogoChange">取消</button>
+              </div>
+            </div>
           </div>
-          <div class="branding-feedback"><p v-if="brandingError" class="settings-error" role="alert">{{ brandingError }}</p><p v-else-if="brandingMessage" class="settings-success" role="status"><Check :size="14" />{{ brandingMessage }}</p><button class="button button--primary" :disabled="brandingUpdating" type="submit"><Save :size="16" />{{ brandingSaving ? '正在保存' : '保存品牌设置' }}</button></div>
+          <div class="branding-feedback">
+            <p v-if="brandingError" class="settings-error" role="alert">{{ brandingError }}</p>
+            <p v-else-if="brandingMessage" class="settings-success" role="status"><Check :size="14" />{{ brandingMessage }}</p>
+            <button v-if="brandingHasUnsavedChanges" class="button button--quiet" type="button" :disabled="brandingUpdating" @click="resetBrandingDraft"><RotateCcw :size="15" />撤销更改</button>
+            <button class="button button--primary" :disabled="brandingUpdating || !brandingDirty || !brandingFormValid" type="submit"><Save :size="16" />{{ brandingSaving ? '正在保存' : '保存文字与主色' }}</button>
+          </div>
         </form>
         <aside class="brand-preview" :style="{ '--preview-color': brandingForm.primary_color }" aria-label="品牌预览">
-          <span>LIVE PREVIEW</span>
+          <span>SIDEBAR PREVIEW</span>
           <div class="brand-preview-lockup">
-            <img v-if="branding.logo_url" :src="branding.logo_url" alt="" />
+            <img v-if="previewLogoUrl" :src="previewLogoUrl" alt="" />
             <span v-else class="preview-mark"><i></i><i></i><i></i></span>
             <div><strong>{{ brandingForm.product_name || 'DataManager' }}</strong><small>{{ brandingForm.product_subtitle }}</small></div>
           </div>
@@ -908,4 +1042,21 @@ onBeforeUnmount(stopUpdatePolling)
   .system-update-actions .button { flex: 1; justify-content: center; }
   .system-update-content { padding: 16px; }
 }
+.color-field > small { color: #6f7d74; font-size: 9px; font-weight: 500; line-height: 1.4; }
+.color-field > small.color-contrast--invalid { color: #a6533d; font-weight: 700; }
+.logo-pending-actions { margin-top: 2px; padding-top: 8px; border-top: 1px solid var(--line); }
+.brand-preview { color: var(--ink); background: #f9fbf7; border-left: 1px solid var(--line); }
+.brand-preview > span { color: #7b8980; opacity: 1; }
+.brand-preview-lockup img { filter: none; }
+.brand-preview-lockup strong { display: -webkit-box; overflow: hidden; color: var(--preview-color); overflow-wrap: anywhere; text-overflow: initial; white-space: normal; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.brand-preview-lockup small { color: #7b8980; overflow-wrap: anywhere; opacity: 1; text-overflow: initial; white-space: normal; }
+.preview-mark i { background: var(--preview-color); }
+.preview-mark i::after { background: var(--preview-color); opacity: .65; }
+.brand-preview-signature { min-width: 0; padding: 14px; background: rgba(252,253,249,.75); border: 1px solid var(--line); border-radius: 6px; }
+.brand-preview-signature strong,
+.brand-preview-signature p,
+.brand-preview-signature small { overflow-wrap: anywhere; }
+.brand-preview-signature strong { display: -webkit-box; overflow: hidden; color: var(--preview-color); -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.brand-preview-signature p { display: -webkit-box; overflow: hidden; color: var(--preview-color); line-height: 1.45; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
+.brand-preview-signature small { display: -webkit-box; overflow: hidden; color: #7b8980; line-height: 1.4; opacity: 1; text-overflow: initial; white-space: normal; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
 </style>

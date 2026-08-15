@@ -11,6 +11,7 @@ const defaultBranding: InstanceBranding = {
   slogan_secondary: 'Science · Archive · Growth · Excellence',
   primary_color: '#2E7351',
   logo_url: null,
+  revision: 'default',
 }
 
 const branding = reactive<InstanceBranding>({ ...defaultBranding })

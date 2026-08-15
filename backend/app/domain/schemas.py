@@ -578,6 +578,7 @@ class InstanceBrandingResponse(BaseModel):
     slogan_secondary: str
     primary_color: str
     logo_url: str | None
+    revision: str
 
 
 class InstanceBrandingUpdateRequest(BaseModel):
@@ -587,6 +588,7 @@ class InstanceBrandingUpdateRequest(BaseModel):
     slogan: str = Field(min_length=1, max_length=160)
     slogan_secondary: str = Field(min_length=1, max_length=160)
     primary_color: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")
+    expected_revision: str = Field(min_length=1, max_length=64)
 
     @field_validator(
         "product_name",
@@ -597,7 +599,11 @@ class InstanceBrandingUpdateRequest(BaseModel):
     )
     @classmethod
     def strip_brand_text(cls, value: str) -> str:
-        return value.strip()
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("品牌文字不能为空。")
+
+        return stripped
 
     @field_validator("primary_color")
     @classmethod
@@ -609,6 +615,6 @@ class InstanceBrandingUpdateRequest(BaseModel):
             for channel in channels
         ]
         luminance = 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
-        if 1.05 / (luminance + 0.05) < 3:
+        if 1.05 / (luminance + 0.05) < 4.5:
             raise ValueError("品牌主色与白色文字的对比度不足。")
         return color

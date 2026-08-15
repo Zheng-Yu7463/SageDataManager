@@ -14,6 +14,7 @@ from app.domain.schemas import (
 )
 from app.services.branding import (
     MAX_LOGO_BYTES,
+    BrandingConflictError,
     BrandingLogoError,
     branding_response,
     get_branding_record,
@@ -47,6 +48,9 @@ def patch_branding(
         result = update_branding(session, payload, actor=current_user)
         session.commit()
         return result
+    except BrandingConflictError as error:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from None
     except Exception:
         session.rollback()
         raise
@@ -98,10 +102,14 @@ async def put_branding_logo(
             session,
             bytes(content),
             request.headers.get("content-type", ""),
+            request.headers.get("x-sage-branding-revision", ""),
             actor=current_user,
         )
         session.commit()
         return result
+    except BrandingConflictError as error:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from None
     except BrandingLogoError as error:
         session.rollback()
         raise HTTPException(status_code=422, detail=str(error)) from None
@@ -112,13 +120,21 @@ async def put_branding_logo(
 
 @router.delete("/branding/logo")
 def delete_branding_logo(
+    request: Request,
     session: SessionDependency,
     current_user: AdminDependency,
 ) -> InstanceBrandingResponse:
     try:
-        result = remove_branding_logo(session, actor=current_user)
+        result = remove_branding_logo(
+            session,
+            request.headers.get("x-sage-branding-revision", ""),
+            actor=current_user,
+        )
         session.commit()
         return result
+    except BrandingConflictError as error:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(error)) from None
     except Exception:
         session.rollback()
         raise

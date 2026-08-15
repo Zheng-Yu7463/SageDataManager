@@ -355,9 +355,10 @@ export interface InstanceBranding {
   slogan_secondary: string
   primary_color: string
   logo_url: string | null
+  revision: string
 }
 
-export type InstanceBrandingInput = Omit<InstanceBranding, 'logo_url'>
+export type InstanceBrandingInput = Omit<InstanceBranding, 'logo_url' | 'revision'>
 
 export type AgentScope = 'assets:read' | 'metadata:write' | 'files:upload' | 'archive:finalize' | 'citations:export'
 

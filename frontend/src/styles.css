@@ -1096,6 +1096,14 @@ a {
   }
 }
 
+.brand > span:last-child,
+.lab-signature-copy { min-width: 0; }
+.brand strong,
+.brand small,
+.lab-signature strong,
+.lab-signature p,
+.lab-signature small { display: block; overflow: hidden; letter-spacing: 0; text-overflow: ellipsis; white-space: nowrap; }
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     scroll-behavior: auto !important;

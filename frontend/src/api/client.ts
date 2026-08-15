@@ -60,9 +60,10 @@ async function request<T>(
   method = 'GET',
   body?: unknown,
   authentication: RequestAuthentication = 'session',
+  extraHeaders: Record<string, string> = {},
 ): Promise<T> {
   const sessionToken = authentication === 'session' ? getSessionToken() : null
-  const headers: Record<string, string> = { Accept: 'application/json' }
+  const headers: Record<string, string> = { Accept: 'application/json', ...extraHeaders }
   if (body) headers['Content-Type'] = 'application/json'
   if (sessionToken) headers['X-Sage-Session'] = sessionToken
   const response = await fetch(path, {
@@ -336,11 +337,14 @@ export function getInstanceBranding(signal?: AbortSignal) {
   return request<InstanceBranding>('/api/settings/branding', signal)
 }
 
-export function updateInstanceBranding(input: InstanceBrandingInput) {
-  return request<InstanceBranding>('/api/settings/branding', undefined, 'PATCH', input)
+export function updateInstanceBranding(input: InstanceBrandingInput, expectedRevision: string) {
+  return request<InstanceBranding>('/api/settings/branding', undefined, 'PATCH', {
+    ...input,
+    expected_revision: expectedRevision,
+  })
 }
 
-export async function uploadInstanceLogo(file: File) {
+export async function uploadInstanceLogo(file: File, expectedRevision: string) {
   const supportedLogoMimeTypes = new Set(['image/png', 'image/jpeg', 'image/webp'])
   if (!supportedLogoMimeTypes.has(file.type)) {
     throw new ApiError('仅支持 PNG、JPEG 或 WebP 图片。', 422)
@@ -354,6 +358,7 @@ export async function uploadInstanceLogo(file: File) {
     headers: {
       Accept: 'application/json',
       'Content-Type': file.type,
+      'X-Sage-Branding-Revision': expectedRevision,
       ...(sessionToken ? { 'X-Sage-Session': sessionToken } : {}),
     },
     body: file,
@@ -364,8 +369,15 @@ export async function uploadInstanceLogo(file: File) {
   return response.json() as Promise<InstanceBranding>
 }
 
-export function removeInstanceLogo() {
-  return request<InstanceBranding>('/api/settings/branding/logo', undefined, 'DELETE')
+export function removeInstanceLogo(expectedRevision: string) {
+  return request<InstanceBranding>(
+    '/api/settings/branding/logo',
+    undefined,
+    'DELETE',
+    undefined,
+    'session',
+    { 'X-Sage-Branding-Revision': expectedRevision },
+  )
 }
 
 export function getSystemUpdateStatus(signal?: AbortSignal) {

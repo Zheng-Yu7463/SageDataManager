@@ -578,6 +578,7 @@ test('品牌设置保存后立即更新全站标识', async ({ page }) => {
         slogan_secondary: 'Research · Connect · Preserve',
         primary_color: '#245B78',
         logo_url: null,
+        revision: 'revision-2',
       }),
     })
   })
@@ -591,7 +592,7 @@ test('品牌设置保存后立即更新全站标识', async ({ page }) => {
   await page.getByLabel('主标语').fill('研究 · 连接 · 积累')
   await page.getByLabel('辅助标语').fill('Research · Connect · Preserve')
   await page.getByLabel('品牌主色色值').fill('#245B78')
-  await page.getByRole('button', { name: '保存品牌设置' }).click()
+  await page.getByRole('button', { name: '保存文字与主色' }).click()
   await expect(page.getByText('品牌设置已应用')).toBeVisible()
   await expect(page.locator('.brand').getByText('Atlas', { exact: true })).toBeVisible()
   await expect(page).toHaveTitle('系统设置 · Atlas')
@@ -616,6 +617,7 @@ test('品牌写操作共享同一个事务状态', async ({ page }) => {
         slogan_secondary: 'Science · Archive · Growth · Excellence',
         primary_color: '#2E7351',
         logo_url: null,
+        revision: 'revision-2',
       }),
     })
   })
@@ -624,18 +626,72 @@ test('品牌写操作共享同一个事务状态', async ({ page }) => {
   await signInWithMockAccount(page)
   await page.goto('/settings')
 
-  await page.getByRole('button', { name: '保存品牌设置' }).click()
+  await page.getByLabel('产品名称').fill('SAGE Archive')
+  await page.getByRole('button', { name: '保存文字与主色' }).click()
   await expect(page.getByRole('button', { name: '正在保存' })).toBeDisabled()
-  await expect(page.getByRole('button', { name: '上传图片' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '选择图片' })).toBeDisabled()
   await expect(page.getByLabel('选择实例 Logo 图片')).toBeDisabled()
   await expect(page.getByLabel('产品名称')).toBeDisabled()
   await expect(page.getByLabel('品牌主色色值')).toBeDisabled()
 
   releaseBrandingUpdate()
   await expect(page.getByText('品牌设置已应用')).toBeVisible()
-  await expect(page.getByRole('button', { name: '保存品牌设置' })).toBeEnabled()
-  await expect(page.getByRole('button', { name: '上传图片' })).toBeEnabled()
+  await expect(page.getByRole('button', { name: '保存文字与主色' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '选择图片' })).toBeEnabled()
   await expect(page.getByLabel('产品名称')).toBeEnabled()
+})
+
+test('Logo 选择后先预览，明确应用时才上传', async ({ page }) => {
+  const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+  let logoWrites = 0
+  await page.route('**/api/settings/branding/logo', async (route) => {
+    logoWrites += 1
+    expect(route.request().headers()['x-sage-branding-revision']).toBe('revision-1')
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        product_name: 'SAGE',
+        product_subtitle: 'RESEARCH ARCHIVE',
+        organization_name: 'SAGE Lab',
+        slogan: '科学 · 数据 · 成长 · 卓越',
+        slogan_secondary: 'Science · Archive · Growth · Excellence',
+        primary_color: '#2E7351',
+        logo_url: `data:image/png;base64,${pngBase64}`,
+        revision: 'revision-2',
+      }),
+    })
+  })
+  await page.route('**/api/settings/branding', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        product_name: 'SAGE',
+        product_subtitle: 'RESEARCH ARCHIVE',
+        organization_name: 'SAGE Lab',
+        slogan: '科学 · 数据 · 成长 · 卓越',
+        slogan_secondary: 'Science · Archive · Growth · Excellence',
+        primary_color: '#2E7351',
+        logo_url: null,
+        revision: 'revision-1',
+      }),
+    })
+  })
+  await mockEmptyDashboard(page)
+  await mockEmptySettingsCollections(page)
+  await signInWithMockAccount(page)
+  await page.goto('/settings')
+
+  await page.getByLabel('选择实例 Logo 图片').setInputFiles({
+    name: 'brand.png',
+    mimeType: 'image/png',
+    buffer: Buffer.from(pngBase64, 'base64'),
+  })
+  expect(logoWrites).toBe(0)
+  await expect(page.locator('.brand-preview img')).toHaveAttribute('src', /^blob:/)
+  await page.getByRole('button', { name: '应用 Logo' }).click()
+
+  await expect.poll(() => logoWrites).toBe(1)
+  await expect(page.getByText('Logo 已应用')).toBeVisible()
 })
 
 test('检查更新在后台运行并由页面轮询结果', async ({ page }) => {

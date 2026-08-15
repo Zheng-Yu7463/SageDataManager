@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from io import BytesIO
 
 from PIL import Image, UnidentifiedImageError
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.domain.activity import ActivityAction
@@ -35,8 +36,38 @@ class BrandingLogoError(ValueError):
     pass
 
 
-def get_branding_record(session: Session) -> InstanceBranding | None:
-    return session.get(InstanceBranding, 1)
+class BrandingConflictError(ValueError):
+    pass
+
+
+def lock_branding_mutations(session: Session) -> None:
+    if session.get_bind().dialect.name == "postgresql":
+        session.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_id)"),
+            {"lock_id": 1_396_786_757},
+        )
+
+
+def get_branding_record(
+    session: Session,
+    *,
+    lock: bool = False,
+) -> InstanceBranding | None:
+    return session.get(InstanceBranding, 1, with_for_update=lock)
+
+
+def branding_revision(record: InstanceBranding | None) -> str:
+    if record is None:
+        return "default"
+    updated_at = record.updated_at
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=UTC)
+    return updated_at.astimezone(UTC).isoformat()
+
+
+def require_branding_revision(record: InstanceBranding | None, expected_revision: str) -> None:
+    if expected_revision != branding_revision(record):
+        raise BrandingConflictError("品牌设置已被其他管理员更新，请刷新后重试。")
 
 
 def branding_response(session: Session) -> InstanceBrandingResponse:
@@ -48,7 +79,11 @@ def branding_response(session: Session) -> InstanceBrandingResponse:
     if record and record.logo_data:
         content_digest = hashlib.sha256(record.logo_data).hexdigest()
         logo_url = f"/api/settings/branding/logo/{content_digest}"
-    return InstanceBrandingResponse(**values, logo_url=logo_url)
+    return InstanceBrandingResponse(
+        **values,
+        logo_url=logo_url,
+        revision=branding_revision(record),
+    )
 
 
 def update_branding(
@@ -57,8 +92,11 @@ def update_branding(
     *,
     actor: User,
 ) -> InstanceBrandingResponse:
-    record = get_branding_record(session)
+    lock_branding_mutations(session)
+    record = get_branding_record(session, lock=True)
+    require_branding_revision(record, payload.expected_revision)
     next_values = payload.model_dump()
+    next_values.pop("expected_revision")
     current_values = (
         DEFAULT_BRANDING
         if record is None
@@ -86,6 +124,7 @@ def update_branding_logo(
     session: Session,
     content: bytes,
     mime_type: str,
+    expected_revision: str,
     *,
     actor: User,
 ) -> InstanceBrandingResponse:
@@ -125,7 +164,9 @@ def update_branding_logo(
     ):
         raise BrandingLogoError("仅支持可完整解码的静态 PNG、JPEG 或 WebP 图片。") from None
 
-    record = get_branding_record(session)
+    lock_branding_mutations(session)
+    record = get_branding_record(session, lock=True)
+    require_branding_revision(record, expected_revision)
     if (
         record is not None
         and record.logo_data == content
@@ -148,8 +189,15 @@ def update_branding_logo(
     return branding_response(session)
 
 
-def remove_branding_logo(session: Session, *, actor: User) -> InstanceBrandingResponse:
-    record = get_branding_record(session)
+def remove_branding_logo(
+    session: Session,
+    expected_revision: str,
+    *,
+    actor: User,
+) -> InstanceBrandingResponse:
+    lock_branding_mutations(session)
+    record = get_branding_record(session, lock=True)
+    require_branding_revision(record, expected_revision)
     if record is None or (
         record.logo_data is None and record.logo_mime_type is None
     ):

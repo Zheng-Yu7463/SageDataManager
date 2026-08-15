@@ -61,6 +61,7 @@ def test_branding_is_public_and_updates_require_admin(monkeypatch) -> None:
             "slogan_secondary": "Science · Archive · Growth · Excellence",
             "primary_color": "#2E7351",
             "logo_url": None,
+            "revision": "default",
         }
 
         payload = {
@@ -71,26 +72,52 @@ def test_branding_is_public_and_updates_require_admin(monkeypatch) -> None:
             "slogan_secondary": "Research · Connect · Preserve",
             "primary_color": "#245B78",
         }
-        assert client.patch("/api/settings/branding", json=payload).status_code == 401
+        request_payload = {**payload, "expected_revision": "default"}
+        assert client.patch("/api/settings/branding", json=request_payload).status_code == 401
         updated = client.patch(
             "/api/settings/branding",
-            json=payload,
+            json=request_payload,
             headers={"X-Sage-Session": create_session_token("zhengyu")},
         )
 
         assert updated.status_code == 200
-        assert updated.json() == {**payload, "logo_url": None}
+        updated_body = updated.json()
+        assert updated_body == {**payload, "logo_url": None, "revision": updated_body["revision"]}
+        assert updated_body["revision"] != "default"
         record = session.get(InstanceBranding, 1)
         assert record.product_name == "Atlas"
         original_updated_at = record.updated_at
         replayed = client.patch(
             "/api/settings/branding",
-            json={**payload, "product_name": "  Atlas  ", "primary_color": "#245b78"},
+            json={
+                **payload,
+                "product_name": "  Atlas  ",
+                "primary_color": "#245b78",
+                "expected_revision": updated_body["revision"],
+            },
             headers={"X-Sage-Session": create_session_token("zhengyu")},
         )
         assert replayed.status_code == 200
         assert session.get(InstanceBranding, 1).updated_at == original_updated_at
         assert session.query(Activity).filter_by(action="updated_branding").count() == 1
+        stale = client.patch(
+            "/api/settings/branding",
+            json={**payload, "product_name": "Stale", "expected_revision": "default"},
+            headers={"X-Sage-Session": create_session_token("zhengyu")},
+        )
+        assert stale.status_code == 409
+        assert session.get(InstanceBranding, 1).product_name == "Atlas"
+
+        whitespace = client.patch(
+            "/api/settings/branding",
+            json={
+                **payload,
+                "product_name": "   ",
+                "expected_revision": updated_body["revision"],
+            },
+            headers={"X-Sage-Session": create_session_token("zhengyu")},
+        )
+        assert whitespace.status_code == 422
     finally:
         app.dependency_overrides.clear()
         session.close()
@@ -113,6 +140,7 @@ def test_branding_logo_validates_content_and_can_be_removed(monkeypatch) -> None
     app.dependency_overrides[get_session] = lambda: session
     try:
         client = TestClient(app)
+        revision = "default"
         for image_format, mime_type in (
             ("PNG", "image/png"),
             ("JPEG", "image/jpeg"),
@@ -122,9 +150,14 @@ def test_branding_logo_validates_content_and_can_be_removed(monkeypatch) -> None
             uploaded = client.put(
                 "/api/settings/branding/logo",
                 content=content,
-                headers={**headers, "Content-Type": mime_type},
+                headers={
+                    **headers,
+                    "Content-Type": mime_type,
+                    "X-Sage-Branding-Revision": revision,
+                },
             )
             logo_url = uploaded.json()["logo_url"]
+            revision = uploaded.json()["revision"]
 
             assert uploaded.status_code == 200
             assert logo_url.startswith("/api/settings/branding/logo/")
@@ -137,7 +170,10 @@ def test_branding_logo_validates_content_and_can_be_removed(monkeypatch) -> None
             assert logo.headers["etag"] == f'"{logo_url.rsplit("/", 1)[1]}"'
             assert logo.content == content
 
-        removed = client.delete("/api/settings/branding/logo", headers=headers)
+        removed = client.delete(
+            "/api/settings/branding/logo",
+            headers={**headers, "X-Sage-Branding-Revision": revision},
+        )
         assert removed.status_code == 200
         assert removed.json()["logo_url"] is None
         assert client.get(logo_url).status_code == 404
@@ -159,7 +195,10 @@ def test_branding_logo_rejects_invalid_format_size_and_animation(monkeypatch) ->
     )
     session.commit()
     monkeypatch.setattr(settings, "auth_session_secret", "test-session-secret")
-    headers = {"X-Sage-Session": create_session_token("zhengyu")}
+    headers = {
+        "X-Sage-Session": create_session_token("zhengyu"),
+        "X-Sage-Branding-Revision": "default",
+    }
     app.dependency_overrides[get_session] = lambda: session
     try:
         client = TestClient(app)
@@ -220,17 +259,22 @@ def test_branding_logo_url_is_content_addressed(monkeypatch) -> None:
         client = TestClient(app)
         first_content = image_bytes("PNG", color=(46, 115, 81))
         second_content = image_bytes("PNG", color=(36, 91, 120))
-        first_url = client.put(
-            "/api/settings/branding/logo", content=first_content, headers=headers
-        ).json()["logo_url"]
+        revision_headers = {**headers, "X-Sage-Branding-Revision": "default"}
+        first_response = client.put(
+            "/api/settings/branding/logo", content=first_content, headers=revision_headers
+        )
+        first_url = first_response.json()["logo_url"]
+        revision_headers["X-Sage-Branding-Revision"] = first_response.json()["revision"]
         first_updated_at = session.get(InstanceBranding, 1).updated_at
-        repeated_url = client.put(
-            "/api/settings/branding/logo", content=first_content, headers=headers
-        ).json()["logo_url"]
+        repeated_response = client.put(
+            "/api/settings/branding/logo", content=first_content, headers=revision_headers
+        )
+        repeated_url = repeated_response.json()["logo_url"]
         repeated_updated_at = session.get(InstanceBranding, 1).updated_at
-        second_url = client.put(
-            "/api/settings/branding/logo", content=second_content, headers=headers
-        ).json()["logo_url"]
+        second_response = client.put(
+            "/api/settings/branding/logo", content=second_content, headers=revision_headers
+        )
+        second_url = second_response.json()["logo_url"]
         second_updated_at = session.get(InstanceBranding, 1).updated_at
 
         assert repeated_url == first_url
@@ -259,7 +303,10 @@ def test_removing_absent_branding_logo_is_idempotent(monkeypatch) -> None:
     )
     session.commit()
     monkeypatch.setattr(settings, "auth_session_secret", "test-session-secret")
-    headers = {"X-Sage-Session": create_session_token("zhengyu")}
+    headers = {
+        "X-Sage-Session": create_session_token("zhengyu"),
+        "X-Sage-Branding-Revision": "default",
+    }
     app.dependency_overrides[get_session] = lambda: session
     try:
         response = TestClient(app).delete("/api/settings/branding/logo", headers=headers)
@@ -296,7 +343,8 @@ def test_branding_rejects_low_contrast_color(monkeypatch) -> None:
                 "organization_name": "Atlas Institute",
                 "slogan": "研究 · 连接 · 积累",
                 "slogan_secondary": "Research · Connect · Preserve",
-                "primary_color": "#FFFF00",
+                "primary_color": "#888888",
+                "expected_revision": "default",
             },
             headers={"X-Sage-Session": create_session_token("zhengyu")},
         )
