@@ -106,6 +106,62 @@ def test_check_rejects_a_dirty_worktree(tmp_path: Path) -> None:
     assert manager.status()["state"] == "failed"
 
 
+def test_start_update_reuses_the_remote_ref_fetched_by_check(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote, worktree = create_repository_pair(tmp_path)
+    manager = sage_updater.UpdateManager(agent_config(tmp_path, remote, worktree))
+    current_commit = git(worktree, "rev-parse", "HEAD")
+    target_commit = "f" * 40
+    fetch_values: list[bool] = []
+
+    monkeypatch.setattr(
+        manager,
+        "_inspect_repository",
+        lambda fetch: fetch_values.append(fetch)
+        or {
+            **manager.status(),
+            "current_commit": current_commit,
+            "latest_commit": target_commit,
+            "update_available": True,
+            "worktree_clean": True,
+        },
+    )
+
+    class DeferredThread:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def start(self) -> None:
+            manager._operation_lock.release()
+
+    monkeypatch.setattr(sage_updater.threading, "Thread", DeferredThread)
+
+    status = manager.start_update()
+
+    assert fetch_values == [False]
+    assert status["state"] == "backing_up"
+    assert status["latest_commit"] == target_commit
+
+
+def test_start_update_still_rejects_a_dirty_worktree(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote, worktree = create_repository_pair(tmp_path)
+    manager = sage_updater.UpdateManager(agent_config(tmp_path, remote, worktree))
+    monkeypatch.setattr(
+        manager,
+        "_inspect_repository",
+        lambda fetch: {**manager.status(), "worktree_clean": False},
+    )
+
+    with pytest.raises(sage_updater.UpdateAgentError, match="未提交"):
+        manager.start_update()
+
+    assert manager.status()["state"] == "failed"
+
 def test_snap_docker_uses_packaged_clients_without_the_snap_launcher(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

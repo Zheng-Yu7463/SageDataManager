@@ -148,8 +148,14 @@ class UpdateManager:
         if not self._operation_lock.acquire(blocking=False):
             raise UpdateConflictError("已有系统更新操作正在运行。")
         try:
-            self._set_progress("checking", "preflight", "正在执行更新前检查…", reset=True)
-            inspected = self._inspect_repository(fetch=True)
+            self._set_progress("checking", "preflight", "正在校验已检查的 Commit…", reset=True)
+            # The explicit check action already fetched origin/main. Reusing that
+            # remote-tracking ref avoids a second, potentially slow GitHub request.
+            inspected = self._inspect_repository(fetch=False)
+            if not inspected["worktree_clean"]:
+                detail = "Git 工作区存在未提交内容，拒绝自动更新。"
+                self._set_failure(detail)
+                raise UpdateAgentError(detail)
             if not inspected["update_available"]:
                 self._replace_state(inspected)
                 raise UpdateConflictError("当前已经是 origin/main 的最新版本。")
