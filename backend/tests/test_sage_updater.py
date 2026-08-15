@@ -173,3 +173,12 @@ def test_run_reports_multiple_stderr_lines(tmp_path: Path) -> None:
         )
 
     assert "first detail；second detail" in str(captured.value)
+
+
+def test_installer_keeps_the_socket_mount_visible_after_agent_restart() -> None:
+    repository = MODULE_PATH.parents[1]
+    service = (repository / "deploy/sage-updater.service").read_text(encoding="utf-8")
+    installer = (repository / "deploy/install-updater.sh").read_text(encoding="utf-8")
+
+    assert "RuntimeDirectoryPreserve=yes" in service
+    assert "docker compose up --build -d --force-recreate --no-deps backend" in installer

@@ -18,6 +18,7 @@ ExecStart=/usr/bin/python3 @@REPOSITORY@@/deploy/sage_updater.py
 Restart=always
 RestartSec=3
 RuntimeDirectory=sage-updater
+RuntimeDirectoryPreserve=yes
 RuntimeDirectoryMode=0750
 StateDirectory=sage-updater
 StateDirectoryMode=0700

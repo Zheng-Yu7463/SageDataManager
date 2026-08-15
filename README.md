@@ -79,7 +79,7 @@ sudo bash deploy/install-updater.sh
 
 1. 校验当前分支是 `main`、工作区干净、没有本地额外提交，且 `origin` 指向本仓库；
 2. 将 PostgreSQL 自定义格式备份写入 `/var/lib/sage-updater/backups/`；
-3. 执行 `git pull --ff-only origin main`；
+3. 获取 `origin/main`，并以 `--ff-only` 合并预检时锁定的 Commit；
 4. 重新构建并启动 `backend`、`frontend`；
 5. 验证前后端健康检查；失败时恢复旧 Commit 和旧应用镜像，数据库备份保留供人工恢复。
 
