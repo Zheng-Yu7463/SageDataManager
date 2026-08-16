@@ -645,28 +645,112 @@ def complete_agent_file_upload(
         canonical_relative_path = destination.relative_to(staging_root / str(upload_id)).as_posix()
     except ValueError as error:
         raise UploadContentError("上传文件目标不属于当前任务。") from error
-    storage_root = staging_root.parent
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.exists() or destination.is_symlink():
-        raise UploadConflictError([relative_path])
+    if temporary_file.parent != staging_root / UPLOAD_PARTS_DIRECTORY:
+        raise UploadContentError("上传分片临时文件不属于当前存储区域。")
+    storage_root = staging_root.parent.resolve(strict=True)
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        directory_flags |= os.O_CLOEXEC
+    root_descriptor: int | None = None
+    staging_descriptor: int | None = None
+    parts_descriptor: int | None = None
+    destination_parent_descriptor: int | None = None
     linked = False
     try:
-        os.link(temporary_file, destination)
+        root_descriptor = os.open(storage_root, directory_flags)
+        staging_descriptor = os.open(
+            UPLOAD_STAGING_DIRECTORY,
+            directory_flags,
+            dir_fd=root_descriptor,
+        )
+        parts_descriptor = os.open(
+            UPLOAD_PARTS_DIRECTORY,
+            directory_flags,
+            dir_fd=staging_descriptor,
+        )
+        source_metadata = os.stat(
+            temporary_file.name,
+            dir_fd=parts_descriptor,
+            follow_symlinks=False,
+        )
+        if not stat.S_ISREG(source_metadata.st_mode):
+            raise UploadContentError("上传分片临时文件不是普通文件。")
+
+        destination_parent_descriptor = os.dup(staging_descriptor)
+        destination_relative_path = destination.relative_to(staging_root)
+        for directory_name in destination_relative_path.parts[:-1]:
+            try:
+                os.mkdir(directory_name, mode=0o700, dir_fd=destination_parent_descriptor)
+                os.fsync(destination_parent_descriptor)
+            except FileExistsError:
+                pass
+            next_descriptor = os.open(
+                directory_name,
+                directory_flags,
+                dir_fd=destination_parent_descriptor,
+            )
+            previous_descriptor = destination_parent_descriptor
+            destination_parent_descriptor = next_descriptor
+            with suppress(OSError):
+                os.close(previous_descriptor)
+
+        os.link(
+            temporary_file.name,
+            destination.name,
+            src_dir_fd=parts_descriptor,
+            dst_dir_fd=destination_parent_descriptor,
+            follow_symlinks=False,
+        )
         linked = True
-        _fsync_directory_chain(storage_root, destination.parent)
+        linked_source_metadata = os.stat(
+            temporary_file.name,
+            dir_fd=parts_descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            linked_source_metadata.st_dev,
+            linked_source_metadata.st_ino,
+            linked_source_metadata.st_size,
+            linked_source_metadata.st_mtime_ns,
+        ) != (
+            source_metadata.st_dev,
+            source_metadata.st_ino,
+            source_metadata.st_size,
+            source_metadata.st_mtime_ns,
+        ):
+            raise UploadContentError("上传分片临时文件在发布期间发生变化。")
+        published = _open_staged_file(staging_root / str(upload_id), destination)
+        try:
+            if not _file_metadata_matches(linked_source_metadata, published.metadata):
+                raise UploadContentError("上传文件发布路径在写入期间发生变化。")
+        finally:
+            _close_staged_files([published])
+        os.fsync(destination_parent_descriptor)
+        os.unlink(temporary_file.name, dir_fd=parts_descriptor)
+        os.fsync(parts_descriptor)
     except FileExistsError:
         raise UploadConflictError([relative_path]) from None
     except Exception:
-        if linked:
-            destination.unlink(missing_ok=True)
+        if linked and destination_parent_descriptor is not None:
+            with suppress(FileNotFoundError):
+                os.unlink(destination.name, dir_fd=destination_parent_descriptor)
             with suppress(OSError):
-                _fsync_directory_chain(storage_root, destination.parent)
+                os.fsync(destination_parent_descriptor)
         raise
-    temporary_file.unlink()
+    finally:
+        for descriptor in (
+            destination_parent_descriptor,
+            parts_descriptor,
+            staging_descriptor,
+            root_descriptor,
+        ):
+            if descriptor is not None:
+                with suppress(OSError):
+                    os.close(descriptor)
     return AgentUploadedFileResponse(
         upload_id=upload_id,
         relative_path=canonical_relative_path,
-        file_size=destination.stat().st_size,
+        file_size=source_metadata.st_size,
         checksum_sha256=checksum_sha256,
     )
 
@@ -680,14 +764,6 @@ def _fsync_directory(directory: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
-
-
-def _fsync_directory_chain(root: Path, leaf: Path) -> None:
-    current = root
-    _fsync_directory(current)
-    for part in leaf.relative_to(root).parts:
-        current /= part
-        _fsync_directory(current)
 
 
 def _staged_files(staging_directory: Path, *, completion_marker_required: bool) -> list[Path]:

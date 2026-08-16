@@ -209,7 +209,9 @@ def test_agent_file_publish_fsyncs_created_directories_and_destination(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     content = b"durable content"
-    temporary_file = tmp_path / "temporary-upload"
+    parts_directory = tmp_path / ".uploads" / ".parts"
+    parts_directory.mkdir(parents=True)
+    temporary_file = parts_directory / "temporary-upload"
     temporary_file.write_bytes(content)
     upload_id = uuid4()
     destination = tmp_path / ".uploads" / str(upload_id) / "nested" / "file.bin"
@@ -242,7 +244,9 @@ def test_agent_file_publish_rolls_back_link_when_directory_sync_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    temporary_file = tmp_path / "temporary-upload"
+    parts_directory = tmp_path / ".uploads" / ".parts"
+    parts_directory.mkdir(parents=True)
+    temporary_file = parts_directory / "temporary-upload"
     temporary_file.write_bytes(b"content")
     upload_id = uuid4()
     destination = tmp_path / ".uploads" / str(upload_id) / "file.bin"
@@ -264,6 +268,56 @@ def test_agent_file_publish_rolls_back_link_when_directory_sync_fails(
 
     assert temporary_file.exists()
     assert not destination.exists()
+
+
+def test_agent_file_publish_rejects_replaced_destination_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    parts_directory = tmp_path / ".uploads" / ".parts"
+    parts_directory.mkdir(parents=True)
+    temporary_file = parts_directory / "temporary-upload"
+    temporary_file.write_bytes(b"content")
+    upload_id = uuid4()
+    destination = tmp_path / ".uploads" / str(upload_id) / "nested" / "file.bin"
+    destination.parent.mkdir(parents=True)
+    detached_directory = destination.parent.with_name("detached")
+    external_directory = tmp_path / "external"
+    external_directory.mkdir()
+    original_link = os.link
+
+    def replace_directory_then_link(
+        source: str,
+        target: str,
+        *,
+        src_dir_fd: int,
+        dst_dir_fd: int,
+        follow_symlinks: bool,
+    ) -> None:
+        destination.parent.rename(detached_directory)
+        destination.parent.symlink_to(external_directory, target_is_directory=True)
+        original_link(
+            source,
+            target,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+            follow_symlinks=follow_symlinks,
+        )
+
+    monkeypatch.setattr("app.services.transfers.os.link", replace_directory_then_link)
+
+    with pytest.raises(UploadContentError):
+        complete_agent_file_upload(
+            upload_id,
+            "nested/file.bin",
+            temporary_file,
+            destination,
+            hashlib.sha256(b"content").hexdigest(),
+        )
+
+    assert temporary_file.exists()
+    assert not (external_directory / "file.bin").exists()
+    assert not (detached_directory / "file.bin").exists()
 
 
 @pytest.mark.parametrize(
@@ -289,7 +343,9 @@ def test_agent_upload_rejects_noncanonical_relative_paths(
 def test_agent_upload_accepts_a_255_byte_path_component(tmp_path: Path) -> None:
     relative_path = "文" * 83 + ".a.txt"
     content = b"utf-8 boundary"
-    temporary_file = tmp_path / "temporary-upload"
+    parts_directory = tmp_path / ".uploads" / ".parts"
+    parts_directory.mkdir(parents=True)
+    temporary_file = parts_directory / "temporary-upload"
     temporary_file.write_bytes(content)
     upload_id = uuid4()
     assert len(relative_path.encode("utf-8")) == 255
