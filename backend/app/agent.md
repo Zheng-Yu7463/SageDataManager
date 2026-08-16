@@ -209,18 +209,21 @@ changes after hashing, stop and rebuild the manifest.
 6. The current `maximum_file_size_bytes` is {{MAXIMUM_FILE_SIZE_BYTES}}. Read the discovery
    document for this value instead of assuming the default. A `413` rejects the whole file and
    leaves no partial staged file.
-7. Recover after an interruption with `GET` on `status_url`, sending the PAT and
+7. Recover after an interruption with `GET` on `status_url` plus `include_checksums=true`,
+   sending the PAT and
    `X-Sage-Upload-Token`. Every status response repeats `asset_id` and `archive_relative_path` so
    the target can be verified against the local manifest. States are `waiting`, `ready`,
    `completed`, and `cancelled`. For an active task, `files` lists every atomically accepted
-   `relative_path` and `file_size`. For a completed task, `result` contains the same verified
+   `relative_path`, `file_size`, and `checksum_sha256`; compare all three with the local manifest.
+   Normal status checks may omit `include_checksums` to avoid hashing large files and then return
+   `checksum_sha256` as `null`. For a completed task, `result` contains the same verified
    finalization result as `POST finalize`; for all other states it is `null`.
 8. If a PUT response is lost after sending `X-Sage-Content-SHA256`, retry that exact PUT once. The
    server returns the original success response without overwriting only when the staged file matches
    the same path, declared length, and SHA-256. A `409` means the retry was not identical: inspect
    status, stop, and report the conflict. Without the original checksum, do not retry the path.
-9. Before finalization, verify that every upload response succeeded or was recovered through status,
-   and that the status file list, count, and total size match the local manifest. Do not finalize an
+9. Before finalization, verify that every upload response succeeded or was recovered through a
+   checksum-enabled status response, and that the status file list, count, and total size match the local manifest. Do not finalize an
    incomplete or ambiguous task.
 10. Finalize with `POST` to `finalize_url` and JSON `{"upload_token":"<upload-token>"}`. Verify
     `imported_file_count`, `total_size`, `relative_paths`, and `checksums` in the response. Finalize

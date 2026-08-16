@@ -688,6 +688,7 @@ def agent_upload_status(
     *,
     actor: User,
     access_token: PersonalAccessToken,
+    include_checksums: bool = False,
 ) -> AgentUploadStatusResponse:
     task = _agent_upload_task(session, upload_id, upload_token, actor, access_token)
     archive_relative_path = (
@@ -741,16 +742,39 @@ def agent_upload_status(
     except UploadNotReadyError:
         files = []
     uploaded_files: list[AgentUploadFileStatus] = []
+    opened_files: list[OpenStagedFile] = []
     try:
-        for path in files:
-            uploaded_files.append(
-                AgentUploadFileStatus(
-                    relative_path=path.relative_to(staging_directory).as_posix(),
-                    file_size=path.stat().st_size,
+        if include_checksums:
+            opened_files = _open_staged_files(staging_directory, files)
+            for source in opened_files:
+                digest = hashlib.sha256()
+                while chunk := os.read(source.descriptor, 1024 * 1024):
+                    digest.update(chunk)
+                current_metadata = os.fstat(source.descriptor)
+                if (
+                    current_metadata.st_size != source.metadata.st_size
+                    or current_metadata.st_mtime_ns != source.metadata.st_mtime_ns
+                ):
+                    raise UploadContentError("上传文件在校验期间发生变化，请稍后重试。")
+                uploaded_files.append(
+                    AgentUploadFileStatus(
+                        relative_path=source.relative_path.as_posix(),
+                        file_size=source.metadata.st_size,
+                        checksum_sha256=digest.hexdigest(),
+                    )
                 )
-            )
+        else:
+            for path in files:
+                uploaded_files.append(
+                    AgentUploadFileStatus(
+                        relative_path=path.relative_to(staging_directory).as_posix(),
+                        file_size=path.stat().st_size,
+                    )
+                )
     except OSError as error:
         raise UploadContentError("上传文件正在变化，请稍后重试。") from error
+    finally:
+        _close_staged_files(opened_files)
     return AgentUploadStatusResponse(
         upload_id=task.id,
         asset_id=task.asset_id,

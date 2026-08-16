@@ -141,6 +141,7 @@ def test_agent_discovery_is_public_and_contains_no_secret() -> None:
         "checksum_header": "X-Sage-Content-SHA256",
         "error_code_header": "X-Sage-Error-Code",
         "retry_after_header": "Retry-After",
+        "status_checksum_query_parameter": "include_checksums",
         "error_codes": [
             "invalid_checksum",
             "invalid_content_length",
@@ -1277,9 +1278,22 @@ def test_agent_can_recover_and_cancel_its_upload_task(tmp_path: Path, monkeypatc
             {
                 "relative_path": "notes.txt",
                 "file_size": len(b"temporary notes"),
+                "checksum_sha256": None,
             }
         ]
         assert ready.json()["result"] is None
+
+        verified = client.get(
+            f"{task['status_url']}?include_checksums=true", headers=task_headers
+        )
+        assert verified.status_code == 200
+        assert verified.json()["files"] == [
+            {
+                "relative_path": "notes.txt",
+                "file_size": len(b"temporary notes"),
+                "checksum_sha256": hashlib.sha256(b"temporary notes").hexdigest(),
+            }
+        ]
 
         wrong_pat = client.get(
             task["status_url"],

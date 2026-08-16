@@ -471,6 +471,7 @@ class UploadStatusResponse(BaseModel):
 class AgentUploadFileStatus(BaseModel):
     relative_path: str
     file_size: int = Field(ge=0)
+    checksum_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
 
 class AgentUploadStatusResponse(BaseModel):

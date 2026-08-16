@@ -402,6 +402,10 @@ def agent_get_upload_status(
     session: SessionDependency,
     principal: Annotated[AgentPrincipal, scoped("files:upload")],
     x_sage_upload_token: Annotated[str | None, Header()] = None,
+    include_checksums: bool = Query(
+        default=False,
+        description="Include SHA-256 for every accepted file during recovery verification.",
+    ),
 ) -> AgentUploadStatusResponse:
     if not x_sage_upload_token:
         raise _agent_error(401, "upload_token_missing", "缺少 X-Sage-Upload-Token。")
@@ -413,6 +417,7 @@ def agent_get_upload_status(
             x_sage_upload_token,
             actor=principal.user,
             access_token=principal.token,
+            include_checksums=include_checksums,
         )
     except UploadTicketError as error:
         session.rollback()

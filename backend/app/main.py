@@ -55,7 +55,7 @@ async def prevent_api_caching(request: Request, call_next):
 app.include_router(router, prefix=settings.api_prefix)
 
 AGENT_PROTOCOL_VERSION = "1.0"
-AGENT_DOCUMENT_VERSION = "2026-08-17.9"
+AGENT_DOCUMENT_VERSION = "2026-08-17.10"
 AGENT_INSTRUCTIONS = (
     Path(__file__)
     .with_name("agent.md")
@@ -144,6 +144,7 @@ def agent_discovery() -> JSONResponse:
                 "checksum_header": "X-Sage-Content-SHA256",
                 "error_code_header": AGENT_ERROR_CODE_HEADER,
                 "retry_after_header": "Retry-After",
+                "status_checksum_query_parameter": "include_checksums",
                 "error_codes": [
                     "invalid_checksum",
                     "invalid_content_length",
