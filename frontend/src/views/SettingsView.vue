@@ -63,6 +63,7 @@ const { account } = useSession()
 const currentUsername = computed(() => account.value?.username ?? '')
 const loading = computed(() => accountsLoading.value || tokensLoading.value || brandingLoading.value || systemUpdateLoading.value)
 const accountsUnavailable = computed(() => accountsLoading.value || Boolean(accountsError.value))
+const tokensUnavailable = computed(() => tokensLoading.value || Boolean(tokenLoadError.value))
 const brandingUnavailable = computed(() => brandingLoading.value || Boolean(brandingLoadError.value))
 const settingsMutationInProgress = computed(() => (
   creating.value
@@ -371,7 +372,7 @@ const scopeOptions: { value: AgentScope; label: string; description: string }[] 
 ]
 
 function openTokenDialog() {
-  if (tokensLoading.value) return
+  if (tokensUnavailable.value) return
   tokenForm.value = {
     name: '',
     expiresInDays: 90,
@@ -414,7 +415,7 @@ function toggleScope(scope: AgentScope) {
 }
 
 async function submitToken() {
-  if (tokensLoading.value || tokenCreating.value || !tokenFormValid.value) return
+  if (tokensUnavailable.value || tokenCreating.value || !tokenFormValid.value) return
   tokensController?.abort()
   tokensController = undefined
   tokensLoading.value = false
@@ -446,7 +447,7 @@ async function copyCreatedToken() {
 }
 
 async function confirmRevokeToken() {
-  if (!revokeTarget.value || tokensLoading.value) return
+  if (!revokeTarget.value || tokensUnavailable.value) return
   tokensController?.abort()
   tokensController = undefined
   tokensLoading.value = false
@@ -953,13 +954,13 @@ onBeforeUnmount(() => {
           <a class="button button--outline" href="/agent.md" target="_blank" rel="noopener">
             <ExternalLink :size="15" />Agent 说明
           </a>
-          <button class="button button--primary" type="button" :disabled="tokensLoading || tokenCreating" @click="openTokenDialog">
+          <button class="button button--primary" type="button" :disabled="tokensUnavailable || tokenCreating" @click="openTokenDialog">
             <KeyRound :size="15" />新建令牌
           </button>
         </div>
       </header>
       <div v-if="tokensLoading" class="settings-inline-loading" role="status" aria-live="polite"><span class="tiny-spinner"></span>正在读取访问令牌…</div>
-      <p v-else-if="tokenLoadError" class="agent-access-error settings-error" role="alert">{{ tokenLoadError }} <button type="button" @click="loadTokens">重试</button></p>
+      <p v-else-if="tokenLoadError" class="agent-access-error settings-error" role="alert">{{ tokenLoadError }} <button type="button" :disabled="tokensLoading" @click="loadTokens">重试</button></p>
       <p v-if="tokenError && !tokenDialogOpen" class="agent-access-error settings-error" role="alert">{{ tokenError }}</p>
       <div v-if="!tokensLoading && !tokenLoadError && activeTokens.length" class="token-list">
         <article v-for="token in activeTokens" :key="token.id" class="token-row">
@@ -1173,7 +1174,7 @@ onBeforeUnmount(() => {
         <h2 id="revoke-token-title">撤销“{{ revokeTarget.name }}”</h2>
         <p>撤销立即生效，使用此令牌的 AI 客户端将无法继续访问。该操作不可恢复。</p>
         <p v-if="revokeError" class="settings-error" role="alert">{{ revokeError }}</p>
-        <footer><button class="button button--outline" type="button" :disabled="revoking" @click="closeRevokeDialog">取消</button><button class="button button--danger" type="button" :disabled="revoking" @click="confirmRevokeToken"><Trash2 :size="16" />{{ revoking ? '正在撤销' : '确认撤销' }}</button></footer>
+        <footer><button class="button button--outline" type="button" :disabled="revoking" @click="closeRevokeDialog">取消</button><button class="button button--danger" type="button" :disabled="revoking || tokensUnavailable" @click="confirmRevokeToken"><Trash2 :size="16" />{{ revoking ? '正在撤销' : '确认撤销' }}</button></footer>
       </section>
     </div>
   </div>

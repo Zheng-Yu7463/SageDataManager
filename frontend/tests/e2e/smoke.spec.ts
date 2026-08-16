@@ -1377,6 +1377,7 @@ test('设置页令牌加载失败不影响管理员账号事实', async ({ page 
   await expect(page.locator('.accounts-table')).toContainText('testadmin')
   await expect(page.locator('.agent-access-error')).toContainText('令牌服务暂时不可用')
   await expect(page.getByText('没有有效的 AI 访问令牌')).toBeHidden()
+  await expect(page.getByRole('button', { name: '新建令牌' })).toBeDisabled()
   await expect(page.getByRole('button', { name: '刷新' })).toBeEnabled()
 })
 
