@@ -189,12 +189,18 @@ def test_generate_upload_command_targets_isolated_staging_directory() -> None:
     assert "/srv/sage-archive/dataset/soil-samples-2026" not in result.command
 
 
-def test_generate_upload_command_rejects_directory_escape() -> None:
+@pytest.mark.parametrize(
+    "target_subdirectory",
+    ["../escape", "raw//2026-08", "raw/./2026-08", "raw/../2026-08", "raw/"],
+)
+def test_generate_upload_command_rejects_noncanonical_directory(
+    target_subdirectory: str,
+) -> None:
     session = make_session()
     asset = create_asset(session)
 
-    with pytest.raises(UploadCommandError, match="相对路径"):
-        prepare_upload(session, asset, target_subdirectory="../escape")
+    with pytest.raises(UploadCommandError, match="规范相对路径"):
+        prepare_upload(session, asset, target_subdirectory=target_subdirectory)
 
 
 def test_generate_upload_command_requires_a_type_specific_directory() -> None:

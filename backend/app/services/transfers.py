@@ -178,14 +178,22 @@ def _new_upload_task(
     return task
 
 
-def _validated_subdirectory(asset: Asset, value: str) -> PurePosixPath:
-    subdirectory = PurePosixPath(value.strip())
+def _canonical_relative_upload_path(value: str, *, maximum_length: int) -> PurePosixPath | None:
+    path_parts = value.split("/")
     if (
-        subdirectory.is_absolute()
-        or not subdirectory.parts
-        or any(part in {".", ".."} for part in subdirectory.parts)
+        len(value) > maximum_length
+        or "\x00" in value
+        or any(part in {"", ".", ".."} for part in path_parts)
+        or any(len(part) > 255 for part in path_parts)
     ):
-        raise UploadCommandError("目标子目录必须是归档目录内的相对路径。")
+        return None
+    return PurePosixPath(*path_parts)
+
+
+def _validated_subdirectory(asset: Asset, value: str) -> PurePosixPath:
+    subdirectory = _canonical_relative_upload_path(value, maximum_length=400)
+    if subdirectory is None:
+        raise UploadCommandError("目标子目录必须是归档目录内的规范相对路径。")
     allowed_subdirectories = upload_directory_names(asset.type)
     if subdirectory.parts[0] not in allowed_subdirectories:
         allowed_names = "、".join(sorted(allowed_subdirectories))
@@ -368,16 +376,11 @@ def staged_upload_destination(
     upload_id: UUID,
     relative_path: str,
 ) -> tuple[Path, Path]:
-    path_parts = relative_path.split("/")
-    if (
-        len(relative_path) > MAX_ARCHIVE_RELATIVE_PATH_LENGTH
-        or "\x00" in relative_path
-        or relative_path.startswith("/")
-        or any(part in {"", ".", ".."} for part in path_parts)
-        or any(len(part) > 255 for part in path_parts)
-    ):
+    upload_path = _canonical_relative_upload_path(
+        relative_path, maximum_length=MAX_ARCHIVE_RELATIVE_PATH_LENGTH
+    )
+    if upload_path is None:
         raise UploadContentError("上传文件路径必须是任务内的安全相对路径。")
-    upload_path = PurePosixPath(*path_parts)
     try:
         root = storage_root.resolve(strict=True)
     except (FileNotFoundError, NotADirectoryError) as error:

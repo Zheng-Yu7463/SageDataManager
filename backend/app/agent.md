@@ -189,8 +189,9 @@ temporary, credential, or hidden system files unless the user explicitly selecte
 changes after hashing, stop and rebuild the manifest.
 
 1. Read the target asset again and verify its ID, title, type, and current state.
-2. Choose `target_subdirectory`. Its first component must be allowed for the asset type; additional
-   safe components are allowed.
+2. Choose `target_subdirectory`. Its first component must be allowed for the asset type. Additional
+   components must form a canonical relative path with no empty, `.`, or `..` components and no
+   repeated or trailing `/`.
 3. Create a task with `POST /api/agent/uploads` and retain `upload_id`, `upload_token`, `expires_at`,
    URL fields, and `archive_relative_path` in process memory.
 4. Upload each file with `PUT` to `file_upload_url_template`. Percent-encode each UTF-8 path segment
