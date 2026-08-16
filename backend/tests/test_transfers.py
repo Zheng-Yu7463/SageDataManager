@@ -735,6 +735,50 @@ def test_upload_status_reports_waiting_ready_and_completed(tmp_path: Path) -> No
     assert completed.uploaded_file_count == 1
 
 
+def test_upload_status_rejects_source_replaced_after_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = make_session()
+    asset = create_asset(session)
+    prepared = prepare_upload(session, asset)
+    staged = staging_directory(tmp_path, prepared.upload_id) / "samples.csv"
+    staged.parent.mkdir(parents=True)
+    staged.write_text("approved")
+    mark_upload_complete(tmp_path, prepared.upload_id)
+    external = tmp_path / "outside.csv"
+    external.write_text("outside")
+    original_staged_files = transfer_service._staged_files
+    replaced = False
+
+    def replace_after_scan(
+        staging: Path, *, completion_marker_required: bool
+    ) -> list[Path]:
+        nonlocal replaced
+        files = original_staged_files(
+            staging,
+            completion_marker_required=completion_marker_required,
+        )
+        if not replaced:
+            replaced = True
+            staged_file = files[0]
+            staged_file.unlink()
+            staged_file.symlink_to(external)
+        return files
+
+    monkeypatch.setattr(transfer_service, "_staged_files", replace_after_scan)
+
+    with pytest.raises(UploadContentError, match="路径在入库期间发生变化"):
+        upload_status(
+            session,
+            tmp_path,
+            prepared.upload_id,
+            prepared.upload_token,
+            actor=asset.owner,
+        )
+
+    assert external.read_text() == "outside"
+
+
 def test_finalize_upload_rejects_duplicate_content_for_same_asset(tmp_path: Path) -> None:
     session = make_session()
     asset = create_asset(session)

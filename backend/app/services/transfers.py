@@ -766,16 +766,18 @@ def upload_status(
         files = _staged_files(staging_directory, completion_marker_required=False)
     except UploadNotReadyError:
         files = []
-    try:
-        total_size = sum(path.stat().st_size for path in files)
-    except OSError as error:
-        raise UploadContentError("上传文件正在变化，请等待传输完成。") from error
+    snapshots = _staged_file_snapshots(staging_directory, files)
+    total_size = sum(snapshot.metadata.st_size for snapshot in snapshots)
     completion_marker = staging_directory / UPLOAD_COMPLETION_MARKER
-    ready = bool(files) and completion_marker.is_file() and not completion_marker.is_symlink()
+    ready = (
+        bool(snapshots)
+        and not completion_marker.is_symlink()
+        and completion_marker.is_file()
+    )
     return UploadStatusResponse(
         upload_id=task.id,
         status="ready" if ready else "waiting",
-        uploaded_file_count=len(files),
+        uploaded_file_count=len(snapshots),
         total_size=total_size,
         expires_at=task.expires_at,
     )
