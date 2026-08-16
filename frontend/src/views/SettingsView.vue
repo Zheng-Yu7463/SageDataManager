@@ -118,6 +118,11 @@ const accountDialogHasUnsavedChanges = computed(() => (
   createOpen.value
   && (Boolean(form.value.username.trim()) || accountInvitation.value !== null)
 ))
+const tokenFormValid = computed(() => (
+  tokenForm.value.name.trim().length >= 2
+  && tokenForm.value.name.trim().length <= 100
+  && tokenForm.value.scopes.length > 0
+))
 const tokenDialogHasUnsavedChanges = computed(() => (
   tokenDialogOpen.value
   && (
@@ -399,7 +404,7 @@ function toggleScope(scope: AgentScope) {
 }
 
 async function submitToken() {
-  if (tokensLoading.value || !tokenForm.value.name.trim() || !tokenForm.value.scopes.length) return
+  if (tokensLoading.value || tokenCreating.value || !tokenFormValid.value) return
   tokensController?.abort()
   tokensController = undefined
   tokensLoading.value = false
@@ -1128,7 +1133,7 @@ onBeforeUnmount(() => {
           <p class="eyebrow">PERSONAL ACCESS TOKEN</p>
           <h2 id="create-token-title">创建 AI 访问令牌</h2>
           <p>使用用途清晰的名称，并只授予本次自动化需要的权限。</p>
-          <label>令牌名称<input v-model="tokenForm.name" required autofocus maxlength="80" autocomplete="off" placeholder="例如：Codex 文献同步" /></label>
+          <label>令牌名称<input v-model="tokenForm.name" required autofocus minlength="2" maxlength="100" autocomplete="off" placeholder="例如：Codex 文献同步" /></label>
           <label>有效期
             <select v-model="tokenForm.expiresInDays">
               <option :value="7">7 天</option><option :value="30">30 天</option><option :value="90">90 天</option><option :value="180">180 天</option><option :value="365">365 天</option>
@@ -1143,7 +1148,7 @@ onBeforeUnmount(() => {
             </button>
           </fieldset>
           <p v-if="tokenError" class="settings-error" role="alert">{{ tokenError }}</p>
-          <footer><button class="button button--outline" type="button" :disabled="tokenCreating" @click="closeTokenDialog">取消</button><button class="button button--primary" :disabled="tokenCreating || !tokenForm.name.trim() || !tokenForm.scopes.length" type="submit"><KeyRound :size="16" />{{ tokenCreating ? '正在创建' : '创建令牌' }}</button></footer>
+          <footer><button class="button button--outline" type="button" :disabled="tokenCreating" @click="closeTokenDialog">取消</button><button class="button button--primary" :disabled="tokenCreating || !tokenFormValid" type="submit"><KeyRound :size="16" />{{ tokenCreating ? '正在创建' : '创建令牌' }}</button></footer>
         </form>
       </section>
     </div>
