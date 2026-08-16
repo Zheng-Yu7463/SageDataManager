@@ -326,7 +326,7 @@ const scopeOptions: { value: AgentScope; label: string; description: string }[] 
   { value: 'files:read', label: '读取文件', description: '预览或下载已索引的归档文件' },
   { value: 'metadata:write', label: '登记元数据', description: '创建论文、文献及其他资产记录' },
   { value: 'files:upload', label: '上传文件', description: '创建隔离任务并写入文件' },
-  { value: 'archive:finalize', label: '正式入库', description: '将校验通过的文件移入正式归档' },
+  { value: 'archive:finalize', label: '正式入库', description: '将同一令牌上传的校验文件移入正式归档' },
   { value: 'citations:export', label: '导出引用', description: '读取并导出 BibTeX' },
 ]
 
@@ -359,9 +359,18 @@ function acknowledgeCreatedToken() {
 }
 
 function toggleScope(scope: AgentScope) {
-  tokenForm.value.scopes = tokenForm.value.scopes.includes(scope)
-    ? tokenForm.value.scopes.filter((item) => item !== scope)
-    : [...tokenForm.value.scopes, scope]
+  const scopes = new Set(tokenForm.value.scopes)
+  if (scopes.has(scope)) {
+    scopes.delete(scope)
+    if (scope === 'files:upload') scopes.delete('archive:finalize')
+  } else {
+    scopes.add(scope)
+    if (scope === 'archive:finalize') scopes.add('files:upload')
+  }
+  tokenForm.value.scopes = scopeOptions
+    .map((option) => option.value)
+    .filter((value) => scopes.has(value))
+  tokenError.value = ''
 }
 
 async function submitToken() {

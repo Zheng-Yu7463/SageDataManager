@@ -512,6 +512,12 @@ class AccessTokenCreateRequest(BaseModel):
     def unique_scopes(cls, value: list[AgentScope]) -> list[AgentScope]:
         return list(dict.fromkeys(value))
 
+    @model_validator(mode="after")
+    def validate_scope_dependencies(self) -> "AccessTokenCreateRequest":
+        if "archive:finalize" in self.scopes and "files:upload" not in self.scopes:
+            raise ValueError("正式入库权限需要同时授予上传文件权限。")
+        return self
+
 
 class AccessTokenSummary(BaseModel):
     id: UUID

@@ -203,6 +203,14 @@ def test_access_token_name_is_normalized_before_length_validation() -> None:
             AccessTokenCreateRequest(name=invalid_name, scopes=["assets:read"])
 
 
+def test_access_token_finalize_scope_requires_upload_scope() -> None:
+    with pytest.raises(ValidationError, match="正式入库权限需要同时授予上传文件权限"):
+        AccessTokenCreateRequest(
+            name="invalid-finalizer",
+            scopes=["archive:finalize"],
+        )
+
+
 def test_token_management_is_isolated_to_its_owner(monkeypatch) -> None:
     session = make_session()
     owner, _ = create_user_and_asset(session)

@@ -1159,8 +1159,10 @@ test('AI 访问令牌保护一次性明文并归档失效记录', async ({ page 
     last_used_at: null,
     revoked_at: null,
   }
+  let submittedTokenScopes: string[] = []
   await page.route('**/api/auth/access-tokens', async (route) => {
     if (route.request().method() === 'POST') {
+      submittedTokenScopes = (route.request().postDataJSON() as { scopes: string[] }).scopes
       await route.fulfill({ contentType: 'application/json', body: JSON.stringify(createdToken) })
       return
     }
@@ -1177,7 +1179,18 @@ test('AI 访问令牌保护一次性明文并归档失效记录', async ({ page 
   await page.getByRole('button', { name: '新建令牌' }).click()
   const createDialog = page.getByRole('dialog', { name: '创建 AI 访问令牌' })
   await createDialog.getByLabel('令牌名称').fill(createdToken.name)
+  const uploadScope = createDialog.getByRole('button', { name: /上传文件/ })
+  const finalizeScope = createDialog.getByRole('button', { name: /正式入库/ })
+  await finalizeScope.click()
+  await expect(uploadScope).toHaveAttribute('aria-pressed', 'true')
+  await uploadScope.click()
+  await expect(uploadScope).toHaveAttribute('aria-pressed', 'false')
+  await expect(finalizeScope).toHaveAttribute('aria-pressed', 'false')
+  await finalizeScope.click()
+  await expect(uploadScope).toHaveAttribute('aria-pressed', 'true')
+  await expect(finalizeScope).toHaveAttribute('aria-pressed', 'true')
   await createDialog.getByRole('button', { name: '创建令牌' }).click()
+  expect(submittedTokenScopes).toEqual(expect.arrayContaining(['files:upload', 'archive:finalize']))
 
   const createdDialog = page.getByRole('dialog', { name: '令牌已创建' })
   await expect(createdDialog).toContainText(createdToken.token)

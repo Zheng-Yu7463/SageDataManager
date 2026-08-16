@@ -68,6 +68,9 @@ unresolved. Never fabricate metadata or report success before verifying the resp
 | `archive:finalize` | Validate and move a staged task into the formal archive |
 | `citations:export` | Export one publication as BibTeX |
 
+`archive:finalize` is valid only together with `files:upload`: a task is bound to the exact PAT
+that created it, so a different or finalize-only credential cannot complete the task.
+
 Agent tokens cannot archive or restore assets, scan storage, claim unindexed files, change settings,
 manage users, or manage access tokens. There is no `assets:archive` Agent scope.
 
