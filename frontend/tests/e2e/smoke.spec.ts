@@ -1,17 +1,25 @@
 import { expect, test, type Page } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
 
-function configuredPassword() {
+function localFixedPassword() {
   if (process.env.SAGE_FIXED_ACCOUNT_PASSWORD) return process.env.SAGE_FIXED_ACCOUNT_PASSWORD
-  if (!existsSync('../.env')) {
-    throw new Error('SAGE_FIXED_ACCOUNT_PASSWORD is required for browser tests.')
-  }
-  const content = readFileSync('../.env', 'utf8')
-  const line = content
+  if (!existsSync('../.env')) return null
+  const line = readFileSync('../.env', 'utf8')
     .split(/\r?\n/)
     .find((item) => item.startsWith('SAGE_FIXED_ACCOUNT_PASSWORD='))
-  if (!line) throw new Error('SAGE_FIXED_ACCOUNT_PASSWORD is required for browser tests.')
-  return line.slice('SAGE_FIXED_ACCOUNT_PASSWORD='.length)
+  return line?.slice('SAGE_FIXED_ACCOUNT_PASSWORD='.length) || null
+}
+
+function liveCredentials() {
+  if (process.env.SAGE_E2E_SKIP_LIVE === '1') return null
+  const username = process.env.SAGE_E2E_USERNAME
+  const password = process.env.SAGE_E2E_PASSWORD
+  if (username && password) return { username, password }
+
+  const baseUrl = new URL(process.env.SAGE_E2E_BASE_URL ?? 'http://127.0.0.1:8080')
+  if (!['127.0.0.1', 'localhost'].includes(baseUrl.hostname)) return null
+  const localPassword = localFixedPassword()
+  return localPassword ? { username: username ?? 'zhengyu', password: localPassword } : null
 }
 
 function systemUpdateStatus(overrides: Record<string, unknown> = {}) {
@@ -49,9 +57,14 @@ function systemUpdateStatus(overrides: Record<string, unknown> = {}) {
 }
 
 async function signIn(page: Page) {
+  const credentials = liveCredentials()
+  test.skip(
+    !credentials,
+    'Set SAGE_E2E_USERNAME and SAGE_E2E_PASSWORD to run live tests against a remote instance.',
+  )
   await page.goto('/')
-  await page.getByLabel('账号').fill('zhengyu')
-  await page.getByLabel('密码').fill(configuredPassword())
+  await page.getByLabel('账号').fill(credentials!.username)
+  await page.getByLabel('密码').fill(credentials!.password)
   await page.getByRole('button', { name: '进入归档系统' }).click()
   await expect(page.getByRole('heading', { name: '实验室科研资产总览' })).toBeVisible()
 }
@@ -640,7 +653,15 @@ test('登录页密码框提供清晰焦点与错误播报', async ({ page }) => 
   await page.getByLabel('账号').focus()
   await page.keyboard.press('Tab')
   await expect(page.getByLabel('密码')).toBeFocused()
-  await expect(page.locator('.password-field')).toHaveCSS('border-color', 'rgb(46, 115, 81)')
+  const primaryColor = await page.evaluate(() => {
+    const probe = document.createElement('span')
+    probe.style.color = 'var(--sage)'
+    document.body.append(probe)
+    const color = getComputedStyle(probe).color
+    probe.remove()
+    return color
+  })
+  await expect(page.locator('.password-field')).toHaveCSS('border-color', primaryColor)
   await expect(page.locator('.password-field')).not.toHaveCSS('box-shadow', 'none')
 
   await page.getByLabel('账号').fill('zhengyu')

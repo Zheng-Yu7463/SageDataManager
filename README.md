@@ -143,6 +143,17 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
+浏览器回归默认访问 `http://127.0.0.1:8080`。本地运行时会读取仓库 `.env` 中的固定账号密码；测试远程实例时必须显式提供专用凭据，未提供时只跳过需要真实登录的 live 场景，其他 mock 场景仍会执行：
+
+```bash
+SAGE_E2E_BASE_URL=http://server:8080 \
+SAGE_E2E_USERNAME=test-admin \
+SAGE_E2E_PASSWORD='test-password' \
+pnpm test:e2e
+```
+
+只验证不依赖实例数据和管理员账号的 mock 场景时，设置 `SAGE_E2E_SKIP_LIVE=1`。
+
 ### 通过 SCP 上传文件
 
 首次使用时，在 `.env` 中确认以下参数指向归档服务器的局域网地址与宿主机目录（示例值适用于当前开发机）：
