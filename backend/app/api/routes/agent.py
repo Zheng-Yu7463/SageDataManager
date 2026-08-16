@@ -480,6 +480,7 @@ def agent_get_upload_status(
     responses={
         403: {"description": "Upload token or access token mismatch"},
         409: {"description": "Task completed or staging area unavailable"},
+        507: {"description": "Storage cannot safely process the task"},
     },
 )
 def agent_cancel_upload(
@@ -513,6 +514,13 @@ def agent_cancel_upload(
     except UploadBusyError as error:
         session.rollback()
         raise _agent_error(409, "upload_busy", str(error), retry_after=1) from None
+    except UploadStorageError:
+        session.rollback()
+        raise _agent_error(
+            507,
+            "upload_storage_unavailable",
+            "存储服务无法安全处理上传任务，请联系管理员检查磁盘空间和权限。",
+        ) from None
     except UploadContentError as error:
         session.rollback()
         raise _agent_error(409, "upload_cancel_failed", str(error)) from None
@@ -687,6 +695,7 @@ async def agent_upload_file(
     responses={
         403: {"description": "Upload token or access token mismatch"},
         409: {"description": "Task not ready, duplicate content, or path conflict"},
+        507: {"description": "Storage cannot safely finalize the task"},
     },
 )
 def agent_finalize_upload(
@@ -717,6 +726,13 @@ def agent_finalize_upload(
     except UploadBusyError as error:
         session.rollback()
         raise _agent_error(409, "upload_busy", str(error), retry_after=1) from None
+    except UploadStorageError:
+        session.rollback()
+        raise _agent_error(
+            507,
+            "upload_storage_unavailable",
+            "存储服务无法安全完成入库，请联系管理员检查磁盘空间和权限。",
+        ) from None
     except UploadManifestError as error:
         session.rollback()
         raise _agent_error(409, "upload_manifest_mismatch", str(error)) from None

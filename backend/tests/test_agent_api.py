@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 import app.services.transfers as transfer_service
+from app.api.routes import agent as agent_routes
 from app.core.config import settings
 from app.db.base import Base
 from app.db.session import get_session
@@ -104,6 +105,7 @@ def test_agent_discovery_is_public_and_contains_no_secret() -> None:
     assert "Search and duplicate prevention" in instructions.text
     assert "End-to-end examples" in instructions.text
     assert "machine-readable contract" in instructions.text
+    assert "PUT, finalize, or cancel return `507 upload_storage_unavailable`" in instructions.text
     assert "agent_scope_missing" in instructions.text
     assert "Never blindly overwrite concurrent work" in instructions.text
     assert "SAGE_TOKEN=" not in instructions.text
@@ -1326,6 +1328,53 @@ def test_legacy_agent_upload_still_enforces_instance_task_limits(
         assert not (
             tmp_path / ".uploads" / second_upload_id / "oversized.bin"
         ).exists()
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
+def test_agent_finalize_and_cancel_report_task_storage_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = make_session()
+    user, asset = create_user_and_asset(session)
+    monkeypatch.setattr(settings, "auth_session_secret", "agent-test-secret")
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    plaintext = create_token(
+        session,
+        user,
+        ["files:upload", "archive:finalize"],
+        name="storage-failure-token",
+    )
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        client = TestClient(app)
+        task = client.post(
+            "/api/agent/uploads",
+            headers=bearer(plaintext),
+            json={"asset_id": str(asset.id), "target_subdirectory": "original"},
+        ).json()
+        task_headers = {
+            **bearer(plaintext),
+            "X-Sage-Upload-Token": task["upload_token"],
+        }
+
+        def reject_storage(*_args: object, **_kwargs: object):
+            raise transfer_service.UploadStorageError("internal storage detail")
+
+        monkeypatch.setattr(agent_routes, "finalize_upload", reject_storage)
+        finalized = client.post(
+            task["finalize_url"],
+            headers=bearer(plaintext),
+            json={"upload_token": task["upload_token"]},
+        )
+        monkeypatch.setattr(agent_routes, "cancel_agent_upload", reject_storage)
+        cancelled = client.delete(task["cancel_url"], headers=task_headers)
+
+        for response in (finalized, cancelled):
+            assert response.status_code == 507
+            assert response.headers["x-sage-error-code"] == "upload_storage_unavailable"
+            assert "internal storage detail" not in response.json()["detail"]
     finally:
         app.dependency_overrides.clear()
         session.close()

@@ -278,7 +278,9 @@ before route logic.
 | `range_invalid` | Rebuild the Range header from the byte length returned by HEAD before retrying. |
 | `range_not_satisfiable` | Re-run HEAD and reconcile the remote length with the local partial file before resuming. |
 
-Upload operations add the upload-specific codes below. `upload_busy` also includes
+Upload operations add the upload-specific codes below. Locking or durable storage failures during
+PUT, finalize, or cancel return `507 upload_storage_unavailable`; do not reinterpret them as
+content conflicts. `upload_busy` also includes
 `Retry-After`; wait at least that many seconds, inspect task status, and retry only when the
 operation table below permits it.
 
