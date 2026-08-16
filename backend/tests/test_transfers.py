@@ -88,6 +88,46 @@ def test_staged_file_cleanup_continues_after_a_close_failure(
     assert close_calls == descriptors
 
 
+def test_staged_file_snapshots_close_each_file_before_opening_the_next(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    staging = tmp_path / ".uploads" / str(uuid4())
+    staging.mkdir(parents=True)
+    staged_files = []
+    for index in range(8):
+        staged_file = staging / f"{index}.txt"
+        staged_file.write_text(str(index))
+        staged_files.append(staged_file)
+
+    original_open = transfer_service._open_staged_file
+    original_close = transfer_service._close_staged_files
+    active_files = 0
+    peak_active_files = 0
+
+    def track_open(staging_directory: Path, path: Path):
+        nonlocal active_files, peak_active_files
+        source = original_open(staging_directory, path)
+        active_files += 1
+        peak_active_files = max(peak_active_files, active_files)
+        return source
+
+    def track_close(files) -> None:
+        nonlocal active_files
+        active_files -= len(files)
+        original_close(files)
+
+    monkeypatch.setattr(transfer_service, "_open_staged_file", track_open)
+    monkeypatch.setattr(transfer_service, "_close_staged_files", track_close)
+
+    snapshots = transfer_service._staged_file_snapshots(staging, staged_files)
+
+    assert [snapshot.relative_path.as_posix() for snapshot in snapshots] == [
+        f"{index}.txt" for index in range(8)
+    ]
+    assert peak_active_files == 1
+    assert active_files == 0
+
+
 def test_agent_upload_parts_are_private_and_cleaned(tmp_path: Path) -> None:
     parts_directory = tmp_path / ".uploads" / ".parts"
 
@@ -876,6 +916,43 @@ def test_finalize_upload_rejects_source_replaced_with_symlink_after_preflight(
             actor=asset.owner,
         )
 
+    assert not (tmp_path / "dataset").exists()
+    assert session.scalar(select(func.count()).select_from(FileRecord)) == 0
+
+
+def test_finalize_upload_rejects_source_replaced_after_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = make_session()
+    asset = create_asset(session)
+    prepared = prepare_upload(session, asset)
+    staged = staging_directory(tmp_path, prepared.upload_id) / "samples.csv"
+    staged.parent.mkdir(parents=True)
+    staged.write_text("approved")
+    mark_upload_complete(tmp_path, prepared.upload_id)
+    original_snapshots = transfer_service._staged_file_snapshots
+
+    def replace_after_snapshot(staging: Path, files: list[Path]):
+        snapshots = original_snapshots(staging, files)
+        replacement = staged.with_suffix(".replacement")
+        replacement.write_text("replaced")
+        replacement.replace(staged)
+        return snapshots
+
+    monkeypatch.setattr(
+        transfer_service, "_staged_file_snapshots", replace_after_snapshot
+    )
+
+    with pytest.raises(UploadContentError, match="入库期间发生变化"):
+        finalize_upload(
+            session,
+            tmp_path,
+            prepared.upload_id,
+            prepared.upload_token,
+            actor=asset.owner,
+        )
+
+    assert staged.read_text() == "replaced"
     assert not (tmp_path / "dataset").exists()
     assert session.scalar(select(func.count()).select_from(FileRecord)) == 0
 

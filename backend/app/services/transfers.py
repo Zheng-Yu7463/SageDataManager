@@ -504,13 +504,8 @@ def agent_upload_remaining_capacity(
             )
         except UploadNotReadyError:
             staged_files = []
-        opened_files = _open_staged_files(staging_directory, staged_files)
-        try:
-            current_total_size = sum(
-                source.metadata.st_size for source in opened_files
-            )
-        finally:
-            _close_staged_files(opened_files)
+        snapshots = _staged_file_snapshots(staging_directory, staged_files)
+        current_total_size = sum(snapshot.metadata.st_size for snapshot in snapshots)
     else:
         staged_files = []
         current_total_size = 0
@@ -546,8 +541,7 @@ def recover_agent_file_upload(
         raise UploadConflictError([upload_path.as_posix()])
 
     staging_directory = parts_directory.parent / str(upload_id)
-    opened = _open_staged_files(staging_directory, [destination])
-    source = opened[0]
+    source = _open_staged_file(staging_directory, destination)
     try:
         if declared_size is not None and source.metadata.st_size != declared_size:
             raise UploadConflictError([upload_path.as_posix()])
@@ -556,7 +550,7 @@ def recover_agent_file_upload(
             digest.update(chunk)
         checksum_sha256 = digest.hexdigest()
     finally:
-        _close_staged_files(opened)
+        _close_staged_files([source])
 
     if checksum_sha256 != expected_checksum:
         raise UploadConflictError([upload_path.as_posix()])
@@ -855,39 +849,32 @@ def agent_upload_status(
     except UploadNotReadyError:
         files = []
     uploaded_files: list[AgentUploadFileStatus] = []
-    opened_files: list[OpenStagedFile] = []
     try:
-        if include_checksums:
-            opened_files = _open_staged_files(staging_directory, files)
-            for source in opened_files:
-                digest = hashlib.sha256()
-                while chunk := os.read(source.descriptor, 1024 * 1024):
-                    digest.update(chunk)
-                current_metadata = os.fstat(source.descriptor)
-                if (
-                    current_metadata.st_size != source.metadata.st_size
-                    or current_metadata.st_mtime_ns != source.metadata.st_mtime_ns
-                ):
-                    raise UploadContentError("上传文件在校验期间发生变化，请稍后重试。")
+        for path in files:
+            source = _open_staged_file(staging_directory, path)
+            try:
+                checksum_sha256: str | None = None
+                if include_checksums:
+                    digest = hashlib.sha256()
+                    while chunk := os.read(source.descriptor, 1024 * 1024):
+                        digest.update(chunk)
+                    current_metadata = os.fstat(source.descriptor)
+                    if not _staged_metadata_matches(source.metadata, current_metadata):
+                        raise UploadContentError(
+                            "上传文件在校验期间发生变化，请稍后重试。"
+                        )
+                    checksum_sha256 = digest.hexdigest()
                 uploaded_files.append(
                     AgentUploadFileStatus(
                         relative_path=source.relative_path.as_posix(),
                         file_size=source.metadata.st_size,
-                        checksum_sha256=digest.hexdigest(),
+                        checksum_sha256=checksum_sha256,
                     )
                 )
-        else:
-            for path in files:
-                uploaded_files.append(
-                    AgentUploadFileStatus(
-                        relative_path=path.relative_to(staging_directory).as_posix(),
-                        file_size=path.stat().st_size,
-                    )
-                )
+            finally:
+                _close_staged_files([source])
     except OSError as error:
         raise UploadContentError("上传文件正在变化，请稍后重试。") from error
-    finally:
-        _close_staged_files(opened_files)
     uploaded_total_size = sum(file.file_size for file in uploaded_files)
     manifest_complete = (
         task.expected_file_count is None
@@ -980,62 +967,97 @@ def _cancel_agent_upload(
     return AgentUploadCancelResponse(upload_id=task.id, status="cancelled")
 
 
-def _open_staged_files(staging_directory: Path, staged_files: list[Path]) -> list[OpenStagedFile]:
-    opened: list[OpenStagedFile] = []
+@dataclass(frozen=True)
+class StagedFileSnapshot:
+    relative_path: PurePosixPath
+    metadata: os.stat_result
+
+
+def _open_staged_file(staging_directory: Path, path: Path) -> OpenStagedFile:
+    relative_path = PurePosixPath(path.relative_to(staging_directory).as_posix())
+    parent_descriptor = os.open(
+        staging_directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    )
+    descriptor: int | None = None
     try:
-        for path in staged_files:
-            relative_path = PurePosixPath(path.relative_to(staging_directory).as_posix())
-            parent_descriptor = os.open(
-                staging_directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        for directory_name in relative_path.parts[:-1]:
+            next_descriptor = os.open(
+                directory_name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=parent_descriptor,
             )
-            descriptor: int | None = None
-            try:
-                for directory_name in relative_path.parts[:-1]:
-                    next_descriptor = os.open(
-                        directory_name,
-                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                        dir_fd=parent_descriptor,
-                    )
-                    previous_descriptor = parent_descriptor
-                    parent_descriptor = next_descriptor
-                    with suppress(OSError):
-                        os.close(previous_descriptor)
-                descriptor = os.open(
-                    relative_path.name,
-                    os.O_RDONLY | os.O_NOFOLLOW,
-                    dir_fd=parent_descriptor,
-                )
-                metadata = os.fstat(descriptor)
-                if not stat.S_ISREG(metadata.st_mode):
-                    raise UploadContentError("上传内容含有不支持的文件类型，无法入库。")
-                opened.append(
-                    OpenStagedFile(
-                        relative_path=relative_path,
-                        descriptor=descriptor,
-                        parent_descriptor=parent_descriptor,
-                        name=relative_path.name,
-                        metadata=metadata,
-                    )
-                )
-                descriptor = None
-                parent_descriptor = -1
-            except UploadContentError:
-                raise
-            except OSError as error:
-                raise UploadContentError(
-                    "上传文件路径在入库期间发生变化，请重新上传后重试。"
-                ) from error
-            finally:
-                if descriptor is not None:
-                    with suppress(OSError):
-                        os.close(descriptor)
-                if parent_descriptor >= 0:
-                    with suppress(OSError):
-                        os.close(parent_descriptor)
-    except Exception:
-        _close_staged_files(opened)
+            previous_descriptor = parent_descriptor
+            parent_descriptor = next_descriptor
+            with suppress(OSError):
+                os.close(previous_descriptor)
+        descriptor = os.open(
+            relative_path.name,
+            os.O_RDONLY | os.O_NOFOLLOW,
+            dir_fd=parent_descriptor,
+        )
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise UploadContentError("上传内容含有不支持的文件类型，无法入库。")
+        source = OpenStagedFile(
+            relative_path=relative_path,
+            descriptor=descriptor,
+            parent_descriptor=parent_descriptor,
+            name=relative_path.name,
+            metadata=metadata,
+        )
+        descriptor = None
+        parent_descriptor = -1
+        return source
+    except UploadContentError:
         raise
-    return opened
+    except OSError as error:
+        raise UploadContentError(
+            "上传文件路径在入库期间发生变化，请重新上传后重试。"
+        ) from error
+    finally:
+        if descriptor is not None:
+            with suppress(OSError):
+                os.close(descriptor)
+        if parent_descriptor >= 0:
+            with suppress(OSError):
+                os.close(parent_descriptor)
+
+
+def _staged_file_snapshots(
+    staging_directory: Path, staged_files: list[Path]
+) -> list[StagedFileSnapshot]:
+    snapshots: list[StagedFileSnapshot] = []
+    for path in staged_files:
+        source = _open_staged_file(staging_directory, path)
+        try:
+            snapshots.append(
+                StagedFileSnapshot(
+                    relative_path=source.relative_path,
+                    metadata=source.metadata,
+                )
+            )
+        finally:
+            _close_staged_files([source])
+    return snapshots
+
+
+def _staged_snapshot_matches(
+    source: OpenStagedFile, snapshot: StagedFileSnapshot
+) -> bool:
+    return (
+        source.relative_path == snapshot.relative_path
+        and _staged_metadata_matches(snapshot.metadata, source.metadata)
+    )
+
+
+def _staged_metadata_matches(
+    expected: os.stat_result, current: os.stat_result
+) -> bool:
+    return (
+        (current.st_dev, current.st_ino) == (expected.st_dev, expected.st_ino)
+        and (current.st_size, current.st_mtime_ns, current.st_ctime_ns)
+        == (expected.st_size, expected.st_mtime_ns, expected.st_ctime_ns)
+    )
 
 
 def _close_staged_files(files: list[OpenStagedFile]) -> None:
@@ -1318,101 +1340,112 @@ def _finalize_upload(
         staging_directory,
         completion_marker_required=task.transfer_mode == "scp",
     )
-    opened_files = _open_staged_files(staging_directory, staged_files)
+    staged_snapshots = _staged_file_snapshots(staging_directory, staged_files)
     if (
         task.transfer_mode == "agent"
         and task.expected_file_count is not None
         and task.expected_total_size is not None
     ):
-        staged_total_size = sum(source.metadata.st_size for source in opened_files)
+        staged_total_size = sum(
+            snapshot.metadata.st_size for snapshot in staged_snapshots
+        )
         if (
-            len(opened_files) != task.expected_file_count
+            len(staged_snapshots) != task.expected_file_count
             or staged_total_size != task.expected_total_size
         ):
-            _close_staged_files(opened_files)
             raise UploadManifestError(
                 "已接收文件与任务声明不一致："
                 f"需要 {task.expected_file_count} 个文件、{task.expected_total_size} 字节，"
-                f"当前为 {len(opened_files)} 个文件、{staged_total_size} 字节。"
+                f"当前为 {len(staged_snapshots)} 个文件、{staged_total_size} 字节。"
             )
     archive_directory = root.joinpath(asset.type.value, asset.slug, *subdirectory.parts)
     destinations = [
-        archive_directory.joinpath(*source.relative_path.parts) for source in opened_files
+        archive_directory.joinpath(*snapshot.relative_path.parts)
+        for snapshot in staged_snapshots
     ]
     relative_paths = [destination.relative_to(root).as_posix() for destination in destinations]
 
-    try:
-        if any(len(path) > MAX_ARCHIVE_RELATIVE_PATH_LENGTH for path in relative_paths):
-            raise UploadContentError("归档路径超过数据库允许的 1000 个字符，请缩短目录或文件名。")
-        database_conflicts = set(
-            session.scalars(
-                select(FileRecord.relative_path).where(FileRecord.relative_path.in_(relative_paths))
-            ).all()
+    if any(len(path) > MAX_ARCHIVE_RELATIVE_PATH_LENGTH for path in relative_paths):
+        raise UploadContentError("归档路径超过数据库允许的 1000 个字符，请缩短目录或文件名。")
+    database_conflicts = set(
+        session.scalars(
+            select(FileRecord.relative_path).where(FileRecord.relative_path.in_(relative_paths))
+        ).all()
+    )
+    conflicts = sorted(
+        relative_path
+        for destination, relative_path in zip(destinations, relative_paths, strict=True)
+        if (
+            destination.exists()
+            or destination.is_symlink()
+            or _unsafe_destination_parent(destination, root)
+            or relative_path in database_conflicts
         )
-        conflicts = sorted(
-            relative_path
-            for destination, relative_path in zip(destinations, relative_paths, strict=True)
-            if (
-                destination.exists()
-                or destination.is_symlink()
-                or _unsafe_destination_parent(destination, root)
-                or relative_path in database_conflicts
-            )
-        )
-        if conflicts:
-            raise UploadConflictError(conflicts)
-    except Exception:
-        _close_staged_files(opened_files)
-        raise
+    )
+    if conflicts:
+        raise UploadConflictError(conflicts)
 
     published_files: list[PublishedFile] = []
     created_archive_directories: set[Path] = set()
     total_size = 0
     try:
-        for source, destination in zip(opened_files, destinations, strict=True):
+        for snapshot, destination in zip(staged_snapshots, destinations, strict=True):
             relative_path = destination.relative_to(root).as_posix()
-            parent_descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            source = _open_staged_file(
+                staging_directory,
+                staging_directory.joinpath(*snapshot.relative_path.parts),
+            )
             try:
-                parent_path = root
-                for directory_name in destination.relative_to(root).parts[:-1]:
-                    parent_path /= directory_name
-                    try:
-                        os.mkdir(directory_name, dir_fd=parent_descriptor)
-                        created_archive_directories.add(parent_path)
-                        os.fsync(parent_descriptor)
-                    except FileExistsError:
-                        pass
-                    next_descriptor = os.open(
-                        directory_name,
-                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                        dir_fd=parent_descriptor,
+                if not _staged_snapshot_matches(source, snapshot):
+                    raise UploadContentError(
+                        "上传文件在入库期间发生变化，请重新上传后重试。"
                     )
-                    previous_descriptor = parent_descriptor
-                    parent_descriptor = next_descriptor
-                    with suppress(OSError):
-                        os.close(previous_descriptor)
-                rollback_descriptor = os.dup(parent_descriptor)
-                try:
-                    checksum_sha256 = _copy_without_overwrite(
-                        source,
-                        parent_descriptor,
-                        destination,
-                        relative_path,
-                    )
-                except Exception:
-                    with suppress(OSError):
-                        os.close(rollback_descriptor)
-                    raise
-                published_files.append(
-                    PublishedFile(
-                        path=destination,
-                        parent_descriptor=rollback_descriptor,
-                        checksum_sha256=checksum_sha256,
-                    )
+                parent_descriptor = os.open(
+                    root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
                 )
+                try:
+                    parent_path = root
+                    for directory_name in destination.relative_to(root).parts[:-1]:
+                        parent_path /= directory_name
+                        try:
+                            os.mkdir(directory_name, dir_fd=parent_descriptor)
+                            created_archive_directories.add(parent_path)
+                            os.fsync(parent_descriptor)
+                        except FileExistsError:
+                            pass
+                        next_descriptor = os.open(
+                            directory_name,
+                            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                            dir_fd=parent_descriptor,
+                        )
+                        previous_descriptor = parent_descriptor
+                        parent_descriptor = next_descriptor
+                        with suppress(OSError):
+                            os.close(previous_descriptor)
+                    rollback_descriptor = os.dup(parent_descriptor)
+                    try:
+                        checksum_sha256 = _copy_without_overwrite(
+                            source,
+                            parent_descriptor,
+                            destination,
+                            relative_path,
+                        )
+                    except Exception:
+                        with suppress(OSError):
+                            os.close(rollback_descriptor)
+                        raise
+                    published_files.append(
+                        PublishedFile(
+                            path=destination,
+                            parent_descriptor=rollback_descriptor,
+                            checksum_sha256=checksum_sha256,
+                        )
+                    )
+                finally:
+                    with suppress(OSError):
+                        os.close(parent_descriptor)
             finally:
-                with suppress(OSError):
-                    os.close(parent_descriptor)
+                _close_staged_files([source])
 
         checksum_paths: dict[str, str] = {}
         duplicate_paths: list[str] = []
@@ -1498,7 +1531,6 @@ def _finalize_upload(
             session.rollback()
         raise
     finally:
-        _close_staged_files(opened_files)
         for published in published_files:
             with suppress(OSError):
                 os.close(published.parent_descriptor)
