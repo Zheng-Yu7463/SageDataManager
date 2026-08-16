@@ -316,7 +316,7 @@ async function load() {
 
 async function refreshSettings() {
   if (brandingHasUnsavedChanges.value && !window.confirm('刷新会丢弃尚未保存的品牌更改，是否继续？')) return
-  if (loading.value || settingsMutationInProgress.value) return
+  if (settingsMutationInProgress.value) return
   brandingMessage.value = ''
   await load()
 }
@@ -795,7 +795,7 @@ onBeforeUnmount(() => {
         <h1>系统设置</h1>
         <p>配置当前 DataManager 实例的品牌、访问权限与系统版本。</p>
       </div>
-      <div class="settings-actions"><button class="button button--outline" :disabled="loading || settingsMutationInProgress" @click="refreshSettings"><RefreshCw :size="16" />刷新</button><button class="button button--primary" :disabled="accountsLoading || creating" @click="openCreate"><Plus :size="16" />新增管理员</button></div>
+      <div class="settings-actions"><button class="button button--outline" :disabled="settingsMutationInProgress" @click="refreshSettings"><RefreshCw :size="16" />刷新</button><button class="button button--primary" :disabled="accountsLoading || creating" @click="openCreate"><Plus :size="16" />新增管理员</button></div>
     </header>
 
     <nav class="settings-section-nav" aria-label="设置分区">

@@ -713,6 +713,47 @@ test('设置分区导航支持快速定位并适配窄屏', async ({ page }) => 
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBe(390)
 })
 
+test('设置读取挂起时可中止并重新加载', async ({ page }) => {
+  let brandingRequests = 0
+  let releaseHangingRequest!: () => void
+  const hangingRequest = new Promise<void>((resolve) => { releaseHangingRequest = resolve })
+  const brandingPayload = {
+    product_name: 'SAGE',
+    product_subtitle: 'RESEARCH ARCHIVE',
+    organization_name: 'SAGE Lab',
+    slogan: '科学 · 数据 · 成长 · 卓越',
+    slogan_secondary: 'Science · Archive · Growth · Excellence',
+    primary_color: '#2E7351',
+    logo_url: null,
+    revision: 'revision-1',
+  }
+  await page.route('**/api/settings/branding', async (route) => {
+    brandingRequests += 1
+    if (brandingRequests === 2) {
+      await hangingRequest
+      try {
+        await route.fulfill({ contentType: 'application/json', body: JSON.stringify(brandingPayload) })
+      } catch {
+        // The refresh intentionally aborted this request.
+      }
+      return
+    }
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(brandingPayload) })
+  })
+  await mockEmptyDashboard(page)
+  await mockEmptySettingsCollections(page)
+  await signInWithMockAccount(page)
+  await navigateTo(page, '系统设置')
+
+  await expect.poll(() => brandingRequests).toBe(2)
+  const refresh = page.getByRole('button', { name: '刷新' })
+  await expect(refresh).toBeEnabled()
+  await refresh.click()
+  await expect.poll(() => brandingRequests).toBe(3)
+  await expect(page.getByLabel('产品名称')).toHaveValue('SAGE')
+  releaseHangingRequest()
+})
+
 test('品牌设置保存后立即更新全站标识', async ({ page }) => {
   await page.route('**/api/settings/branding', async (route) => {
     if (route.request().method() !== 'PATCH') {
