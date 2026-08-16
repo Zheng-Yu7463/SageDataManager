@@ -25,6 +25,7 @@ from app.services.storage import (
     MAX_ARCHIVE_RELATIVE_PATH_LENGTH,
     file_kind,
     is_internal_storage_path,
+    iter_storage_file_entries,
 )
 
 
@@ -50,6 +51,7 @@ class FilePathConflictError(Exception):
 
 FILE_PATH_UNIQUE_CONSTRAINT = "uq_asset_files_relative_path"
 
+
 @dataclass(frozen=True)
 class UnclaimedFileSnapshot:
     relative_path: str
@@ -74,7 +76,6 @@ def locked_claim_asset_statement(asset_id: UUID):
 
 def locked_unclaimed_files_statement():
     return select(UnclaimedFile).with_for_update()
-
 
 
 @dataclass
@@ -220,31 +221,23 @@ def sync_unclaimed_files(session: Session, storage_root: Path) -> None:
         (asset_type.value, slug)
         for asset_type, slug in session.execute(select(Asset.type, Asset.slug))
     }
-    root = storage_root.resolve()
     snapshots: list[UnclaimedFileSnapshot] = []
-    for candidate in root.rglob("*"):
-        try:
-            if is_internal_storage_path(candidate.relative_to(root)):
-                continue
-            if candidate.is_symlink() or not candidate.is_file():
-                continue
-            resolved = candidate.resolve(strict=True)
-            relative = resolved.relative_to(root)
-            metadata = resolved.stat()
-        except (OSError, ValueError):
-            continue
+    for entry in iter_storage_file_entries(storage_root):
+        relative = entry.relative_path
+        metadata = entry.metadata
         parts = relative.parts
         if len(parts) >= 3 and (parts[0], parts[1]) in assets:
             continue
         relative_path = relative.as_posix()
         if len(relative_path) > MAX_ARCHIVE_RELATIVE_PATH_LENGTH:
             continue
+        file_name = relative.name
         snapshots.append(
             UnclaimedFileSnapshot(
                 relative_path=relative_path,
-                file_name=resolved.name,
-                file_kind=file_kind(resolved),
-                mime_type=guess_type(resolved.name)[0],
+                file_name=file_name,
+                file_kind=file_kind(Path(file_name)),
+                mime_type=guess_type(file_name)[0],
                 file_size=metadata.st_size,
                 modified_at=datetime.fromtimestamp(metadata.st_mtime, UTC),
             )

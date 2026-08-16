@@ -14,8 +14,9 @@ from app.domain.schemas import ArchiveHealthSummary, ScanRunSummary
 from app.services.storage import (
     MAX_ARCHIVE_RELATIVE_PATH_LENGTH,
     StorageIndexBusyError,
+    StorageRootUnavailableError,
     file_kind,
-    is_internal_storage_path,
+    iter_storage_file_entries,
     storage_index_guard,
 )
 from app.services.unclaimed import (
@@ -74,7 +75,7 @@ def _scan_storage(session: Session, storage_root: Path) -> ScanRunSummary:
 
     try:
         root = storage_root.resolve(strict=True)
-    except FileNotFoundError as error:
+    except OSError as error:
         run.status = "failed"
         run.message = "存储根不可用，未执行扫描。"
         run.completed_at = now
@@ -106,79 +107,77 @@ def _scan_storage(session: Session, storage_root: Path) -> ScanRunSummary:
     seen_paths: set[str] = set()
     unclaimed_snapshots: list[UnclaimedFileSnapshot] = []
 
-    for candidate in root.rglob("*"):
-        try:
-            if is_internal_storage_path(candidate.relative_to(root)):
-                continue
-            if candidate.is_symlink():
+    def count_skipped_file() -> None:
+        run.files_skipped += 1
+
+    try:
+        entries = iter_storage_file_entries(root, on_skip=count_skipped_file)
+        for entry in entries:
+            metadata = entry.metadata
+            relative = entry.relative_path
+            run.files_discovered += 1
+            relative_path = relative.as_posix()
+            if len(relative_path) > MAX_ARCHIVE_RELATIVE_PATH_LENGTH:
                 run.files_skipped += 1
                 continue
-            if not candidate.is_file():
+            file_name = relative.name
+            candidate_kind = file_kind(Path(file_name))
+            mime_type = guess_type(file_name)[0]
+            modified_at = datetime.fromtimestamp(metadata.st_mtime, UTC)
+            parts = relative.parts
+            registered_asset_id = None
+            if len(parts) >= 3:
+                try:
+                    asset_type = AssetType(parts[0])
+                    registered_asset_id = assets.get((asset_type.value, parts[1]))
+                except ValueError:
+                    pass
+            if registered_asset_id is None:
+                unclaimed_snapshots.append(
+                    UnclaimedFileSnapshot(
+                        relative_path=relative_path,
+                        file_name=file_name,
+                        file_kind=candidate_kind,
+                        mime_type=mime_type,
+                        file_size=metadata.st_size,
+                        modified_at=modified_at,
+                    )
+                )
+            asset_id = registered_asset_id
+            if asset_id is None:
+                claimed_asset_id = claimed_assets.get(relative_path)
+                if claimed_asset_id in asset_ids:
+                    asset_id = claimed_asset_id
+            if asset_id is None:
+                run.files_unclaimed += 1
                 continue
-            resolved = candidate.resolve(strict=True)
-            relative = resolved.relative_to(root)
-            metadata = resolved.stat()
-        except (OSError, ValueError):
-            run.files_skipped += 1
-            continue
 
-        run.files_discovered += 1
-        relative_path = relative.as_posix()
-        if len(relative_path) > MAX_ARCHIVE_RELATIVE_PATH_LENGTH:
-            run.files_skipped += 1
-            continue
-        file_name = resolved.name
-        candidate_kind = file_kind(resolved)
-        mime_type = guess_type(file_name)[0]
-        modified_at = datetime.fromtimestamp(metadata.st_mtime, UTC)
-        parts = relative.parts
-        registered_asset_id = None
-        if len(parts) >= 3:
-            try:
-                asset_type = AssetType(parts[0])
-                registered_asset_id = assets.get((asset_type.value, parts[1]))
-            except ValueError:
-                pass
-        if registered_asset_id is None:
-            unclaimed_snapshots.append(
-                UnclaimedFileSnapshot(
-                    relative_path=relative_path,
-                    file_name=file_name,
-                    file_kind=candidate_kind,
-                    mime_type=mime_type,
+            record = existing.get(relative_path)
+            if not record:
+                record = FileRecord(asset_id=asset_id, relative_path=relative_path)
+                session.add(record)
+            else:
+                if not _indexed_snapshot_matches(
+                    record,
                     file_size=metadata.st_size,
                     modified_at=modified_at,
-                )
-            )
-        asset_id = registered_asset_id
-        if asset_id is None:
-            claimed_asset_id = claimed_assets.get(relative_path)
-            if claimed_asset_id in asset_ids:
-                asset_id = claimed_asset_id
-        if asset_id is None:
-            run.files_unclaimed += 1
-            continue
-
-        record = existing.get(relative_path)
-        if not record:
-            record = FileRecord(asset_id=asset_id, relative_path=relative_path)
-            session.add(record)
-        else:
-            if not _indexed_snapshot_matches(
-                record,
-                file_size=metadata.st_size,
-                modified_at=modified_at,
-            ):
-                record.checksum = None
-            record.asset_id = asset_id
-        record.file_name = file_name
-        record.file_kind = candidate_kind
-        record.mime_type = mime_type
-        record.file_size = metadata.st_size
-        record.health_status = HealthStatus.HEALTHY
-        record.modified_at = modified_at
-        run.files_indexed += 1
-        seen_paths.add(relative_path)
+                ):
+                    record.checksum = None
+                record.asset_id = asset_id
+            record.file_name = file_name
+            record.file_kind = candidate_kind
+            record.mime_type = mime_type
+            record.file_size = metadata.st_size
+            record.health_status = HealthStatus.HEALTHY
+            record.modified_at = modified_at
+            run.files_indexed += 1
+            seen_paths.add(relative_path)
+    except StorageRootUnavailableError as error:
+        run.status = "failed"
+        run.message = "存储根不可用，未执行扫描。"
+        run.completed_at = datetime.now(UTC)
+        session.flush()
+        raise StorageScanError from error
 
     for relative_path, record in existing.items():
         if relative_path not in seen_paths:

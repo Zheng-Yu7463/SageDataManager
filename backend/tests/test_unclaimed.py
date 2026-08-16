@@ -19,6 +19,7 @@ from app.db.session import get_session
 from app.domain.enums import AssetType, HealthStatus, Visibility
 from app.domain.models import Activity, Asset, FileRecord, UnclaimedFile, User
 from app.main import app
+from app.services import storage as storage_service
 from app.services.archive import ScanAlreadyRunningError, scan_storage
 from app.services.security import create_session_token
 from app.services.storage import (
@@ -136,7 +137,7 @@ def create_asset(
     return asset
 
 
-def test_archive_scan_traverses_storage_once(
+def test_archive_scan_uses_one_descriptor_anchored_traversal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -149,17 +150,18 @@ def test_archive_scan_traverses_storage_once(
     unclaimed.write_text("unclaimed")
     session = make_session()
     create_asset(session)
-    resolved_root = storage_root.resolve()
-    original_rglob = Path.rglob
+    original_fwalk = storage_service.os.fwalk
     traversal_count = 0
 
-    def tracked_rglob(path: Path, pattern: str):
+    def tracked_fwalk(*args, **kwargs):
         nonlocal traversal_count
-        if path == resolved_root:
-            traversal_count += 1
-        return original_rglob(path, pattern)
+        traversal_count += 1
+        assert args == (".",)
+        assert kwargs["follow_symlinks"] is False
+        assert isinstance(kwargs["dir_fd"], int)
+        return original_fwalk(*args, **kwargs)
 
-    monkeypatch.setattr(Path, "rglob", tracked_rglob)
+    monkeypatch.setattr(storage_service.os, "fwalk", tracked_fwalk)
 
     result = scan_storage(session, storage_root)
 
@@ -233,23 +235,57 @@ def test_scan_skips_file_that_disappears_during_metadata_read(
     source.write_text("temporary")
     session = make_session()
     create_asset(session)
-    original_stat = Path.stat
-    source_stat_calls = 0
+    original_stat = storage_service._stat_storage_entry
 
-    def disappear_on_metadata_read(path: Path, *args, **kwargs):
-        nonlocal source_stat_calls
-        if path == source:
-            source_stat_calls += 1
-            if source_stat_calls == 2:
-                raise FileNotFoundError
-        return original_stat(path, *args, **kwargs)
+    def disappear_on_metadata_read(name: str, directory_descriptor: int):
+        if name == source.name:
+            raise FileNotFoundError
+        return original_stat(name, directory_descriptor)
 
-    monkeypatch.setattr(Path, "stat", disappear_on_metadata_read)
+    monkeypatch.setattr(
+        storage_service,
+        "_stat_storage_entry",
+        disappear_on_metadata_read,
+    )
 
     result = scan_storage(session, storage_root)
 
     assert result.status == "completed"
     assert result.files_skipped == 1
+    assert result.files_indexed == 0
+    assert session.scalars(select(FileRecord)).all() == []
+
+
+def test_scan_does_not_follow_file_replaced_with_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage_root = tmp_path / "archive"
+    source = storage_root / "project" / "field-notes" / "documents" / "notes.txt"
+    source.parent.mkdir(parents=True)
+    source.write_text("inside")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside metadata must not be indexed")
+    session = make_session()
+    create_asset(session)
+    original_stat = storage_service._stat_storage_entry
+    replaced = False
+
+    def replace_before_metadata(name: str, directory_descriptor: int):
+        nonlocal replaced
+        if name == source.name and not replaced:
+            replaced = True
+            source.unlink()
+            source.symlink_to(outside)
+        return original_stat(name, directory_descriptor)
+
+    monkeypatch.setattr(storage_service, "_stat_storage_entry", replace_before_metadata)
+
+    result = scan_storage(session, storage_root)
+
+    assert replaced is True
+    assert result.files_skipped == 1
+    assert result.files_discovered == 0
     assert result.files_indexed == 0
     assert session.scalars(select(FileRecord)).all() == []
 
