@@ -60,7 +60,7 @@ async def prevent_api_caching(request: Request, call_next):
 app.include_router(router, prefix=settings.api_prefix)
 
 AGENT_PROTOCOL_VERSION = "1.0"
-AGENT_DOCUMENT_VERSION = "2026-08-17.18"
+AGENT_DOCUMENT_VERSION = "2026-08-17.19"
 AGENT_INSTRUCTIONS = (
     Path(__file__)
     .with_name("agent.md")

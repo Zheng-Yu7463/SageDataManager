@@ -390,14 +390,18 @@ curl --fail-with-body --silent --show-error \
   --data-binary @-
 ```
 
-Create, upload, inspect, and finalize one file:
+Continue with the project created above, upload one file to its allowed `documentation`
+directory, inspect it with checksums, and finalize only after every response matches:
 
 ```sh
+set -eu
+
 FILE_SIZE="$(wc -c < "$FILE_PATH" | tr -d " ")"
+CHECKSUM="$(sha256sum "$FILE_PATH" | cut -d ' ' -f 1)"
 TASK_JSON="$(jq -n --arg asset_id "$ASSET_ID" \
   --argjson expected_file_count 1 \
   --argjson expected_total_size "$FILE_SIZE" \
-  '{asset_id:$asset_id,target_subdirectory:"original",expected_file_count:$expected_file_count,expected_total_size:$expected_total_size}' | \
+  '{asset_id:$asset_id,target_subdirectory:"documentation",expected_file_count:$expected_file_count,expected_total_size:$expected_total_size}' | \
 curl --fail-with-body --silent --show-error \
   "$BASE_URL/api/agent/uploads" \
   -H "Authorization: Bearer $SAGE_TOKEN" \
@@ -406,27 +410,45 @@ curl --fail-with-body --silent --show-error \
 
 UPLOAD_ID="$(printf '%s' "$TASK_JSON" | jq -r '.upload_id')"
 UPLOAD_TOKEN="$(printf '%s' "$TASK_JSON" | jq -r '.upload_token')"
-CHECKSUM="$(sha256sum "$FILE_PATH" | cut -d ' ' -f 1)"
+ARCHIVE_PATH="$(printf '%s' "$TASK_JSON" | jq -r '.archive_relative_path')"
+printf '%s' "$TASK_JSON" | jq --exit-status \
+  --argjson file_size "$FILE_SIZE" \
+  '.expected_file_count == 1 and .expected_total_size == $file_size and
+   (.upload_id | type == "string") and (.upload_token | type == "string")' >/dev/null
 
-curl --fail-with-body --silent --show-error \
-  -X PUT "$BASE_URL/api/agent/uploads/$UPLOAD_ID/files/paper.pdf" \
+UPLOAD_JSON="$(curl --fail-with-body --silent --show-error \
+  -X PUT "$BASE_URL/api/agent/uploads/$UPLOAD_ID/files/overview.pdf" \
   -H "Authorization: Bearer $SAGE_TOKEN" \
   -H "X-Sage-Upload-Token: $UPLOAD_TOKEN" \
   -H "X-Sage-Content-SHA256: $CHECKSUM" \
   -H 'Content-Type: application/octet-stream' \
-  --data-binary "@$FILE_PATH"
+  --data-binary "@$FILE_PATH")"
+printf '%s' "$UPLOAD_JSON" | jq --exit-status \
+  --arg checksum "$CHECKSUM" --argjson file_size "$FILE_SIZE" \
+  '.relative_path == "overview.pdf" and .file_size == $file_size and
+   .checksum_sha256 == $checksum' >/dev/null
 
-curl --fail-with-body --silent --show-error \
-  "$BASE_URL/api/agent/uploads/$UPLOAD_ID" \
+STATUS_JSON="$(curl --fail-with-body --silent --show-error \
+  "$BASE_URL/api/agent/uploads/$UPLOAD_ID?include_checksums=true" \
   -H "Authorization: Bearer $SAGE_TOKEN" \
-  -H "X-Sage-Upload-Token: $UPLOAD_TOKEN"
+  -H "X-Sage-Upload-Token: $UPLOAD_TOKEN")"
+printf '%s' "$STATUS_JSON" | jq --exit-status \
+  --arg checksum "$CHECKSUM" --argjson file_size "$FILE_SIZE" \
+  '.status == "ready" and .uploaded_file_count == 1 and .total_size == $file_size and
+   .files == [{relative_path:"overview.pdf",file_size:$file_size,checksum_sha256:$checksum}]' \
+  >/dev/null
 
-jq -n --arg upload_token "$UPLOAD_TOKEN" '{upload_token:$upload_token}' | \
+FINAL_JSON="$(jq -n --arg upload_token "$UPLOAD_TOKEN" '{upload_token:$upload_token}' | \
 curl --fail-with-body --silent --show-error \
   "$BASE_URL/api/agent/uploads/$UPLOAD_ID/finalize" \
   -H "Authorization: Bearer $SAGE_TOKEN" \
   -H 'Content-Type: application/json' \
-  --data-binary @-
+  --data-binary @-)"
+FINAL_PATH="$ARCHIVE_PATH/overview.pdf"
+printf '%s' "$FINAL_JSON" | jq --exit-status \
+  --arg checksum "$CHECKSUM" --arg path "$FINAL_PATH" --argjson file_size "$FILE_SIZE" \
+  '.imported_file_count == 1 and .total_size == $file_size and
+   .relative_paths == [$path] and .checksums[$path] == $checksum' >/dev/null
 ```
 
 Cancel instead of finalizing when the task is no longer needed:

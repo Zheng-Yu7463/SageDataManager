@@ -109,6 +109,10 @@ def test_agent_discovery_is_public_and_contains_no_secret() -> None:
     assert "PUT, finalize, or cancel return `507 upload_storage_unavailable`" in instructions.text
     assert "agent_scope_missing" in instructions.text
     assert "Never blindly overwrite concurrent work" in instructions.text
+    assert 'target_subdirectory:"documentation"' in instructions.text
+    assert 'target_subdirectory:"original"' not in instructions.text
+    assert "$UPLOAD_ID?include_checksums=true" in instructions.text
+    assert ".relative_paths == [$path]" in instructions.text
     assert "SAGE_TOKEN=" not in instructions.text
     discovery_data = discovery.json()
     assert discovery_data["openapi"] == "/api/openapi.json"
