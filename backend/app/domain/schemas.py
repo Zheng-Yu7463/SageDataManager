@@ -226,13 +226,19 @@ class FileClaimResult(BaseModel):
     file: FileSummary
 
 
+MAX_PUBLICATION_AUTHOR_LENGTH = 200
+PublicationAuthor = Annotated[
+    str, Field(min_length=1, max_length=MAX_PUBLICATION_AUTHOR_LENGTH)
+]
+
+
 class PublicationMetadata(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     venue: str = Field(min_length=2, max_length=80)
     year: int = Field(ge=1900, le=2200)
     track: str = Field(min_length=2, max_length=120)
-    authors: list[str] = Field(min_length=1, max_length=200)
+    authors: list[PublicationAuthor] = Field(min_length=1, max_length=200)
     source_id: str = Field(min_length=2, max_length=200)
     source_url: AnyHttpUrl
     publication_url: AnyHttpUrl | None = None

@@ -96,6 +96,8 @@ Common create fields are `type`, `slug`, `title`, `summary`, `status`, `visibili
 - Tags contain at most 20 non-empty values and each value is at most 80 characters.
 - The authenticated human account is always the owner of an Agent-created asset. Omit
   `owner_name` and `owner_email`; they cannot be used to impersonate another owner.
+- Publication `authors` contains 1-200 names; each normalized name is at most
+  {{MAXIMUM_PUBLICATION_AUTHOR_CHARACTERS}} characters.
 - Unknown `details` fields for datasets, projects, and models may be preserved, but must not be
   guessed. Use stable, descriptive keys already established by similar assets.
 

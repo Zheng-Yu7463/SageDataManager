@@ -134,6 +134,7 @@ def test_agent_discovery_is_public_and_contains_no_secret() -> None:
     assert "file_read" in discovery_data["capabilities"]
     assert discovery_data["scopes"]["files:read"] == ["GET /files/{file_id}/content"]
     assert discovery_data["limits"]["maximum_file_size_bytes"] == 500_000_000
+    assert discovery_data["limits"]["maximum_publication_author_characters"] == 200
     assert discovery_data["limits"]["maximum_upload_path_characters"] == 1000
     assert discovery_data["limits"]["maximum_upload_path_bytes"] == 1000
     assert discovery_data["limits"]["maximum_upload_path_component_characters"] == 255
@@ -497,6 +498,43 @@ def test_agent_metadata_creation_records_the_credential_name(monkeypatch) -> Non
         ).one()
         assert activity.credential_name == "metadata-curator"
         assert activity.actor_id == user.id
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
+def test_agent_rejects_oversized_publication_author_name(monkeypatch) -> None:
+    session = make_session()
+    user, _ = create_user_and_asset(session)
+    monkeypatch.setattr(settings, "auth_session_secret", "agent-test-secret")
+    plaintext = create_token(session, user, ["metadata:write"])
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        response = TestClient(app).post(
+            "/api/agent/assets",
+            headers=bearer(plaintext),
+            json={
+                "type": "paper",
+                "slug": "oversized-author-paper",
+                "title": "Oversized Author Paper",
+                "status": "published",
+                "details": {
+                    "venue": "ACL",
+                    "year": 2026,
+                    "track": "Main Conference",
+                    "authors": ["A" * 201],
+                    "source_id": "2026.acl-long.999",
+                    "source_url": "https://example.com/source",
+                    "pdf_url": "https://example.com/paper.pdf",
+                },
+            },
+        )
+
+        assert response.status_code == 422
+        assert response.headers["x-sage-error-code"] == "request_invalid"
+        assert session.scalar(
+            select(Asset).where(Asset.slug == "oversized-author-paper")
+        ) is None
     finally:
         app.dependency_overrides.clear()
         session.close()
