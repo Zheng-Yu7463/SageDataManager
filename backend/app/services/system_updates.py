@@ -8,6 +8,8 @@ from typing import Any
 
 from app.core.config import settings
 
+MAX_UPDATE_AGENT_RESPONSE_BYTES = 1_000_000
+
 
 class UpdateAgentUnavailableError(Exception):
     pass
@@ -75,11 +77,14 @@ def request_update_agent(
             headers=headers,
         )
         response = connection.getresponse()
-        raw_body = response.read()
+        raw_body = response.read(MAX_UPDATE_AGENT_RESPONSE_BYTES + 1)
     except (OSError, TimeoutError, http.client.HTTPException) as error:
         raise UpdateAgentUnavailableError("无法连接宿主机更新服务。") from error
     finally:
         connection.close()
+
+    if len(raw_body) > MAX_UPDATE_AGENT_RESPONSE_BYTES:
+        raise UpdateAgentRequestError("宿主机更新服务返回的响应过大。")
 
     try:
         body = json.loads(raw_body or b"{}")

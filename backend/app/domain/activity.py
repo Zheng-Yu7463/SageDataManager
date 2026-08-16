@@ -18,6 +18,12 @@ class ActivityAction(StrEnum):
     DOWNLOADED_FILE = "downloaded_file"
     UPDATED_BRANDING = "updated_branding"
     IMPORTED_PUBLICATION = "imported_publication"
+    INITIALIZED_INSTANCE = "initialized_instance"
+    ISSUED_ACCOUNT_INVITATION = "issued_account_invitation"
+    ISSUED_ACCOUNT_RECOVERY = "issued_account_recovery"
+    REGISTERED_ACCOUNT = "registered_account"
+    RESET_ACCOUNT_PASSWORD = "reset_account_password"
+    UPDATED_ACCOUNT = "updated_account"
 
 
 class ActivityOperationRole(StrEnum):
@@ -43,6 +49,12 @@ ACTIVITY_LABELS = {
     ActivityAction.DOWNLOADED_FILE: "下载文件",
     ActivityAction.UPDATED_BRANDING: "更新品牌设置",
     ActivityAction.IMPORTED_PUBLICATION: "收录文献",
+    ActivityAction.INITIALIZED_INSTANCE: "初始化实例所有者",
+    ActivityAction.ISSUED_ACCOUNT_INVITATION: "生成管理员注册链接",
+    ActivityAction.ISSUED_ACCOUNT_RECOVERY: "生成账号恢复链接",
+    ActivityAction.REGISTERED_ACCOUNT: "完成管理员注册",
+    ActivityAction.RESET_ACCOUNT_PASSWORD: "重置管理员密码",
+    ActivityAction.UPDATED_ACCOUNT: "更新管理员账号",
 }
 
 

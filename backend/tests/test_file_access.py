@@ -202,7 +202,10 @@ def test_delivery_close_releases_the_validated_file_descriptor(tmp_path: Path) -
         os.fstat(descriptor)
 
 
-def test_file_access_token_contains_only_the_grant_identity() -> None:
+def test_file_access_token_contains_only_the_grant_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "auth_session_secret", "test-session-secret")
     grant_id = uuid4()
     token = create_file_access_token(grant_id, datetime.now(UTC) + timedelta(minutes=2))
 
@@ -238,6 +241,13 @@ def test_file_content_endpoint_streams_original_pdf_bytes(
         )
 
         assert ticket_response.status_code == 201
+        head_before_access = client.head(ticket_response.json()["content_url"])
+        assert head_before_access.status_code == 200
+        assert head_before_access.content == b""
+        assert session.scalars(select(Activity)).all() == []
+        untouched_grant = session.scalar(select(FileAccessGrant))
+        assert untouched_grant is not None
+        assert untouched_grant.first_accessed_at is None
         content_response = client.get(ticket_response.json()["content_url"])
 
         assert content_response.status_code == 200
@@ -465,6 +475,7 @@ def test_file_content_endpoint_rejects_changes_after_ticket_creation(
     finally:
         app.dependency_overrides.clear()
         session.close()
+
 
 def test_asset_detail_endpoint_returns_file_records(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

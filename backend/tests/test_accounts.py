@@ -1,9 +1,12 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from urllib.parse import parse_qs, urlsplit
+from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from pydantic import ValidationError
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
@@ -11,14 +14,24 @@ from app.api.dependencies import require_admin
 from app.core.config import settings
 from app.db.base import Base
 from app.db.session import get_session
-from app.domain.models import AccountInvitation, User
+from app.domain.activity import ActivityAction
+from app.domain.models import (
+    AccountInvitation,
+    Activity,
+    FileAccessGrant,
+    PersonalAccessToken,
+    User,
+)
 from app.domain.schemas import (
+    AccessTokenCreateRequest,
     AccountCreateRequest,
     AccountInvitationAcceptRequest,
     AccountInvitationCreateRequest,
+    AccountLoginRequest,
     AccountUpdateRequest,
 )
 from app.main import app
+from app.services.access_tokens import authenticate_access_token, create_access_token
 from app.services.accounts import (
     AccountAuthenticationConfigurationError,
     AccountConflictError,
@@ -35,7 +48,7 @@ from app.services.accounts import (
     renew_admin_invitation,
     update_admin_account,
 )
-from app.services.security import read_session_token, verify_password
+from app.services.security import create_upload_token, read_session_token, verify_password
 
 
 def make_session() -> Session:
@@ -64,7 +77,73 @@ def initialize_owner(session: Session) -> User:
 
 
 def invitation_token(registration_path: str) -> str:
-    return registration_path.rsplit("/", 1)[1]
+    parsed = urlsplit(registration_path)
+    return parse_qs(parsed.fragment)["token"][0]
+
+
+def test_account_lifecycle_writes_audit_events_without_secrets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = make_session()
+    monkeypatch.setattr(settings, "auth_session_secret", "test-session-secret")
+    owner = initialize_owner(session)
+    registration = create_admin_invitation(
+        session,
+        AccountInvitationCreateRequest(username="newadmin"),
+        actor=owner,
+    )
+    registration_token = invitation_token(registration.registration_path)
+    accept_account_invitation(
+        session,
+        registration_token,
+        AccountInvitationAcceptRequest(
+            name="New Admin",
+            email="newadmin@example.org",
+            password="invitee-password",
+        ),
+    )
+    recovery = renew_admin_invitation(
+        session,
+        "newadmin",
+        actor=owner,
+        purpose="recovery",
+    )
+    recovery_token = invitation_token(recovery.registration_path)
+    accept_account_invitation(
+        session,
+        recovery_token,
+        AccountInvitationAcceptRequest(password="replacement-password"),
+    )
+    update_admin_account(
+        session,
+        "newadmin",
+        AccountUpdateRequest(is_active=False),
+        actor=owner,
+    )
+    session.commit()
+
+    activities = session.scalars(select(Activity)).all()
+    assert {activity.action for activity in activities} == {
+        ActivityAction.INITIALIZED_INSTANCE,
+        ActivityAction.ISSUED_ACCOUNT_INVITATION,
+        ActivityAction.REGISTERED_ACCOUNT,
+        ActivityAction.ISSUED_ACCOUNT_RECOVERY,
+        ActivityAction.RESET_ACCOUNT_PASSWORD,
+        ActivityAction.UPDATED_ACCOUNT,
+    }
+    descriptions = "\n".join(activity.description for activity in activities)
+    assert registration_token not in descriptions
+    assert recovery_token not in descriptions
+
+    activity_count = session.scalar(select(func.count()).select_from(Activity))
+    update_admin_account(
+        session,
+        "newadmin",
+        AccountUpdateRequest(name="New Admin", is_active=False),
+        actor=owner,
+    )
+    session.commit()
+    assert session.scalar(select(func.count()).select_from(Activity)) == activity_count
 
 
 def test_empty_instance_can_initialize_exactly_one_owner(
@@ -85,6 +164,21 @@ def test_empty_instance_can_initialize_exactly_one_owner(
     assert instance_setup_status(session) == (True, True)
     with pytest.raises(AccountSetupConflictError, match="已经完成初始化"):
         initialize_admin_account(session, account_request("secondadmin"))
+
+
+def test_upload_token_cannot_authenticate_as_a_browser_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = make_session()
+    monkeypatch.setattr(settings, "auth_session_secret", "test-session-secret")
+    initialize_owner(session)
+    upload_token, _ = create_upload_token(uuid4(), uuid4(), "code", "admin")
+
+    with pytest.raises(HTTPException) as rejected:
+        require_admin(session, upload_token)
+
+    assert rejected.value.status_code == 401
+    session.close()
 
 
 def test_legacy_shared_password_cannot_initialize_an_empty_instance(
@@ -195,6 +289,8 @@ def test_administrator_reserves_account_and_invitee_completes_registration(
     stored = session.scalar(select(AccountInvitation))
 
     assert len(token) == 64
+    assert urlsplit(created.registration_path).path == "/register"
+    assert urlsplit(created.registration_path).query == ""
     assert stored is not None
     assert token not in stored.token_hash
     assert len(stored.token_hash) == 64
@@ -259,10 +355,24 @@ def test_password_recovery_link_lets_account_owner_choose_the_new_password(
     session = make_session()
     monkeypatch.setattr(settings, "auth_session_secret", "test-session-secret")
     actor = initialize_owner(session)
+    _, old_session_token = login_account(session, "admin", "secure-password")
+    access_token = create_access_token(
+        session,
+        actor,
+        AccessTokenCreateRequest(name="recovery-test", scopes=["assets:read"]),
+    )
+    session.add(
+        FileAccessGrant(
+            file_id=uuid4(),
+            user_id=actor.id,
+            mode="download",
+            expires_at=datetime.now(UTC) + timedelta(minutes=5),
+        )
+    )
     recovery = renew_admin_invitation(session, "admin", actor=actor, purpose="recovery")
     session.commit()
 
-    account, _ = accept_account_invitation(
+    account, new_session_token = accept_account_invitation(
         session,
         invitation_token(recovery.registration_path),
         AccountInvitationAcceptRequest(password="replacement-password"),
@@ -270,6 +380,13 @@ def test_password_recovery_link_lets_account_owner_choose_the_new_password(
     session.commit()
 
     assert account.name == "Instance Administrator"
+    with pytest.raises(HTTPException) as expired_session:
+        require_admin(session, old_session_token)
+    assert expired_session.value.status_code == 401
+    assert require_admin(session, new_session_token).username == "admin"
+    assert authenticate_access_token(session, access_token.token) is None
+    assert session.scalar(select(PersonalAccessToken.revoked_at)) is not None
+    assert session.scalar(select(FileAccessGrant.id)) is None
     with pytest.raises(AccountLoginError, match="账号或密码错误"):
         login_account(session, "admin", "secure-password")
     assert login_account(session, "admin", "replacement-password")[0].username == "admin"
@@ -294,9 +411,12 @@ def test_invitation_api_is_public_but_creation_requires_an_administrator(
             headers={"X-Sage-Session": session_token},
         )
         token = invitation_token(created.json()["registration_path"])
-        status_response = client.get(f"/api/auth/invitations/{token}")
+        invitation_headers = {"X-Sage-Invitation-Token": token}
+        status_response = client.get("/api/auth/invitations", headers=invitation_headers)
+        legacy_status_response = client.get(f"/api/auth/invitations/{token}")
         accepted = client.post(
-            f"/api/auth/invitations/{token}/accept",
+            "/api/auth/invitations/accept",
+            headers=invitation_headers,
             json={
                 "name": "Invited Admin",
                 "email": "invited@example.org",
@@ -307,10 +427,11 @@ def test_invitation_api_is_public_but_creation_requires_an_administrator(
         assert created.status_code == 201
         assert len(token) == 64
         assert status_response.status_code == 200
+        assert legacy_status_response.status_code == 200
         assert status_response.json()["purpose"] == "registration"
         assert accepted.status_code == 200
         assert accepted.json()["username"] == "invited"
-        assert client.get(f"/api/auth/invitations/{token}").status_code == 404
+        assert client.get("/api/auth/invitations", headers=invitation_headers).status_code == 404
     finally:
         app.dependency_overrides.clear()
         session.close()
@@ -367,6 +488,64 @@ def test_registered_account_can_be_disabled_but_pending_profile_cannot_be_edited
         require_admin(session, None)
 
 
+def test_reenabling_an_account_does_not_restore_its_old_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = make_session()
+    monkeypatch.setattr(settings, "auth_session_secret", "test-session-secret")
+    owner = initialize_owner(session)
+    invitation = create_admin_invitation(
+        session, AccountInvitationCreateRequest(username="newadmin"), actor=owner
+    )
+    session.commit()
+    _, old_session_token = accept_account_invitation(
+        session,
+        invitation_token(invitation.registration_path),
+        AccountInvitationAcceptRequest(
+            name="New Admin",
+            email="newadmin@example.org",
+            password="invitee-password",
+        ),
+    )
+    session.commit()
+    user = session.scalar(select(User).where(User.username == "newadmin"))
+    assert user is not None
+    access_token = create_access_token(
+        session,
+        user,
+        AccessTokenCreateRequest(name="disable-test", scopes=["assets:read"]),
+    )
+    session.commit()
+
+    update_admin_account(
+        session,
+        "newadmin",
+        AccountUpdateRequest(is_active=False),
+        actor=owner,
+    )
+    session.commit()
+    with pytest.raises(HTTPException) as disabled_session:
+        require_admin(session, old_session_token)
+    assert disabled_session.value.status_code == 401
+
+    update_admin_account(
+        session,
+        "newadmin",
+        AccountUpdateRequest(is_active=True),
+        actor=owner,
+    )
+    session.commit()
+    with pytest.raises(HTTPException) as stale_session:
+        require_admin(session, old_session_token)
+    assert stale_session.value.status_code == 401
+    assert authenticate_access_token(session, access_token.token) is None
+    assert session.scalar(select(PersonalAccessToken.revoked_at)) is not None
+
+    _, fresh_session_token = login_account(session, "newadmin", "invitee-password")
+    assert require_admin(session, fresh_session_token).username == "newadmin"
+    session.close()
+
+
 def test_invitation_cannot_be_accepted_without_a_session_signing_secret(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -406,3 +585,53 @@ def test_expired_invitation_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None
 
     with pytest.raises(AccountInvitationInvalidError):
         get_account_invitation(session, invitation_token(created.registration_path))
+
+
+def test_account_requests_normalize_identity_fields() -> None:
+    create = AccountCreateRequest(
+        username="  Admin  ",
+        name="  Instance Owner  ",
+        email="  Owner@Example.ORG  ",
+        password="secure-password",
+    )
+    invitation = AccountInvitationCreateRequest(username="  NewAdmin  ")
+    accepted = AccountInvitationAcceptRequest(
+        name="  Invited Admin  ",
+        email="  Invited@Example.ORG  ",
+        password="invitee-password",
+    )
+    update = AccountUpdateRequest(name="  Updated Name  ")
+    login = AccountLoginRequest(username="  ADMIN  ", password="secure-password")
+
+    assert create.username == "admin"
+    assert create.name == "Instance Owner"
+    assert create.email == "owner@example.org"
+    assert invitation.username == "newadmin"
+    assert accepted.name == "Invited Admin"
+    assert accepted.email == "invited@example.org"
+    assert update.name == "Updated Name"
+    assert login.username == "admin"
+
+
+def test_account_requests_reject_blank_names_and_invalid_setup_email() -> None:
+    with pytest.raises(ValidationError):
+        AccountCreateRequest(
+            username="admin",
+            name="   ",
+            email="admin@example.org",
+            password="secure-password",
+        )
+
+    with pytest.raises(ValidationError):
+        AccountCreateRequest(
+            username="admin",
+            name="Admin",
+            email="not-an-email",
+            password="secure-password",
+        )
+
+    with pytest.raises(ValidationError):
+        AccountInvitationAcceptRequest(name="   ", password="invitee-password")
+
+    with pytest.raises(ValidationError):
+        AccountUpdateRequest(name="   ")

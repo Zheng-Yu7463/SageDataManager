@@ -15,7 +15,7 @@ from app.services.activities import (
     activity_summary,
     recent_activity_summaries,
 )
-from app.services.assets import asset_summary
+from app.services.assets import asset_summaries
 
 router = APIRouter(
     prefix="/dashboard",
@@ -50,7 +50,6 @@ def dashboard(session: SessionDependency) -> DashboardSummary:
             selectinload(Asset.owner),
             selectinload(Asset.tags),
             selectinload(Asset.versions),
-            selectinload(Asset.files),
         )
         .order_by(Asset.updated_at.desc())
         .limit(5)
@@ -73,7 +72,7 @@ def dashboard(session: SessionDependency) -> DashboardSummary:
         total_storage_bytes=storage,
         healthy_files=healthy,
         missing_files=missing,
-        recent_assets=[asset_summary(item) for item in recent_assets],
+        recent_assets=asset_summaries(session, list(recent_assets)),
         recent_activities=activity_summaries,
         popular_tags=[(name, count) for name, count in popular_tags],
     )

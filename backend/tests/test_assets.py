@@ -1,8 +1,10 @@
 from datetime import UTC, datetime
+from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, func, select
-from sqlalchemy.dialects import postgresql
+from pydantic import ValidationError
+from sqlalchemy import create_engine, func, inspect, select
+from sqlalchemy.dialects import postgresql, sqlite
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -34,7 +36,10 @@ from app.services.assets import (
     add_asset_relation,
     add_asset_version,
     archive_asset,
+    asset_for_archive_transition_statement,
     asset_for_version_update_statement,
+    asset_relation_for_removal_statement,
+    assets_for_relation_statement,
     create_asset,
     get_asset,
     import_assets,
@@ -42,11 +47,14 @@ from app.services.assets import (
     list_asset_choices,
     list_assets,
     list_publication_catalogue_facets,
+    list_publications_for_citation_export,
     remove_asset_relation,
     restore_asset,
+    tag_insert_statement,
     update_asset,
 )
 from app.services.citations import (
+    PublicationCitationError,
     build_publication_citation,
     build_publication_citation_export,
 )
@@ -114,15 +122,16 @@ def test_publication_identity_lookup_uses_exists_for_postgres_json_assets() -> N
             return []
 
     session = CapturingSession()
-    assert matching_publications(
-        session,
-        title="A Reliable Publication Identity",
-        details={"authors": ["Sage Researcher"], "source_id": "arxiv:2608.00001"},
-    ) == []
+    assert (
+        matching_publications(
+            session,
+            title="A Reliable Publication Identity",
+            details={"authors": ["Sage Researcher"], "source_id": "arxiv:2608.00001"},
+        )
+        == []
+    )
 
-    compiled = str(
-        session.statements[0].compile(dialect=postgresql.dialect())
-    ).upper()
+    compiled = str(session.statements[0].compile(dialect=postgresql.dialect())).upper()
     assert "EXISTS" in compiled
     assert "DISTINCT" not in compiled
 
@@ -152,6 +161,28 @@ def test_create_asset_creates_owner_tags_version_and_activity() -> None:
         "documentation",
         "scripts",
     ]
+
+
+def test_tag_inserts_ignore_concurrent_name_conflicts() -> None:
+    for dialect_name, dialect in (
+        ("postgresql", postgresql.dialect()),
+        ("sqlite", sqlite.dialect()),
+    ):
+        compiled = str(
+            tag_insert_statement(dialect_name, ["shared-tag"]).compile(dialect=dialect)
+        )
+        assert "ON CONFLICT (name) DO NOTHING" in compiled
+
+    session = make_session()
+    first = create_asset(session, payload())
+    second_payload = payload().model_copy(
+        update={"slug": "second-tagged-asset", "title": "Second tagged asset"}
+    )
+    second = create_asset(session, second_payload)
+    session.commit()
+
+    assert session.scalar(select(func.count()).select_from(Tag)) == 2
+    assert session.get(Asset, first.id).tags == session.get(Asset, second.id).tags
 
 
 def test_create_asset_rejects_duplicate_slug() -> None:
@@ -193,9 +224,7 @@ def test_paper_metadata_is_normalized_and_duplicate_sources_are_rejected() -> No
     with pytest.raises(AssetMetadataError):
         create_asset(
             session,
-            paper_payload(
-                slug="same-paper-second-slug", asset_type=AssetType.LITERATURE
-            ),
+            paper_payload(slug="same-paper-second-slug", asset_type=AssetType.LITERATURE),
         )
 
 
@@ -266,6 +295,49 @@ def test_paper_bibtex_export_joins_records_once() -> None:
     assert "@inproceedings{smith2025distinct," in export.bibtex
 
 
+def test_publication_citation_export_does_not_load_unneeded_relationships() -> None:
+    session = make_session()
+    create_asset(session, paper_payload())
+    session.commit()
+    session.expire_all()
+
+    publications = list_publications_for_citation_export(
+        session,
+        asset_type=AssetType.PAPER,
+        query=None,
+        status=None,
+        visibility=None,
+        has_files=None,
+        venue=None,
+        year=None,
+    )
+
+    assert len(publications) == 1
+    assert {"owner", "tags", "versions", "files"} <= inspect(publications[0]).unloaded
+    export = build_publication_citation_export(publications)
+    assert export.count == 1
+    assert "OctoTools" in export.bibtex
+
+
+def test_paper_bibtex_export_rejects_duplicate_citation_keys() -> None:
+    session = make_session()
+    first = create_asset(session, paper_payload())
+    second_payload = paper_payload(slug="second-paper").model_copy(deep=True)
+    second_payload.title = "A Different Paper"
+    second_payload.details.update(
+        source_id="second-paper",
+        source_url="https://example.com/second-paper",
+        publication_url="https://example.com/second-paper",
+        pdf_url="https://example.com/second-paper.pdf",
+        doi="10.1000/second-paper",
+        citation_key="acl-2026-octotools",
+    )
+    second = create_asset(session, second_payload)
+
+    with pytest.raises(PublicationCitationError, match="引用键重复"):
+        build_publication_citation_export([first, second])
+
+
 def test_batch_import_rejects_papers_sharing_any_canonical_identity() -> None:
     session = make_session()
     actor = User(name="管理员", email="paper-admin@sage.lab")
@@ -300,6 +372,51 @@ def test_paper_list_filters_by_venue_and_year() -> None:
 
     assert total == 1
     assert [item.id for item in matching] == [paper.id]
+
+def test_asset_list_aggregates_file_stats_without_loading_file_records() -> None:
+    session = make_session()
+    created = create_asset(session, payload())
+    session.add_all(
+        [
+            FileRecord(
+                asset_id=created.id,
+                relative_path="dataset/soil-samples-2026/raw/first.csv",
+                file_name="first.csv",
+                file_kind="data",
+                file_size=128,
+            ),
+            FileRecord(
+                asset_id=created.id,
+                relative_path="dataset/soil-samples-2026/raw/second.csv",
+                file_name="second.csv",
+                file_kind="data",
+                file_size=256,
+            ),
+        ]
+    )
+    session.commit()
+    session.expunge_all()
+    asset = session.get(Asset, created.id)
+    assert asset is not None
+    assert "files" in inspect(asset).unloaded
+
+    matching, total = list_assets(
+        session,
+        asset_type=AssetType.DATASET,
+        query=None,
+        status=None,
+        visibility=None,
+        has_files=None,
+        venue=None,
+        year=None,
+        page=1,
+        page_size=20,
+    )
+
+    assert total == 1
+    assert [(item.file_count, item.total_size) for item in matching] == [(2, 384)]
+    assert "files" in inspect(asset).unloaded
+
 
 
 def test_search_requires_every_term_and_prioritizes_title_matches() -> None:
@@ -490,9 +607,18 @@ def test_asset_choices_search_beyond_catalogue_page_and_exclude_archived() -> No
 def test_publication_catalogue_facets_are_isolated_by_catalogue() -> None:
     session = make_session()
     acl = paper_payload()
-    iclr = paper_payload(
-        slug="iclr-2025-paper", asset_type=AssetType.LITERATURE
-    ).model_copy(deep=True)
+    duplicate_acl = paper_payload(slug="acl-2026-second-paper").model_copy(deep=True)
+    duplicate_acl.title = "A Second ACL Paper"
+    duplicate_acl.details.update(
+        source_id="acl-2026-second-paper",
+        source_url="https://example.com/acl-2026-second-paper",
+        publication_url="https://example.com/acl-2026-second-paper",
+        pdf_url="https://example.com/acl-2026-second-paper.pdf",
+        doi="10.1000/acl-2026-second-paper",
+    )
+    iclr = paper_payload(slug="iclr-2025-paper", asset_type=AssetType.LITERATURE).model_copy(
+        deep=True
+    )
     iclr.title = "A Distinct ICLR Paper"
     iclr.details.update(
         venue="ICLR",
@@ -505,6 +631,7 @@ def test_publication_catalogue_facets_are_isolated_by_catalogue() -> None:
     )
     archived = create_asset(session, iclr)
     create_asset(session, acl)
+    create_asset(session, duplicate_acl)
     session.commit()
 
     facets = list_publication_catalogue_facets(session, AssetType.PAPER)
@@ -550,6 +677,20 @@ def test_asset_metadata_can_be_updated_archived_and_restored() -> None:
     assert (
         session.scalar(select(Activity.action).order_by(Activity.created_at.desc())) == "restored"
     )
+
+
+def test_archive_transitions_lock_the_asset_row() -> None:
+    asset_id = uuid4()
+    active_statement = asset_for_archive_transition_statement(asset_id, archived=False)
+    archived_statement = asset_for_archive_transition_statement(asset_id, archived=True)
+
+    active_sql = str(active_statement.compile(dialect=postgresql.dialect()))
+    archived_sql = str(archived_statement.compile(dialect=postgresql.dialect()))
+
+    assert "assets.archived_at IS NULL" in active_sql
+    assert "assets.archived_at IS NOT NULL" in archived_sql
+    assert active_sql.endswith("FOR UPDATE")
+    assert archived_sql.endswith("FOR UPDATE")
 
 
 def test_archived_assets_are_paginated_in_stable_archive_order() -> None:
@@ -646,11 +787,12 @@ def test_tag_only_asset_update_advances_updated_at() -> None:
 
     assert updated.tags == ["only-new-tag"]
     assert session.get(Asset, result.id).updated_at > persisted_previous_updated_at
-    assert session.scalar(
-        select(func.count()).select_from(Activity).where(
-            Activity.action == "updated_metadata"
+    assert (
+        session.scalar(
+            select(func.count()).select_from(Activity).where(Activity.action == "updated_metadata")
         )
-    ) == 1
+        == 1
+    )
 
 
 def test_asset_list_filters_status_visibility_and_file_presence() -> None:
@@ -713,6 +855,27 @@ def test_asset_list_filters_status_visibility_and_file_presence() -> None:
     assert detail.files[0].relative_path == "dataset/published-soil-samples/raw/samples.csv"
 
 
+def test_asset_relation_creation_locks_assets_in_stable_order() -> None:
+    statement = assets_for_relation_statement(uuid4(), uuid4())
+
+    compiled = str(statement.compile(dialect=postgresql.dialect()))
+
+    assert "assets.archived_at IS NULL" in compiled
+    assert "ORDER BY assets.id" in compiled
+    assert compiled.endswith("FOR UPDATE")
+
+
+def test_asset_relation_removal_locks_the_relation_row() -> None:
+    statement = asset_relation_for_removal_statement(uuid4(), uuid4())
+
+    compiled = str(statement.compile(dialect=postgresql.dialect()))
+
+    assert "asset_relations.id =" in compiled
+    assert "asset_relations.source_asset_id =" in compiled
+    assert "asset_relations.target_asset_id =" in compiled
+    assert compiled.endswith("FOR UPDATE")
+
+
 def test_asset_relation_can_be_created_and_removed() -> None:
     session = make_session()
     source = create_asset(session, payload())
@@ -735,9 +898,7 @@ def test_asset_relation_can_be_created_and_removed() -> None:
     assert detail is not None
     assert detail.related_assets[0].relation_id == relation.relation_id
     assert detail.related_assets[0].title == "土壤分析笔记"
-    linked = session.scalars(
-        select(Activity).where(Activity.action == "linked_asset")
-    ).all()
+    linked = session.scalars(select(Activity).where(Activity.action == "linked_asset")).all()
     assert {activity.asset_id for activity in linked} == {source.id, target.id}
     assert len({activity.operation_id for activity in linked}) == 1
     assert linked[0].operation_id is not None
@@ -753,9 +914,7 @@ def test_asset_relation_can_be_created_and_removed() -> None:
     refreshed = get_asset(session, source.id)
     assert refreshed is not None
     assert refreshed.related_assets == []
-    unlinked = session.scalars(
-        select(Activity).where(Activity.action == "unlinked_asset")
-    ).all()
+    unlinked = session.scalars(select(Activity).where(Activity.action == "unlinked_asset")).all()
     assert {activity.asset_id for activity in unlinked} == {source.id, target.id}
     assert len({activity.operation_id for activity in unlinked}) == 1
     assert unlinked[0].operation_id is not None
@@ -777,9 +936,7 @@ def test_asset_relation_can_be_removed_when_an_endpoint_is_archived() -> None:
     source = create_asset(session, payload())
     target = create_asset(
         session,
-        payload().model_copy(
-            update={"slug": "archived-relation-target", "title": "归档关系目标"}
-        ),
+        payload().model_copy(update={"slug": "archived-relation-target", "title": "归档关系目标"}),
     )
     actor = session.get(User, source.owner.id)
     assert actor is not None
@@ -798,9 +955,7 @@ def test_asset_relation_can_be_removed_when_an_endpoint_is_archived() -> None:
     session.flush()
 
     assert session.get(AssetRelation, relation.relation_id) is None
-    unlinked = session.scalars(
-        select(Activity).where(Activity.action == "unlinked_asset")
-    ).all()
+    unlinked = session.scalars(select(Activity).where(Activity.action == "unlinked_asset")).all()
     assert {activity.asset_id for activity in unlinked} == {source.id, target.id}
 
 
@@ -809,9 +964,7 @@ def test_asset_relation_identity_is_unique_but_direction_and_type_are_distinct()
     source = create_asset(session, payload())
     target = create_asset(
         session,
-        payload().model_copy(
-            update={"slug": "relation-target", "title": "关系目标资产"}
-        ),
+        payload().model_copy(update={"slug": "relation-target", "title": "关系目标资产"}),
     )
     session.add_all(
         [
@@ -852,9 +1005,7 @@ def test_asset_relation_constraint_conflict_becomes_a_domain_error(
     source = create_asset(session, payload())
     target = create_asset(
         session,
-        payload().model_copy(
-            update={"slug": "relation-conflict-target", "title": "关系冲突目标"}
-        ),
+        payload().model_copy(update={"slug": "relation-conflict-target", "title": "关系冲突目标"}),
     )
     actor = session.get(User, source.owner.id)
     assert actor is not None
@@ -975,13 +1126,47 @@ def test_batch_import_is_prevalidated_before_creating_assets() -> None:
     first = payload().model_copy(update={"slug": "batch-one"})
     second = payload().model_copy(update={"slug": "batch-two"})
 
-    created = import_assets(
-        session, BatchAssetImportRequest(assets=[first, second]), actor=actor
-    )
+    created = import_assets(session, BatchAssetImportRequest(assets=[first, second]), actor=actor)
 
     assert [item.slug for item in created] == ["batch-one", "batch-two"]
     with pytest.raises(BatchAssetImportError):
-        import_assets(
-            session, BatchAssetImportRequest(assets=[first, first]), actor=actor
-        )
+        import_assets(session, BatchAssetImportRequest(assets=[first, first]), actor=actor)
     assert session.scalar(select(Asset).where(Asset.slug == "batch-one")) is not None
+
+
+def test_asset_requests_normalize_text_and_tags() -> None:
+    request = AssetCreateRequest(
+        type=AssetType.DATASET,
+        slug="normalized-input",
+        title="  Normalized title  ",
+        summary="  Normalized summary  ",
+        status="  draft  ",
+        tags=["  field  ", "field", "", "  analysis"],
+    )
+    update = AssetUpdateRequest(title="  Updated  ", tags=[" one ", "one", " two "])
+    version = AssetVersionCreateRequest(version="  v1.0  ", release_notes="  Notes  ")
+
+    assert request.title == "Normalized title"
+    assert request.summary == "Normalized summary"
+    assert request.status == "draft"
+    assert request.tags == ["field", "analysis"]
+    assert update.title == "Updated"
+    assert update.tags == ["one", "two"]
+    assert version.version == "v1.0"
+    assert version.release_notes == "Notes"
+
+
+def test_asset_requests_reject_empty_required_text_and_oversized_tags() -> None:
+    with pytest.raises(ValidationError):
+        AssetCreateRequest(
+            type=AssetType.DATASET,
+            slug="oversized-tag",
+            title="Dataset",
+            tags=["x" * 81],
+        )
+
+    with pytest.raises(ValidationError):
+        AssetCreateRequest(type=AssetType.DATASET, slug="empty-title", title="   ")
+
+    with pytest.raises(ValidationError):
+        AssetUpdateRequest(tags=["x" * 81])

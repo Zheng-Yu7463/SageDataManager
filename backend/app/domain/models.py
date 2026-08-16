@@ -14,6 +14,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Index,
+    Integer,
     LargeBinary,
     String,
     Table,
@@ -70,6 +71,9 @@ class User(Base):
     is_instance_owner: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     avatar_url: Mapped[str | None] = mapped_column(String(500))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    session_generation: Mapped[int] = mapped_column(
+        Integer, default=0, server_default=text("0"), nullable=False
+    )
 
     access_tokens: Mapped[list[PersonalAccessToken]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
@@ -144,7 +148,7 @@ class Asset(Base):
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
     type: Mapped[AssetType] = mapped_column(Enum(AssetType, name="asset_type"), index=True)
-    slug: Mapped[str] = mapped_column(String(160), unique=True, index=True)
+    slug: Mapped[str] = mapped_column(String(160), unique=True)
     title: Mapped[str] = mapped_column(String(500), index=True)
     summary: Mapped[str] = mapped_column(Text, default="")
     status: Mapped[str] = mapped_column(String(40), index=True)
@@ -312,7 +316,7 @@ class Tag(Base):
     __tablename__ = "tags"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    name: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(80), unique=True)
     assets: Mapped[list[Asset]] = relationship(secondary=asset_tags, back_populates="tags")
 
 
@@ -380,7 +384,7 @@ class UnclaimedFile(Base):
     __tablename__ = "unclaimed_files"
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=uuid4)
-    relative_path: Mapped[str] = mapped_column(String(1000), unique=True, index=True)
+    relative_path: Mapped[str] = mapped_column(String(1000), unique=True)
     file_name: Mapped[str] = mapped_column(String(500), nullable=False)
     file_kind: Mapped[str] = mapped_column(String(80), nullable=False)
     mime_type: Mapped[str | None] = mapped_column(String(160))

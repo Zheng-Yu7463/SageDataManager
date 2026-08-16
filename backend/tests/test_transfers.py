@@ -1,5 +1,8 @@
 import hashlib
 import os
+import shutil
+import stat
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -10,19 +13,85 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core.config import settings
 from app.db.base import Base
 from app.domain.enums import AssetType, HealthStatus, Visibility
-from app.domain.models import Activity, Asset, FileRecord, User
+from app.domain.models import Activity, Asset, FileRecord, UploadTask, User
 from app.domain.schemas import UploadCommandRequest
 from app.services.archive import scan_storage
+from app.services.storage import UPLOAD_LOCKS_DIRECTORY, storage_index_guard
 from app.services.transfers import (
     UPLOAD_COMPLETION_MARKER,
+    UploadBusyError,
     UploadCommandError,
     UploadConflictError,
     UploadContentError,
     UploadNotReadyError,
+    cleanup_expired_upload_tasks,
+    complete_agent_file_upload,
     finalize_upload,
     generate_upload_command,
     upload_status,
 )
+
+
+def test_agent_file_publish_fsyncs_created_directories_and_destination(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    content = b"durable content"
+    temporary_file = tmp_path / "temporary-upload"
+    temporary_file.write_bytes(content)
+    upload_id = uuid4()
+    destination = tmp_path / ".uploads" / str(upload_id) / "nested" / "file.bin"
+    directory_syncs = 0
+    original_fsync = os.fsync
+
+    def record_fsync(descriptor: int) -> None:
+        nonlocal directory_syncs
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            directory_syncs += 1
+        original_fsync(descriptor)
+
+    monkeypatch.setattr("app.services.transfers.os.fsync", record_fsync)
+
+    result = complete_agent_file_upload(
+        upload_id,
+        "nested/file.bin",
+        temporary_file,
+        destination,
+        hashlib.sha256(content).hexdigest(),
+    )
+
+    assert result.file_size == len(content)
+    assert destination.read_bytes() == content
+    assert not temporary_file.exists()
+    assert directory_syncs >= 4
+
+
+def test_agent_file_publish_rolls_back_link_when_directory_sync_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    temporary_file = tmp_path / "temporary-upload"
+    temporary_file.write_bytes(b"content")
+    upload_id = uuid4()
+    destination = tmp_path / ".uploads" / str(upload_id) / "file.bin"
+    destination.parent.mkdir(parents=True)
+
+    def fail_fsync(descriptor: int) -> None:
+        raise OSError("simulated directory sync failure")
+
+    monkeypatch.setattr("app.services.transfers.os.fsync", fail_fsync)
+
+    with pytest.raises(OSError, match="directory sync failure"):
+        complete_agent_file_upload(
+            upload_id,
+            "file.bin",
+            temporary_file,
+            destination,
+            hashlib.sha256(b"content").hexdigest(),
+        )
+
+    assert temporary_file.exists()
+    assert not destination.exists()
 
 
 def make_session() -> Session:
@@ -131,6 +200,24 @@ def test_generate_upload_command_records_target_without_local_source() -> None:
     assert "/private/local/path" not in activity.description
 
 
+def test_finalize_upload_rejects_an_active_archive_scan(tmp_path: Path) -> None:
+    session = make_session()
+    asset = create_asset(session)
+    prepared = prepare_upload(session, asset)
+
+    with (
+        storage_index_guard(session, shared=False),
+        pytest.raises(UploadBusyError, match="归档扫描正在运行"),
+    ):
+        finalize_upload(
+            session,
+            tmp_path,
+            prepared.upload_id,
+            prepared.upload_token,
+            actor=asset.owner,
+        )
+
+
 def test_finalize_upload_reports_empty_staging_directory(tmp_path: Path) -> None:
     session = make_session()
     asset = create_asset(session)
@@ -170,7 +257,10 @@ def test_finalize_upload_requires_scp_completion_marker(tmp_path: Path) -> None:
     assert session.scalar(select(func.count()).select_from(FileRecord)) == 0
 
 
-def test_finalize_upload_moves_and_indexes_a_file(tmp_path: Path) -> None:
+def test_finalize_upload_moves_and_indexes_a_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     session = make_session()
     asset = create_asset(session)
     prepared = prepare_upload(session, asset)
@@ -178,6 +268,16 @@ def test_finalize_upload_moves_and_indexes_a_file(tmp_path: Path) -> None:
     staged.parent.mkdir(parents=True)
     staged.write_text("sample,value\nA,1\n")
     mark_upload_complete(tmp_path, prepared.upload_id)
+    directory_syncs = 0
+    original_fsync = os.fsync
+
+    def record_fsync(descriptor: int) -> None:
+        nonlocal directory_syncs
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            directory_syncs += 1
+        original_fsync(descriptor)
+
+    monkeypatch.setattr("app.services.transfers.os.fsync", record_fsync)
 
     result = finalize_upload(
         session,
@@ -193,9 +293,7 @@ def test_finalize_upload_moves_and_indexes_a_file(tmp_path: Path) -> None:
     assert not staging_directory(tmp_path, prepared.upload_id).exists()
     assert result.imported_file_count == 1
     assert result.total_size == destination.stat().st_size
-    assert result.relative_paths == [
-        "dataset/soil-samples-2026/raw/2026-08/samples.csv"
-    ]
+    assert result.relative_paths == ["dataset/soil-samples-2026/raw/2026-08/samples.csv"]
     expected_checksum = hashlib.sha256(destination.read_bytes()).hexdigest()
     assert result.checksums[result.relative_paths[0]] == expected_checksum
     assert record is not None
@@ -203,9 +301,122 @@ def test_finalize_upload_moves_and_indexes_a_file(tmp_path: Path) -> None:
     assert record.asset_id == asset.id
     assert record.file_kind == "data"
     assert record.health_status == HealthStatus.HEALTHY
-    assert session.scalar(
-        select(func.count()).select_from(Activity).where(Activity.action == "completed_upload")
-    ) == 1
+    assert directory_syncs >= 5
+    assert (
+        session.scalar(
+            select(func.count()).select_from(Activity).where(Activity.action == "completed_upload")
+        )
+        == 1
+    )
+
+
+def test_archive_scan_clears_checksum_only_when_file_snapshot_changes(
+    tmp_path: Path,
+) -> None:
+    session = make_session()
+    asset = create_asset(session)
+    prepared = prepare_upload(session, asset)
+    staged = staging_directory(tmp_path, prepared.upload_id) / "samples.csv"
+    staged.parent.mkdir(parents=True)
+    staged.write_text("sample,value\nA,1\n")
+    mark_upload_complete(tmp_path, prepared.upload_id)
+    finalize_upload(
+        session,
+        tmp_path,
+        prepared.upload_id,
+        prepared.upload_token,
+        actor=asset.owner,
+    )
+    destination = tmp_path / "dataset/soil-samples-2026/raw/2026-08/samples.csv"
+    record = session.scalar(select(FileRecord))
+    assert record is not None
+    original_checksum = record.checksum
+    assert original_checksum is not None
+
+    scan_storage(session, tmp_path)
+    assert record.checksum == original_checksum
+
+    destination.write_text("externally modified archive content")
+    scan_storage(session, tmp_path)
+
+    assert record.checksum is None
+    assert record.file_size == destination.stat().st_size
+    assert record.health_status == HealthStatus.HEALTHY
+
+
+def test_finalize_upload_replay_retries_staging_cleanup_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = make_session()
+    asset = create_asset(session)
+    prepared = prepare_upload(session, asset)
+    staging = staging_directory(tmp_path, prepared.upload_id)
+    staged = staging / "samples.csv"
+    staged.parent.mkdir(parents=True)
+    staged.write_text("sample,value\nA,1\n")
+    mark_upload_complete(tmp_path, prepared.upload_id)
+    original_rmtree = shutil.rmtree
+    cleanup_attempts = 0
+
+    def fail_first_cleanup(path: Path) -> None:
+        nonlocal cleanup_attempts
+        cleanup_attempts += 1
+        if cleanup_attempts == 1:
+            raise OSError("simulated cleanup failure")
+        original_rmtree(path)
+
+    monkeypatch.setattr("app.services.transfers.shutil.rmtree", fail_first_cleanup)
+
+    with pytest.raises(UploadContentError, match="已完成入库"):
+        finalize_upload(
+            session,
+            tmp_path,
+            prepared.upload_id,
+            prepared.upload_token,
+            actor=asset.owner,
+        )
+    assert staging.is_dir()
+
+    replayed = finalize_upload(
+        session,
+        tmp_path,
+        prepared.upload_id,
+        prepared.upload_token,
+        actor=asset.owner,
+    )
+
+    assert replayed.imported_file_count == 1
+    assert cleanup_attempts == 2
+    assert not staging.exists()
+
+
+def test_cleanup_expired_upload_tasks_preserves_active_tasks(tmp_path: Path) -> None:
+    session = make_session()
+    asset = create_asset(session)
+    expired = prepare_upload(session, asset)
+    active = prepare_upload(session, asset)
+    expired_task = session.get(UploadTask, expired.upload_id)
+    active_task = session.get(UploadTask, active.upload_id)
+    assert expired_task is not None
+    assert active_task is not None
+    expired_task.expires_at = datetime.now(UTC) - timedelta(minutes=1)
+    session.commit()
+
+    expired_file = staging_directory(tmp_path, expired.upload_id) / "expired.csv"
+    active_file = staging_directory(tmp_path, active.upload_id) / "active.csv"
+    expired_file.parent.mkdir(parents=True)
+    active_file.parent.mkdir(parents=True)
+    expired_file.write_text("expired")
+    active_file.write_text("active")
+
+    cleaned = cleanup_expired_upload_tasks(session, tmp_path)
+
+    assert cleaned == 1
+    assert session.get(UploadTask, expired.upload_id) is None
+    assert session.get(UploadTask, active.upload_id) is not None
+    assert not expired_file.exists()
+    assert active_file.read_text() == "active"
 
 
 def test_upload_status_reports_waiting_ready_and_completed(tmp_path: Path) -> None:
@@ -372,6 +583,47 @@ def test_finalize_upload_blocks_all_filesystem_conflicts_before_move(tmp_path: P
     assert not destination.with_name("new.csv").exists()
 
 
+def test_finalize_upload_rejects_complete_archive_paths_over_database_limit(
+    tmp_path: Path,
+) -> None:
+    session = make_session()
+    asset = create_asset(session)
+    target_subdirectory = f"raw/{'t' * 200}/{'u' * 180}"
+    prepared = prepare_upload(
+        session,
+        asset,
+        target_subdirectory=target_subdirectory,
+    )
+    staged_file = staging_directory(tmp_path, prepared.upload_id).joinpath(
+        "a" * 200,
+        "b" * 200,
+        f"{'c' * 200}.csv",
+    )
+    staged_file.parent.mkdir(parents=True)
+    staged_file.write_text("too deep")
+    mark_upload_complete(tmp_path, prepared.upload_id)
+
+    with pytest.raises(UploadContentError, match="1000 个字符"):
+        finalize_upload(
+            session,
+            tmp_path,
+            prepared.upload_id,
+            prepared.upload_token,
+            actor=asset.owner,
+        )
+
+    complete_path = (
+        Path("dataset")
+        / asset.slug
+        / target_subdirectory
+        / staged_file.relative_to(staging_directory(tmp_path, prepared.upload_id))
+    )
+    assert len(complete_path.as_posix()) > 1000
+    assert staged_file.exists()
+    assert not (tmp_path / "dataset").exists()
+    assert session.scalar(select(func.count()).select_from(FileRecord)) == 0
+
+
 def test_finalize_upload_rejects_source_replaced_with_symlink_after_preflight(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -477,12 +729,28 @@ def test_finalize_upload_rolls_back_moved_files_when_indexing_fails(
     staged.parent.mkdir(parents=True)
     staged.write_text("new")
     mark_upload_complete(tmp_path, prepared.upload_id)
+    compensation_events: list[str] = []
+    published = tmp_path / "dataset" / asset.slug / "raw" / "2026-08" / "samples.csv"
+    original_flush = session.flush
+    original_rollback = session.rollback
+    original_unlink = os.unlink
 
     def fail_flush(*args, **kwargs):
-        raise RuntimeError("database unavailable")
+        if published.exists():
+            raise RuntimeError("database unavailable")
+        return original_flush(*args, **kwargs)
 
-    original_flush = session.flush
+    def record_rollback(*args, **kwargs):
+        compensation_events.append("rollback")
+        return original_rollback(*args, **kwargs)
+
+    def record_unlink(*args, **kwargs):
+        compensation_events.append("unlink")
+        return original_unlink(*args, **kwargs)
+
     monkeypatch.setattr(session, "flush", fail_flush)
+    monkeypatch.setattr(session, "rollback", record_rollback)
+    monkeypatch.setattr("app.services.transfers.os.unlink", record_unlink)
 
     with pytest.raises(RuntimeError, match="database unavailable"):
         finalize_upload(
@@ -495,6 +763,7 @@ def test_finalize_upload_rolls_back_moved_files_when_indexing_fails(
 
     assert staged.exists()
     assert not (tmp_path / "dataset").exists()
+    assert compensation_events[:2] == ["unlink", "rollback"]
     monkeypatch.setattr(session, "flush", original_flush)
     assert session.scalar(select(func.count()).select_from(FileRecord)) == 0
 
@@ -505,6 +774,9 @@ def test_archive_scan_excludes_upload_staging_files(tmp_path: Path) -> None:
     staged = staging_directory(tmp_path, uuid4()) / "partial.csv"
     staged.parent.mkdir(parents=True)
     staged.write_text("partial")
+    lock_file = tmp_path / UPLOAD_LOCKS_DIRECTORY / f"{uuid4()}.lock"
+    lock_file.parent.mkdir()
+    lock_file.touch()
 
     result = scan_storage(session, tmp_path)
     session.commit()

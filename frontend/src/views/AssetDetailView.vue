@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { useDebounceFn } from '@vueuse/core'
 import { Archive, ArrowDownToLine, ArrowLeft, ArrowUpRight, Check, CheckCircle2, ChevronDown, ChevronRight, CircleAlert, Copy, Eye, FileText, Folder, FolderOpen, GitBranch, History, Layers3, Link2, Pencil, Plus, Save, Search, Trash2, X } from '@lucide/vue'
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 
 import { addAssetRelation, addAssetVersion, archiveAsset, getAsset, getAssetChoices, getFileAccessTicket, getPublicationCitation, removeAssetRelation, updateAsset } from '@/api/client'
 import AssetIcon from '@/components/AssetIcon.vue'
@@ -34,6 +34,7 @@ const archiving = ref(false)
 const actionError = ref('')
 const editError = ref('')
 const edit = ref({ title: '', summary: '', status: '', visibility: 'lab' as Visibility, tags: '' })
+const editBaseline = ref('')
 
 const relationOpen = ref(false)
 const relationDialog = ref<HTMLElement | null>(null)
@@ -64,6 +65,16 @@ const previewableMimeTypes = new Set([
 ])
 const removingRelationIds = ref(new Set<string>())
 const previewOpen = computed(() => Boolean(previewingFile.value))
+const editDirty = computed(() => editOpen.value && JSON.stringify(edit.value) !== editBaseline.value)
+const versionDirty = computed(() => versionOpen.value && (
+  Boolean(versionDraft.value.version || versionDraft.value.releaseNotes)
+  || !versionDraft.value.makeCurrent
+))
+const relationDirty = computed(() => relationOpen.value && (
+  Boolean(relationTargetId.value)
+  || relationType.value !== 'related_to'
+))
+const hasUnsavedDraft = computed(() => editDirty.value || versionDirty.value || relationDirty.value)
 const returnLocation = computed(() => {
   const requested = route.query.returnTo
   if (typeof requested === 'string' && requested.startsWith('/') && !requested.startsWith('//')) return requested
@@ -152,11 +163,12 @@ const fileBrowserRows = computed(() => (data.value ? buildFileBrowserRows(data.v
 
 interface AssetOperationContext {
   assetId: string
+  revision: string
   version: number
 }
 
 function assetOperationContext(asset: AssetDetail): AssetOperationContext {
-  return { assetId: asset.id, version: assetContextVersion }
+  return { assetId: asset.id, revision: asset.updated_at, version: assetContextVersion }
 }
 
 function isCurrentAssetContext(context: AssetOperationContext) {
@@ -304,12 +316,15 @@ function openEdit() {
     visibility: data.value.visibility,
     tags: data.value.tags.join(', '),
   }
+  editBaseline.value = JSON.stringify(edit.value)
   editError.value = ''
   editOpen.value = true
 }
 
 function closeEdit() {
-  if (!saving.value) editOpen.value = false
+  if (saving.value) return
+  if (editDirty.value && !window.confirm('资产修改尚未保存，确定关闭吗？')) return
+  editOpen.value = false
 }
 
 async function saveEdit() {
@@ -324,7 +339,7 @@ async function saveEdit() {
       status: edit.value.status.trim(),
       visibility: edit.value.visibility,
       tags: edit.value.tags.split(/[，,]/).map((tag) => tag.trim()).filter(Boolean),
-    })
+    }, context.revision)
     if (!isCurrentAssetContext(context)) return
     data.value = data.value ? { ...data.value, ...updatedAsset } : null
     setPageTitle(updatedAsset.title)
@@ -362,7 +377,9 @@ function openVersion() {
 }
 
 function closeVersion() {
-  if (!versionSaving.value) versionOpen.value = false
+  if (versionSaving.value) return
+  if (versionDirty.value && !window.confirm('版本信息尚未登记，确定关闭吗？')) return
+  versionOpen.value = false
 }
 
 async function saveVersion() {
@@ -436,8 +453,19 @@ function openRelation() {
 
 function closeRelation() {
   if (relationSaving.value) return
+  if (relationDirty.value && !window.confirm('资产关联尚未建立，确定关闭吗？')) return
   relationCandidatesController?.abort()
   relationOpen.value = false
+}
+
+function confirmUnsavedDraftExit() {
+  return !hasUnsavedDraft.value || window.confirm('资产信息尚未保存，确定离开此页面吗？')
+}
+
+function preventUnsavedDraftExit(event: BeforeUnloadEvent) {
+  if (!hasUnsavedDraft.value) return
+  event.preventDefault()
+  event.returnValue = ''
 }
 
 async function saveRelation() {
@@ -528,11 +556,15 @@ watch(
   },
   { immediate: true },
 )
+onBeforeRouteUpdate(confirmUnsavedDraftExit)
+onBeforeRouteLeave(confirmUnsavedDraftExit)
+onMounted(() => window.addEventListener('beforeunload', preventUnsavedDraftExit))
 onBeforeUnmount(() => {
   controller?.abort()
   fileAccessController?.abort()
   relationCandidatesController?.abort()
   if (citationCopiedTimer) window.clearTimeout(citationCopiedTimer)
+  window.removeEventListener('beforeunload', preventUnsavedDraftExit)
   closePreview()
 })
 </script>

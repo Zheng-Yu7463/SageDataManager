@@ -18,17 +18,21 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.alter_column("users", "name", existing_type=sa.String(length=80), nullable=True)
-    op.alter_column("users", "email", existing_type=sa.String(length=255), nullable=True)
-    op.add_column(
-        "users",
-        sa.Column(
-            "is_registered",
-            sa.Boolean(),
-            server_default=sa.true(),
-            nullable=False,
-        ),
-    )
+    with op.batch_alter_table("users") as batch_op:
+        batch_op.alter_column(
+            "name", existing_type=sa.String(length=80), nullable=True
+        )
+        batch_op.alter_column(
+            "email", existing_type=sa.String(length=255), nullable=True
+        )
+        batch_op.add_column(
+            sa.Column(
+                "is_registered",
+                sa.Boolean(),
+                server_default=sa.true(),
+                nullable=False,
+            )
+        )
     op.create_table(
         "account_invitations",
         sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False),
@@ -79,6 +83,11 @@ def downgrade() -> None:
     op.drop_table("account_invitations")
     op.execute("UPDATE users SET name = username WHERE name IS NULL")
     op.execute("UPDATE users SET email = username || '@pending.invalid' WHERE email IS NULL")
-    op.drop_column("users", "is_registered")
-    op.alter_column("users", "email", existing_type=sa.String(length=255), nullable=False)
-    op.alter_column("users", "name", existing_type=sa.String(length=80), nullable=False)
+    with op.batch_alter_table("users") as batch_op:
+        batch_op.drop_column("is_registered")
+        batch_op.alter_column(
+            "email", existing_type=sa.String(length=255), nullable=False
+        )
+        batch_op.alter_column(
+            "name", existing_type=sa.String(length=80), nullable=False
+        )

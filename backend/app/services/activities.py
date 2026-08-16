@@ -8,6 +8,8 @@ from app.domain.activity import ActivityOperationRole, activity_label
 from app.domain.models import Activity, Asset, User
 from app.domain.schemas import ActivityFacet, ActivitySummary
 
+MAX_ACTIVITY_DESCRIPTION_LENGTH = 500
+
 
 def record_activity(
     session: Session,
@@ -31,7 +33,7 @@ def record_activity(
         operation_id=operation_id,
         operation_role=operation_role,
         action=action,
-        description=description,
+        description=description[:MAX_ACTIVITY_DESCRIPTION_LENGTH],
     )
     if created_at is not None:
         activity.created_at = created_at

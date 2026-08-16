@@ -31,10 +31,17 @@ const tokenCreating = ref(false)
 const tokenError = ref('')
 const tokenCopied = ref(false)
 const createdToken = ref<AccessTokenCreated | null>(null)
+const defaultTokenScopes: AgentScope[] = [
+  'assets:read',
+  'files:read',
+  'metadata:write',
+  'files:upload',
+  'citations:export',
+]
 const tokenForm = ref({
   name: '',
   expiresInDays: 90,
-  scopes: ['assets:read', 'files:read', 'metadata:write', 'files:upload', 'citations:export'] as AgentScope[],
+  scopes: [...defaultTokenScopes],
 })
 const revokeTarget = ref<AccessTokenSummary | null>(null)
 const revokeDialog = ref<HTMLElement | null>(null)
@@ -53,6 +60,14 @@ const { branding, applyBranding, pageEyebrow } = useBranding()
 const { account } = useSession()
 const currentUsername = computed(() => account.value?.username ?? '')
 const loading = computed(() => accountsLoading.value || tokensLoading.value || brandingLoading.value || systemUpdateLoading.value)
+const settingsMutationInProgress = computed(() => (
+  creating.value
+  || tokenCreating.value
+  || revoking.value
+  || brandingUpdating.value
+  || updateSubmitting.value
+  || updatingUsernames.value.size > 0
+))
 const savedBranding = ref<InstanceBranding>({ ...branding })
 const brandingForm = ref<InstanceBrandingInput>(brandingInput(savedBranding.value))
 const pendingLogoFile = ref<File | null>(null)
@@ -79,7 +94,12 @@ const updateDialog = ref<HTMLElement | null>(null)
 const updatePassword = ref('')
 const updateSubmitting = ref(false)
 const updateSubmitError = ref('')
-let updatePollTimer: ReturnType<typeof setInterval> | null = null
+let updatePollTimer: ReturnType<typeof setTimeout> | null = null
+let settingsDisposed = false
+let systemUpdateController: AbortController | undefined
+let accountsController: AbortController | undefined
+let tokensController: AbortController | undefined
+let brandingController: AbortController | undefined
 useOverlayFocus(createOpen, createDialog, closeCreate)
 useOverlayFocus(tokenDialogOpen, tokenDialog, closeTokenDialog)
 const revokeDialogOpen = computed(() => revokeTarget.value !== null)
@@ -88,6 +108,24 @@ useOverlayFocus(updateDialogOpen, updateDialog, closeUpdateDialog)
 
 const activeCount = computed(() => accounts.value.filter((item) => item.is_active && item.is_registered).length)
 const accountFormValid = computed(() => Boolean(form.value.username.trim()))
+const accountDialogHasUnsavedChanges = computed(() => (
+  createOpen.value
+  && (Boolean(form.value.username.trim()) || accountInvitation.value !== null)
+))
+const tokenDialogHasUnsavedChanges = computed(() => (
+  tokenDialogOpen.value
+  && (
+    createdToken.value !== null
+    || Boolean(tokenForm.value.name.trim())
+    || tokenForm.value.expiresInDays !== 90
+    || [...tokenForm.value.scopes].sort().join(',') !== [...defaultTokenScopes].sort().join(',')
+  )
+))
+const settingsHasUnsavedChanges = computed(() => (
+  brandingHasUnsavedChanges.value
+  || accountDialogHasUnsavedChanges.value
+  || tokenDialogHasUnsavedChanges.value
+))
 const accountInvitationUrl = computed(() => accountInvitation.value
   ? `${window.location.origin}${accountInvitation.value.registration_path}`
   : '')
@@ -96,6 +134,7 @@ const historicalTokens = computed(() => accessTokens.value.filter((token) => tok
 
 const isInstanceOwner = computed(() => account.value?.is_instance_owner === true)
 const systemUpdateBusy = computed(() => {
+  if (systemUpdate.value?.backup_in_progress) return true
   const state = systemUpdate.value?.state
   return state === 'checking'
     || state === 'recovering'
@@ -108,6 +147,7 @@ const systemUpdateBusy = computed(() => {
 const currentCommitShort = computed(() => systemUpdate.value?.current_commit?.slice(0, 8) || '—')
 const latestCommitShort = computed(() => systemUpdate.value?.latest_commit?.slice(0, 8) || '—')
 const systemUpdateProgress = computed(() => {
+  if (systemUpdate.value?.backup_in_progress) return 15
   const state = systemUpdate.value?.state
   if (!state) return 0
   const progress: Partial<Record<SystemUpdateStatus['state'], number>> = {
@@ -167,64 +207,103 @@ function resetBrandingDraft() {
   brandingMessage.value = ''
 }
 
-function preventUnsavedBrandingExit(event: BeforeUnloadEvent) {
-  if (!brandingHasUnsavedChanges.value) return
+function preventUnsavedSettingsExit(event: BeforeUnloadEvent) {
+  if (!settingsHasUnsavedChanges.value) return
   event.preventDefault()
   event.returnValue = ''
 }
 
 async function loadBrandingSettings() {
+  brandingController?.abort()
+  const controller = new AbortController()
+  brandingController = controller
   brandingLoading.value = true
   brandingError.value = ''
   try {
-    const latest = await getInstanceBranding()
+    const latest = await getInstanceBranding(controller.signal)
+    if (brandingController !== controller) return
     applyBrandingSnapshot(latest, true)
     clearPendingLogo()
   } catch (reason) {
+    if (brandingController !== controller) return
+    if (reason instanceof DOMException && reason.name === 'AbortError') return
     brandingError.value = reason instanceof Error ? reason.message : '无法读取品牌设置'
   } finally {
-    brandingLoading.value = false
+    if (brandingController === controller) {
+      brandingController = undefined
+      brandingLoading.value = false
+    }
   }
 }
 
 async function loadAccounts() {
+  accountsController?.abort()
+  const controller = new AbortController()
+  accountsController = controller
   accountsLoading.value = true
   accountsError.value = ''
   accountActionErrors.value = {}
   try {
-    accounts.value = await getAdminAccounts()
+    const result = await getAdminAccounts(controller.signal)
+    if (accountsController !== controller) return
+    accounts.value = result
   } catch (reason) {
+    if (accountsController !== controller) return
+    if (reason instanceof DOMException && reason.name === 'AbortError') return
     accountsError.value = reason instanceof Error ? reason.message : '无法读取管理员账号'
   } finally {
-    accountsLoading.value = false
+    if (accountsController === controller) {
+      accountsController = undefined
+      accountsLoading.value = false
+    }
   }
 }
 
 async function loadTokens() {
+  tokensController?.abort()
+  const controller = new AbortController()
+  tokensController = controller
   tokensLoading.value = true
   tokenLoadError.value = ''
   try {
-    accessTokens.value = await getAccessTokens()
+    const result = await getAccessTokens(controller.signal)
+    if (tokensController !== controller) return
+    accessTokens.value = result
   } catch (reason) {
+    if (tokensController !== controller) return
+    if (reason instanceof DOMException && reason.name === 'AbortError') return
     tokenLoadError.value = reason instanceof Error ? reason.message : '无法读取 AI 访问令牌'
   } finally {
-    tokensLoading.value = false
+    if (tokensController === controller) {
+      tokensController = undefined
+      tokensLoading.value = false
+    }
   }
 }
 
 async function loadSystemUpdate(silent = false) {
+  systemUpdateController?.abort()
+  const controller = new AbortController()
+  systemUpdateController = controller
   if (!silent) systemUpdateLoading.value = true
   if (!silent) systemUpdateError.value = ''
   try {
-    systemUpdate.value = await getSystemUpdateStatus()
+    const result = await getSystemUpdateStatus(controller.signal)
+    if (systemUpdateController !== controller) return
+    systemUpdate.value = result
     if (systemUpdateBusy.value) startUpdatePolling()
     else stopUpdatePolling()
   } catch (reason) {
+    if (systemUpdateController !== controller) return
+    if (reason instanceof DOMException && reason.name === 'AbortError') return
     if (!silent) {
       systemUpdateError.value = reason instanceof Error ? reason.message : '无法读取系统版本'
     }
   } finally {
-    if (!silent) systemUpdateLoading.value = false
+    if (systemUpdateController === controller) {
+      systemUpdateController = undefined
+      if (!silent) systemUpdateLoading.value = false
+    }
   }
 }
 
@@ -234,6 +313,7 @@ async function load() {
 
 async function refreshSettings() {
   if (brandingHasUnsavedChanges.value && !window.confirm('刷新会丢弃尚未保存的品牌更改，是否继续？')) return
+  if (loading.value || settingsMutationInProgress.value) return
   brandingMessage.value = ''
   await load()
 }
@@ -248,10 +328,11 @@ const scopeOptions: { value: AgentScope; label: string; description: string }[] 
 ]
 
 function openTokenDialog() {
+  if (tokensLoading.value) return
   tokenForm.value = {
     name: '',
     expiresInDays: 90,
-    scopes: ['assets:read', 'files:read', 'metadata:write', 'files:upload', 'citations:export'],
+    scopes: [...defaultTokenScopes],
   }
   tokenError.value = ''
   tokenCopied.value = false
@@ -261,6 +342,10 @@ function openTokenDialog() {
 
 function closeTokenDialog() {
   if (tokenCreating.value || createdToken.value) return
+  if (
+    tokenDialogHasUnsavedChanges.value
+    && !window.confirm('访问令牌草稿尚未创建，确定关闭吗？')
+  ) return
   tokenDialogOpen.value = false
   createdToken.value = null
 }
@@ -277,7 +362,10 @@ function toggleScope(scope: AgentScope) {
 }
 
 async function submitToken() {
-  if (!tokenForm.value.name.trim() || !tokenForm.value.scopes.length) return
+  if (tokensLoading.value || !tokenForm.value.name.trim() || !tokenForm.value.scopes.length) return
+  tokensController?.abort()
+  tokensController = undefined
+  tokensLoading.value = false
   tokenCreating.value = true
   tokenError.value = ''
   try {
@@ -306,7 +394,10 @@ async function copyCreatedToken() {
 }
 
 async function confirmRevokeToken() {
-  if (!revokeTarget.value) return
+  if (!revokeTarget.value || tokensLoading.value) return
+  tokensController?.abort()
+  tokensController = undefined
+  tokensLoading.value = false
   revoking.value = true
   revokeError.value = ''
   try {
@@ -341,7 +432,15 @@ function formatTokenDate(value: string | null) {
   return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
 }
 
+function backupScheduleLabel(intervalSeconds: number) {
+  if (intervalSeconds <= 0) return '自动备份已关闭'
+  if (intervalSeconds % 86400 === 0) return `每 ${intervalSeconds / 86400} 天自动备份`
+  if (intervalSeconds % 3600 === 0) return `每 ${intervalSeconds / 3600} 小时自动备份`
+  return `每 ${intervalSeconds} 秒自动备份`
+}
+
 function openCreate() {
+  if (accountsLoading.value) return
   form.value = { username: '' }
   createError.value = ''
   accountInvitation.value = null
@@ -350,10 +449,18 @@ function openCreate() {
 }
 
 function closeCreate() {
-  if (!creating.value) {
-    createOpen.value = false
-    accountInvitation.value = null
-  }
+  if (creating.value) return
+  if (
+    accountInvitation.value
+    && !window.confirm('当前邀请链接关闭后将不再显示，如未保存需要重新生成。确定关闭吗？')
+  ) return
+  if (
+    !accountInvitation.value
+    && form.value.username.trim()
+    && !window.confirm('管理员账号草稿尚未提交，确定关闭吗？')
+  ) return
+  createOpen.value = false
+  accountInvitation.value = null
 }
 
 function storeInvitation(invitation: AccountInvitationCreated) {
@@ -367,7 +474,10 @@ function storeInvitation(invitation: AccountInvitationCreated) {
 }
 
 async function createAccount() {
-  if (!accountFormValid.value) return
+  if (!accountFormValid.value || accountsLoading.value) return
+  accountsController?.abort()
+  accountsController = undefined
+  accountsLoading.value = false
   creating.value = true
   createError.value = ''
   try {
@@ -380,7 +490,10 @@ async function createAccount() {
 }
 
 async function issueAccountInvitation(account: AccountSummary) {
-  if (updatingUsernames.value.has(account.username)) return
+  if (accountsLoading.value || updatingUsernames.value.has(account.username)) return
+  accountsController?.abort()
+  accountsController = undefined
+  accountsLoading.value = false
   updatingUsernames.value = new Set(updatingUsernames.value).add(account.username)
   accountActionErrors.value = { ...accountActionErrors.value, [account.username]: '' }
   try {
@@ -410,7 +523,10 @@ async function copyAccountInvitation() {
 }
 
 async function toggleAccount(account: AccountSummary) {
-  if (account.username === currentUsername.value || updatingUsernames.value.has(account.username)) return
+  if (accountsLoading.value || account.username === currentUsername.value || updatingUsernames.value.has(account.username)) return
+  accountsController?.abort()
+  accountsController = undefined
+  accountsLoading.value = false
   updatingUsernames.value = new Set(updatingUsernames.value).add(account.username)
   const nextErrors = { ...accountActionErrors.value }
   delete nextErrors[account.username]
@@ -431,7 +547,10 @@ async function toggleAccount(account: AccountSummary) {
 }
 
 async function saveBranding() {
-  if (brandingUpdating.value || !brandingDirty.value || !brandingFormValid.value) return
+  if (brandingLoading.value || brandingUpdating.value || !brandingDirty.value || !brandingFormValid.value) return
+  brandingController?.abort()
+  brandingController = undefined
+  brandingLoading.value = false
   brandingOperation.value = 'saving'
   brandingError.value = ''
   brandingMessage.value = ''
@@ -481,7 +600,10 @@ function stageDefaultLogo() {
 }
 
 async function applyLogoChange() {
-  if (brandingUpdating.value || !logoDirty.value) return
+  if (brandingLoading.value || brandingUpdating.value || !logoDirty.value) return
+  brandingController?.abort()
+  brandingController = undefined
+  brandingLoading.value = false
   brandingOperation.value = 'updating-logo'
   brandingError.value = ''
   brandingMessage.value = ''
@@ -507,6 +629,7 @@ function cancelLogoChange() {
 
 function systemUpdateStateLabel(status: SystemUpdateStatus | null) {
   if (!status) return '读取中'
+  if (status.backup_in_progress) return '正在备份'
   const labels: Record<SystemUpdateStatus['state'], string> = {
     unavailable: '未配置',
     idle: '已是最新',
@@ -526,20 +649,25 @@ function systemUpdateStateLabel(status: SystemUpdateStatus | null) {
 
 function stopUpdatePolling() {
   if (updatePollTimer) {
-    clearInterval(updatePollTimer)
+    clearTimeout(updatePollTimer)
     updatePollTimer = null
   }
 }
 
 function startUpdatePolling() {
-  if (updatePollTimer) return
-  updatePollTimer = setInterval(() => {
-    void loadSystemUpdate(true)
+  if (settingsDisposed || updatePollTimer) return
+  updatePollTimer = setTimeout(async () => {
+    updatePollTimer = null
+    await loadSystemUpdate(true)
+    if (!settingsDisposed && systemUpdateBusy.value) startUpdatePolling()
   }, 2000)
 }
 
 async function checkForSystemUpdate() {
   if (systemUpdateBusy.value || systemUpdateLoading.value) return
+  stopUpdatePolling()
+  systemUpdateController?.abort()
+  systemUpdateController = undefined
   systemUpdateLoading.value = true
   systemUpdateError.value = ''
   try {
@@ -576,6 +704,9 @@ function closeUpdateDialog() {
 
 async function submitSystemUpdate() {
   if (!updatePassword.value || updateSubmitting.value) return
+  stopUpdatePolling()
+  systemUpdateController?.abort()
+  systemUpdateController = undefined
   updateSubmitting.value = true
   updateSubmitError.value = ''
   try {
@@ -586,7 +717,15 @@ async function submitSystemUpdate() {
     updatePassword.value = ''
     startUpdatePolling()
   } catch (reason) {
-    updateSubmitError.value = reason instanceof Error ? reason.message : '无法启动系统更新'
+    const message = reason instanceof Error ? reason.message : '无法启动系统更新'
+    await loadSystemUpdate(true)
+    if (systemUpdateBusy.value) {
+      updateDialogOpen.value = false
+      updatePassword.value = ''
+      startUpdatePolling()
+    } else {
+      updateSubmitError.value = message
+    }
   } finally {
     updateSubmitting.value = false
   }
@@ -597,17 +736,32 @@ function reloadApplication() {
 }
 
 onBeforeRouteLeave(() => {
-  if (!brandingHasUnsavedChanges.value) return true
-  return window.confirm('品牌设置尚未保存，确定离开此页面吗？')
+  if (!settingsHasUnsavedChanges.value) return true
+  if (createdToken.value) {
+    return window.confirm('新访问令牌只显示一次，离开后将无法再次查看。确定离开吗？')
+  }
+  if (accountInvitation.value) {
+    return window.confirm('当前邀请链接离开后将不再显示，如未保存需要重新生成。确定离开吗？')
+  }
+  return window.confirm('设置页仍有尚未保存的更改，确定离开吗？')
 })
 
 onMounted(() => {
-  window.addEventListener('beforeunload', preventUnsavedBrandingExit)
+  window.addEventListener('beforeunload', preventUnsavedSettingsExit)
   void load()
 })
 onBeforeUnmount(() => {
+  settingsDisposed = true
+  accountsController?.abort()
+  accountsController = undefined
+  tokensController?.abort()
+  tokensController = undefined
+  brandingController?.abort()
+  brandingController = undefined
   stopUpdatePolling()
-  window.removeEventListener('beforeunload', preventUnsavedBrandingExit)
+  systemUpdateController?.abort()
+  systemUpdateController = undefined
+  window.removeEventListener('beforeunload', preventUnsavedSettingsExit)
   clearPendingLogo()
 })
 </script>
@@ -620,7 +774,7 @@ onBeforeUnmount(() => {
         <h1>系统设置</h1>
         <p>配置当前 DataManager 实例的品牌、访问权限与系统版本。</p>
       </div>
-      <div class="settings-actions"><button class="button button--outline" :disabled="loading" @click="refreshSettings"><RefreshCw :size="16" />刷新</button><button class="button button--primary" @click="openCreate"><Plus :size="16" />新增管理员</button></div>
+      <div class="settings-actions"><button class="button button--outline" :disabled="loading || settingsMutationInProgress" @click="refreshSettings"><RefreshCw :size="16" />刷新</button><button class="button button--primary" :disabled="accountsLoading || creating" @click="openCreate"><Plus :size="16" />新增管理员</button></div>
     </header>
 
     <section class="branding-panel" aria-labelledby="branding-title">
@@ -651,11 +805,11 @@ onBeforeUnmount(() => {
               <div>
                 <input ref="logoInput" class="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp" aria-label="选择实例 Logo 图片" :disabled="brandingUpdating || brandingLoading" @change="selectLogo" />
                 <button class="button button--outline" type="button" :disabled="brandingUpdating || brandingLoading" @click="logoInput?.click()"><ImageUp :size="15" />选择图片</button>
-                <button v-if="savedBranding.logo_url && !pendingLogoRemoval" class="button button--quiet" type="button" :disabled="brandingUpdating" @click="stageDefaultLogo"><RotateCcw :size="15" />恢复默认</button>
+                <button v-if="savedBranding.logo_url && !pendingLogoRemoval" class="button button--quiet" type="button" :disabled="brandingUpdating || brandingLoading" @click="stageDefaultLogo"><RotateCcw :size="15" />恢复默认</button>
               </div>
               <small>PNG、JPEG 或 WebP，最大 1 MB；选择后先在右侧预览</small>
               <div v-if="logoDirty" class="logo-pending-actions">
-                <button class="button button--primary" type="button" :disabled="brandingUpdating" @click="applyLogoChange"><Save :size="15" />{{ logoUpdating ? '正在应用' : '应用 Logo' }}</button>
+                <button class="button button--primary" type="button" :disabled="brandingUpdating || brandingLoading" @click="applyLogoChange"><Save :size="15" />{{ logoUpdating ? '正在应用' : '应用 Logo' }}</button>
                 <button class="button button--quiet" type="button" :disabled="brandingUpdating" @click="cancelLogoChange">取消</button>
               </div>
             </div>
@@ -663,8 +817,8 @@ onBeforeUnmount(() => {
           <div class="branding-feedback">
             <p v-if="brandingError" class="settings-error" role="alert">{{ brandingError }}</p>
             <p v-else-if="brandingMessage" class="settings-success" role="status"><Check :size="14" />{{ brandingMessage }}</p>
-            <button v-if="brandingHasUnsavedChanges" class="button button--quiet" type="button" :disabled="brandingUpdating" @click="resetBrandingDraft"><RotateCcw :size="15" />撤销更改</button>
-            <button class="button button--primary" :disabled="brandingUpdating || !brandingDirty || !brandingFormValid" type="submit"><Save :size="16" />{{ brandingSaving ? '正在保存' : '保存文字与主色' }}</button>
+            <button v-if="brandingHasUnsavedChanges" class="button button--quiet" type="button" :disabled="brandingUpdating || brandingLoading" @click="resetBrandingDraft"><RotateCcw :size="15" />撤销更改</button>
+            <button class="button button--primary" :disabled="brandingUpdating || brandingLoading || !brandingDirty || !brandingFormValid" type="submit"><Save :size="16" />{{ brandingSaving ? '正在保存' : '保存文字与主色' }}</button>
           </div>
         </form>
         <aside class="brand-preview" :style="{ '--preview-color': brandingForm.primary_color }" aria-label="品牌预览">
@@ -690,7 +844,7 @@ onBeforeUnmount(() => {
           <a class="button button--outline" href="/agent.md" target="_blank" rel="noopener">
             <ExternalLink :size="15" />Agent 说明
           </a>
-          <button class="button button--primary" type="button" @click="openTokenDialog">
+          <button class="button button--primary" type="button" :disabled="tokensLoading || tokenCreating" @click="openTokenDialog">
             <KeyRound :size="15" />新建令牌
           </button>
         </div>
@@ -777,9 +931,9 @@ onBeforeUnmount(() => {
           <div><small>当前 Commit</small><strong><code>{{ currentCommitShort }}</code></strong></div>
           <span class="system-version-arrow">→</span>
           <div><small>origin/main</small><strong><code>{{ latestCommitShort }}</code></strong></div>
-          <span class="system-update-status" :class="`system-update-status--${systemUpdate.state}`">{{ systemUpdateStateLabel(systemUpdate) }}</span>
+          <span class="system-update-status" :class="systemUpdate.backup_in_progress ? 'system-update-status--backing_up' : 'system-update-status--' + systemUpdate.state">{{ systemUpdateStateLabel(systemUpdate) }}</span>
         </div>
-        <div v-if="systemUpdateBusy || systemUpdate.state === 'succeeded'" class="system-update-progress" role="progressbar" aria-label="系统更新进度" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="systemUpdateProgress">
+        <div v-if="systemUpdateBusy || systemUpdate.state === 'succeeded'" class="system-update-progress" role="progressbar" :aria-label="systemUpdate.backup_in_progress ? '数据库备份进度' : '系统更新进度'" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="systemUpdateProgress">
           <span :style="{ width: `${systemUpdateProgress}%` }"></span>
         </div>
         <p class="system-update-message">{{ systemUpdate.message }}</p>
@@ -795,6 +949,12 @@ onBeforeUnmount(() => {
         </ol>
         <div v-if="systemUpdate.logs.length && (systemUpdateBusy || systemUpdate.state === 'failed')" class="system-update-log">
           <code v-for="line in systemUpdate.logs.slice(-8)" :key="line">{{ line }}</code>
+        </div>
+        <div v-if="systemUpdate.enabled" class="system-backup-status">
+          <div><strong>PostgreSQL 自动备份</strong><span>{{ systemUpdate.backup_in_progress ? '正在创建并校验备份' : backupScheduleLabel(systemUpdate.scheduled_backup_interval_seconds) }}</span></div>
+          <span v-if="systemUpdate.last_backup_at">最近完成：{{ formatTokenDate(systemUpdate.last_backup_at) }}<code>{{ systemUpdate.last_backup_path }}</code></span>
+          <span v-if="systemUpdate.next_backup_at">下次计划：{{ formatTokenDate(systemUpdate.next_backup_at) }}</span>
+          <p v-if="systemUpdate.last_backup_error" class="settings-error" role="alert">最近备份失败：{{ systemUpdate.last_backup_error }}</p>
         </div>
         <div class="system-update-notes">
           <span v-if="systemUpdate.backup_path">数据库备份：<code>{{ systemUpdate.backup_path }}</code></span>
@@ -1020,6 +1180,11 @@ onBeforeUnmount(() => {
 .system-update-commits small { color: var(--muted); font-size: 9px; }
 .system-update-log { display: grid; max-height: 150px; margin-top: 14px; padding: 11px; overflow-y: auto; color: #cbd8ce; background: #26332a; border-radius: 6px; gap: 4px; }
 .system-update-log code { font-size: 9px; line-height: 1.5; white-space: pre-wrap; }
+.system-backup-status { display: grid; margin-top: 14px; padding: 11px 0; border-top: 1px solid #edf0eb; border-bottom: 1px solid #edf0eb; color: var(--muted); font-size: 9px; gap: 7px; }
+.system-backup-status > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.system-backup-status strong { color: var(--ink); font-size: 10px; }
+.system-backup-status code { margin-left: 7px; color: var(--sage); overflow-wrap: anywhere; }
+.system-backup-status .settings-error { margin: 0; }
 .system-update-notes { display: flex; min-height: 30px; margin-top: 12px; align-items: center; color: var(--muted); font-size: 9px; gap: 12px; }
 .system-update-notes .button { margin-left: auto; }
 .system-update-dialog { width: min(100%, 520px); }
@@ -1042,6 +1207,7 @@ onBeforeUnmount(() => {
   .system-update-actions { margin-left: 0; }
   .system-update-actions .button { flex: 1; justify-content: center; }
   .system-update-content { padding: 16px; }
+  .system-backup-status > div { align-items: flex-start; flex-direction: column; gap: 4px; }
 }
 .color-field > small { color: #6f7d74; font-size: 9px; font-weight: 500; line-height: 1.4; }
 .color-field > small.color-contrast--invalid { color: #a6533d; font-weight: 700; }

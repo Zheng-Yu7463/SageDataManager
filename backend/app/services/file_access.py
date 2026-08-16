@@ -161,9 +161,7 @@ def issue_file_access_grant(
 ) -> FileAccessGrant:
     verify_file_access(session, file_id, mode)
     now = datetime.now(UTC)
-    session.execute(
-        delete(FileAccessGrant).where(FileAccessGrant.expires_at <= now)
-    )
+    session.execute(delete(FileAccessGrant).where(FileAccessGrant.expires_at <= now))
     grant = FileAccessGrant(
         file_id=file_id,
         user_id=actor.id,
@@ -176,26 +174,36 @@ def issue_file_access_grant(
 
 
 def authorize_file_access_grant(
-    session: Session, grant_id: UUID, file_id: UUID
+    session: Session,
+    grant_id: UUID,
+    file_id: UUID,
+    *,
+    record_access: bool = True,
 ) -> tuple[User, str, bool]:
-    first_access = session.execute(
-        update(FileAccessGrant)
-        .where(
-            FileAccessGrant.id == grant_id,
-            FileAccessGrant.file_id == file_id,
-            FileAccessGrant.expires_at > datetime.now(UTC),
-            FileAccessGrant.first_accessed_at.is_(None),
-        )
-        .values(first_accessed_at=datetime.now(UTC))
-        .returning(FileAccessGrant.user_id, FileAccessGrant.mode)
-    ).one_or_none()
-    grant = first_access or session.execute(
-        select(FileAccessGrant.user_id, FileAccessGrant.mode).where(
-            FileAccessGrant.id == grant_id,
-            FileAccessGrant.file_id == file_id,
-            FileAccessGrant.expires_at > datetime.now(UTC),
-        )
-    ).one_or_none()
+    first_access = None
+    if record_access:
+        first_access = session.execute(
+            update(FileAccessGrant)
+            .execution_options(synchronize_session=False)
+            .where(
+                FileAccessGrant.id == grant_id,
+                FileAccessGrant.file_id == file_id,
+                FileAccessGrant.expires_at > datetime.now(UTC),
+                FileAccessGrant.first_accessed_at.is_(None),
+            )
+            .values(first_accessed_at=datetime.now(UTC))
+            .returning(FileAccessGrant.user_id, FileAccessGrant.mode)
+        ).one_or_none()
+    grant = (
+        first_access
+        or session.execute(
+            select(FileAccessGrant.user_id, FileAccessGrant.mode).where(
+                FileAccessGrant.id == grant_id,
+                FileAccessGrant.file_id == file_id,
+                FileAccessGrant.expires_at > datetime.now(UTC),
+            )
+        ).one_or_none()
+    )
     if not grant:
         raise FileAccessGrantInvalidError
     actor = session.get(User, grant.user_id)

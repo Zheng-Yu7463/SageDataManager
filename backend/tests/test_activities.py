@@ -107,9 +107,7 @@ def test_recent_activity_summaries_do_not_mix_assets() -> None:
 
 def test_raw_activity_summary_represents_one_audit_record() -> None:
     session = make_session()
-    activity = record_activity(
-        session, action="updated_branding", description="更新了品牌设置"
-    )
+    activity = record_activity(session, action="updated_branding", description="更新了品牌设置")
     session.flush()
 
     summary = activity_summary(activity)
@@ -153,3 +151,17 @@ def test_activity_display_values_are_immutable_snapshots() -> None:
         assert summary.actor_name == "Original Name"
         assert summary.asset_title == "Original Title"
         assert summary.asset_type == AssetType.PAPER
+
+
+def test_record_activity_truncates_descriptions_to_database_limit() -> None:
+    session = make_session()
+    description = "x" * 700
+    activity = record_activity(
+        session,
+        action="updated_metadata",
+        description=description,
+    )
+    session.flush()
+
+    assert len(activity.description) == 500
+    assert activity.description == description[:500]

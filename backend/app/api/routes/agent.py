@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
+import anyio
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from sqlalchemy.orm import Session
 
@@ -58,16 +60,36 @@ from app.services.transfers import (
     UploadTooLargeError,
     agent_upload_status,
     cancel_agent_upload,
+    cleanup_expired_upload_tasks,
     complete_agent_file_upload,
     create_agent_upload,
     finalize_upload,
     staged_upload_destination,
     temporary_upload_path,
+    upload_task_guard,
     validate_agent_upload,
 )
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 SessionDependency = Annotated[Session, Depends(get_session)]
+
+
+def validate_streaming_upload(
+    session: Session,
+    upload_id: UUID,
+    upload_token: str,
+    principal: AgentPrincipal,
+) -> None:
+    try:
+        validate_agent_upload(
+            session,
+            upload_id,
+            upload_token,
+            principal.user,
+            principal.token,
+        )
+    finally:
+        session.rollback()
 
 
 def scoped(scope: str):
@@ -199,6 +221,7 @@ def agent_file_content(
     file_id: UUID,
     session: SessionDependency,
     principal: Annotated[AgentPrincipal, scoped("files:read")],
+    request: Request,
     mode: Annotated[Literal["download", "preview"], Query()] = "download",
 ) -> Response:
     delivery = None
@@ -210,6 +233,7 @@ def agent_file_content(
             mode,
             actor=principal.user,
             credential_name=principal.token.name,
+            audit_access=request.method != "HEAD",
         )
         session.commit()
     except FileNotFoundError:
@@ -327,6 +351,7 @@ def agent_create_upload(
     principal: Annotated[AgentPrincipal, scoped("files:upload")],
 ) -> AgentUploadCreateResponse:
     try:
+        cleanup_expired_upload_tasks(session, settings.storage_root)
         result = create_agent_upload(
             session,
             payload.asset_id,
@@ -399,7 +424,6 @@ def agent_cancel_upload(
             actor=principal.user,
             access_token=principal.token,
         )
-        session.commit()
         return result
     except UploadTicketError as error:
         session.rollback()
@@ -452,42 +476,50 @@ async def agent_upload_file(
     ):
         raise HTTPException(status_code=400, detail="X-Sage-Content-SHA256 格式无效。")
     try:
-        validate_agent_upload(
+        await anyio.to_thread.run_sync(
+            validate_streaming_upload,
             session,
             upload_id,
             x_sage_upload_token,
-            principal.user,
-            principal.token,
+            principal,
         )
-        destination, parts_directory = staged_upload_destination(
-            settings.storage_root, upload_id, relative_path
-        )
-        with temporary_upload_path(parts_directory) as temporary_file:
-            received = 0
-            digest = hashlib.sha256()
-            with temporary_file.open("xb") as output:
-                async for chunk in request.stream():
-                    received += len(chunk)
-                    if received > settings.agent_upload_max_bytes:
-                        raise UploadTooLargeError("上传文件超过服务器限制。")
-                    digest.update(chunk)
-                    output.write(chunk)
-            if received == 0:
-                raise UploadContentError("不能上传空文件。")
-            checksum_sha256 = digest.hexdigest()
-            if expected_checksum and not hmac.compare_digest(
-                expected_checksum, checksum_sha256
-            ):
-                raise UploadContentError("文件 SHA-256 校验失败，请重新上传。")
-            result = complete_agent_file_upload(
+        with upload_task_guard(settings.storage_root, upload_id):
+            await anyio.to_thread.run_sync(
+                validate_streaming_upload,
+                session,
                 upload_id,
-                relative_path,
-                temporary_file,
-                destination,
-                checksum_sha256,
+                x_sage_upload_token,
+                principal,
             )
-        session.commit()
-        return result
+            destination, parts_directory = staged_upload_destination(
+                settings.storage_root, upload_id, relative_path
+            )
+            with temporary_upload_path(parts_directory) as temporary_file:
+                received = 0
+                digest = hashlib.sha256()
+                with temporary_file.open("xb", buffering=0) as output:
+                    async for chunk in request.stream():
+                        received += len(chunk)
+                        if received > settings.agent_upload_max_bytes:
+                            raise UploadTooLargeError("上传文件超过服务器限制。")
+                        digest.update(chunk)
+                        await anyio.to_thread.run_sync(output.write, chunk)
+                    await anyio.to_thread.run_sync(os.fsync, output.fileno())
+                if received == 0:
+                    raise UploadContentError("不能上传空文件。")
+                checksum_sha256 = digest.hexdigest()
+                if expected_checksum and not hmac.compare_digest(
+                    expected_checksum, checksum_sha256
+                ):
+                    raise UploadContentError("文件 SHA-256 校验失败，请重新上传。")
+                result = complete_agent_file_upload(
+                    upload_id,
+                    relative_path,
+                    temporary_file,
+                    destination,
+                    checksum_sha256,
+                )
+            return result
     except UploadTicketError as error:
         session.rollback()
         raise HTTPException(status_code=403, detail=str(error)) from None

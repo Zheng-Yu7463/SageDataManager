@@ -18,11 +18,21 @@ class FileAccessClaims:
 
 
 @dataclass(frozen=True)
+class SessionClaims:
+    username: str
+    generation: int
+
+
+@dataclass(frozen=True)
 class UploadClaims:
     upload_id: UUID
     asset_id: UUID
     target_subdirectory: str
     username: str
+
+
+class TokenSigningConfigurationError(ValueError):
+    pass
 
 
 def _encode(value: bytes) -> str:
@@ -35,6 +45,8 @@ def _decode(value: str) -> bytes:
 
 def _sign(value: str) -> str:
     secret = settings.auth_session_secret or settings.fixed_account_password
+    if not secret:
+        raise TokenSigningConfigurationError("服务器尚未配置认证签名密钥。")
     return _encode(hmac.new(secret.encode(), value.encode(), hashlib.sha256).digest())
 
 
@@ -63,26 +75,45 @@ def verify_password(password: str, encoded_hash: str) -> bool:
         return False
 
 
-def create_session_token(username: str) -> str:
+def create_session_token(username: str, generation: int = 0) -> str:
     expires_at = datetime.now(UTC) + timedelta(seconds=settings.auth_session_ttl_seconds)
-    payload = _encode(json.dumps({"username": username, "exp": expires_at.timestamp()}).encode())
+    payload = _encode(
+        json.dumps(
+            {
+                "kind": "session",
+                "username": username,
+                "generation": generation,
+                "exp": expires_at.timestamp(),
+            }
+        ).encode()
+    )
     return f"{payload}.{_sign(payload)}"
 
 
-def read_session_token(token: str) -> str | None:
+def read_session_claims(token: str) -> SessionClaims | None:
     try:
         payload, signature = token.split(".", 1)
         if not hmac.compare_digest(signature, _sign(payload)):
             return None
         value = json.loads(_decode(payload))
+        generation = value.get("generation", 0)
         if (
-            not isinstance(value.get("username"), str)
+            value.get("kind") not in (None, "session")
+            or not isinstance(value.get("username"), str)
+            or not isinstance(generation, int)
+            or isinstance(generation, bool)
+            or generation < 0
             or datetime.now(UTC).timestamp() >= value["exp"]
         ):
             return None
-        return value["username"]
-    except (ValueError, json.JSONDecodeError, TypeError):
+        return SessionClaims(username=value["username"], generation=generation)
+    except (ValueError, json.JSONDecodeError, TypeError, KeyError):
         return None
+
+
+def read_session_token(token: str) -> str | None:
+    claims = read_session_claims(token)
+    return claims.username if claims else None
 
 
 def create_file_access_token(grant_id: UUID, expires_at: datetime) -> str:

@@ -1,7 +1,7 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Path, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -53,6 +53,15 @@ from app.services.accounts import (
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 SessionDependency = Annotated[Session, Depends(get_session)]
+InvitationTokenHeader = Annotated[
+    str,
+    Header(
+        alias="X-Sage-Invitation-Token",
+        min_length=60,
+        max_length=100,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    ),
+]
 
 
 @router.post("/login")
@@ -170,22 +179,23 @@ def _renew_invitation(
         raise
 
 
-@router.get("/invitations/{token}")
-def invitation_status(
-    token: Annotated[str, Path(min_length=60, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")],
-    session: SessionDependency,
-) -> AccountInvitationStatus:
+def _invitation_status(session: Session, token: str) -> AccountInvitationStatus:
     try:
         return get_account_invitation(session, token)
     except AccountInvitationInvalidError:
         raise HTTPException(status_code=404, detail="注册链接无效或已失效。") from None
 
 
-@router.post("/invitations/{token}/accept")
-def accept_invitation(
-    token: Annotated[str, Path(min_length=60, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")],
-    payload: AccountInvitationAcceptRequest,
+@router.get("/invitations")
+def invitation_status(
     session: SessionDependency,
+    token: InvitationTokenHeader,
+) -> AccountInvitationStatus:
+    return _invitation_status(session, token)
+
+
+def _accept_invitation(
+    session: Session, token: str, payload: AccountInvitationAcceptRequest
 ) -> AccountLoginResponse:
     try:
         account, session_token = accept_account_invitation(session, token, payload)
@@ -209,6 +219,32 @@ def accept_invitation(
     except Exception:
         session.rollback()
         raise
+
+
+@router.post("/invitations/accept")
+def accept_invitation(
+    payload: AccountInvitationAcceptRequest,
+    session: SessionDependency,
+    token: InvitationTokenHeader,
+) -> AccountLoginResponse:
+    return _accept_invitation(session, token, payload)
+
+
+@router.get("/invitations/{token}", include_in_schema=False)
+def legacy_invitation_status(
+    token: Annotated[str, Path(min_length=60, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")],
+    session: SessionDependency,
+) -> AccountInvitationStatus:
+    return _invitation_status(session, token)
+
+
+@router.post("/invitations/{token}/accept", include_in_schema=False)
+def legacy_accept_invitation(
+    token: Annotated[str, Path(min_length=60, max_length=100, pattern=r"^[A-Za-z0-9_-]+$")],
+    payload: AccountInvitationAcceptRequest,
+    session: SessionDependency,
+) -> AccountLoginResponse:
+    return _accept_invitation(session, token, payload)
 
 
 @router.patch("/admin-accounts/{username}")

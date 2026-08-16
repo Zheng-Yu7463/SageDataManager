@@ -1,13 +1,22 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from collections.abc import Iterable
+from typing import Any, Protocol
 
+from app.domain.enums import AssetType
 from app.domain.schemas import (
-    AssetSummary,
     PublicationCitationExportResponse,
     PublicationCitationResponse,
 )
+
+
+class CitableAsset(Protocol):
+    type: AssetType
+    slug: str
+    title: str
+    details: dict[str, Any]
 
 
 class PublicationCitationError(Exception):
@@ -22,7 +31,7 @@ def _bibtex_value(value: object) -> str:
     return _clean(value).replace("%", r"\%").replace("&", r"\&").replace("#", r"\#")
 
 
-def _citation_key(asset: AssetSummary) -> str:
+def _citation_key(asset: CitableAsset) -> str:
     configured = _clean(asset.details.get("citation_key", ""))
     if configured:
         return configured
@@ -32,7 +41,7 @@ def _citation_key(asset: AssetSummary) -> str:
     return key
 
 
-def _citation_fields(asset: AssetSummary) -> list[tuple[str, str]]:
+def _citation_fields(asset: CitableAsset) -> list[tuple[str, str]]:
     details = asset.details
     authors = details.get("authors")
     if not isinstance(authors, list) or not authors:
@@ -75,7 +84,7 @@ def _citation_fields(asset: AssetSummary) -> list[tuple[str, str]]:
     return fields
 
 
-def build_publication_citation(asset: AssetSummary) -> PublicationCitationResponse:
+def build_publication_citation(asset: CitableAsset) -> PublicationCitationResponse:
     if asset.type.value not in {"paper", "literature"}:
         raise PublicationCitationError("只有论文或学术文献可以生成 BibTeX。")
     citation_key = _citation_key(asset)
@@ -95,11 +104,11 @@ def build_publication_citation(asset: AssetSummary) -> PublicationCitationRespon
 
 
 def build_publication_citation_export(
-    assets: Iterable[AssetSummary], *, filename: str = "sage-publications.bib"
+    assets: Iterable[CitableAsset], *, filename: str = "sage-publications.bib"
 ) -> PublicationCitationExportResponse:
     citations = [build_publication_citation(asset) for asset in assets]
-    keys = [citation.citation_key for citation in citations]
-    duplicate_keys = sorted({key for key in keys if keys.count(key) > 1})
+    key_counts = Counter(citation.citation_key for citation in citations)
+    duplicate_keys = sorted(key for key, count in key_counts.items() if count > 1)
     if duplicate_keys:
         raise PublicationCitationError(
             f"引用键重复：{', '.join(duplicate_keys)}。请先修正出版物元数据。"

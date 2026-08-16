@@ -21,8 +21,8 @@ import {
   ShieldCheck,
   SlidersHorizontal,
 } from '@lucide/vue'
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 
 import AssetIcon from '@/components/AssetIcon.vue'
 import {
@@ -101,6 +101,7 @@ const registration = ref({
   pages: '',
   publisher: '',
 })
+const registrationBaseline = ref('')
 const citationActionId = ref<string | null>(null)
 const citationCopiedId = ref<string | null>(null)
 const citationError = ref('')
@@ -122,12 +123,14 @@ const uploadFinalizeResult = ref<UploadFinalizeResult | null>(null)
 const uploadPhase = ref<'configure' | 'transfer' | 'success'>('configure')
 let uploadStatusTimer: number | undefined
 let uploadStatusRequestVersion = 0
+let uploadOperationVersion = 0
 const upload = ref({
   sourcePath: '',
   directory: '',
   nestedPath: '',
   recursive: false,
 })
+const uploadBaseline = ref('')
 
 const activeFilterCount = computed(() => Object.values(filters.value).filter(Boolean).length)
 const catalogueHasConstraints = computed(() => Boolean(query.value.trim() || activeFilterCount.value))
@@ -136,6 +139,14 @@ const totalPages = computed(() => Math.max(1, Math.ceil((data.value?.total ?? 0)
 const currentUploadFolders = computed(() => uploadAsset.value?.upload_directories ?? [])
 const uploadOpen = computed(() => Boolean(uploadAsset.value))
 const uploadBusy = computed(() => uploadGenerating.value || uploadFinalizing.value)
+const registrationDirty = computed(() => registrationOpen.value && JSON.stringify(registration.value) !== registrationBaseline.value)
+const uploadConfigurationDirty = computed(() => (
+  uploadOpen.value
+  && uploadPhase.value === 'configure'
+  && JSON.stringify(upload.value) !== uploadBaseline.value
+))
+const uploadTransferActive = computed(() => uploadOpen.value && uploadPhase.value === 'transfer')
+const hasProtectedWork = computed(() => registrationDirty.value || uploadConfigurationDirty.value || uploadTransferActive.value)
 const uploadTargetPath = computed(() => {
   if (!uploadAsset.value || !upload.value.directory) return ''
   return [
@@ -363,21 +374,25 @@ function openRegistration() {
     pages: '',
     publisher: '',
   }
+  registrationBaseline.value = JSON.stringify(registration.value)
   createError.value = ''
   registrationOpen.value = true
 }
 
 function closeRegistration() {
-  if (!creating.value) registrationOpen.value = false
+  if (creating.value) return
+  if (registrationDirty.value && !window.confirm('资产登记内容尚未提交，确定关闭吗？')) return
+  registrationOpen.value = false
 }
 
 async function registerAsset() {
   if (!registrationValid.value) return
+  const registrationAssetType = assetType.value
   creating.value = true
   createError.value = ''
   try {
     await createAsset({
-      type: assetType.value,
+      type: registrationAssetType,
       title: registration.value.title.trim(),
       slug: registration.value.slug.trim(),
       summary: registration.value.summary.trim(),
@@ -402,6 +417,7 @@ async function registerAsset() {
         ...(registration.value.publisher.trim() ? { publisher: registration.value.publisher.trim() } : {}),
       } : {},
     })
+    if (assetType.value !== registrationAssetType) return
     registrationOpen.value = false
     query.value = ''
     page.value = 1
@@ -458,6 +474,7 @@ function startUploadStatusPolling() {
 
 function openUpload(asset: AssetSummary) {
   filtersOpen.value = false
+  uploadOperationVersion += 1
   uploadAsset.value = asset
   upload.value = {
     sourcePath: '',
@@ -465,6 +482,7 @@ function openUpload(asset: AssetSummary) {
     nestedPath: '',
     recursive: false,
   }
+  uploadBaseline.value = JSON.stringify(upload.value)
   stopUploadStatusPolling()
   uploadError.value = ''
   uploadRefreshError.value = ''
@@ -477,28 +495,33 @@ function openUpload(asset: AssetSummary) {
 }
 
 function closeUpload() {
-  if (!uploadBusy.value) {
-    stopUploadStatusPolling()
-    uploadAsset.value = null
-  }
+  if (uploadBusy.value) return
+  if (uploadConfigurationDirty.value && !window.confirm('上传配置尚未生成命令，确定关闭吗？')) return
+  if (uploadTransferActive.value && !window.confirm('上传任务尚未完成，关闭后将无法在此窗口继续查看进度或检测入库。确定关闭吗？')) return
+  stopUploadStatusPolling()
+  uploadAsset.value = null
 }
 
 async function generateUploadCommand() {
   if (uploadGenerating.value || !uploadAsset.value || !upload.value.sourcePath.trim()) return
+  const operationVersion = uploadOperationVersion
   uploadGenerating.value = true
   uploadError.value = ''
   uploadRefreshError.value = ''
   uploadCopied.value = false
   try {
-    uploadResult.value = await getUploadCommand({
+    const uploadCommand = await getUploadCommand({
       asset_id: uploadAsset.value.id,
       source_path: upload.value.sourcePath.trim(),
       target_subdirectory: [upload.value.directory, upload.value.nestedPath.trim()].filter(Boolean).join('/'),
       recursive: upload.value.recursive,
     })
+    if (operationVersion !== uploadOperationVersion) return
+    uploadResult.value = uploadCommand
     uploadPhase.value = 'transfer'
     startUploadStatusPolling()
   } catch (reason) {
+    if (operationVersion !== uploadOperationVersion) return
     uploadError.value = reason instanceof Error ? reason.message : '无法生成上传命令'
   } finally {
     uploadGenerating.value = false
@@ -506,6 +529,7 @@ async function generateUploadCommand() {
 }
 
 function reconfigureUpload() {
+  if (uploadTransferActive.value && !window.confirm('重新配置后，当前上传任务将不再显示在此窗口。确定继续吗？')) return
   stopUploadStatusPolling()
   uploadError.value = ''
   uploadStatusError.value = ''
@@ -516,19 +540,36 @@ function reconfigureUpload() {
   uploadPhase.value = 'configure'
 }
 
+function confirmProtectedWorkExit() {
+  if (uploadTransferActive.value) {
+    return window.confirm('上传任务尚未完成。离开后将无法在此页面继续查看进度或检测入库，确定离开吗？')
+  }
+  return !hasProtectedWork.value || window.confirm('资产登记或上传配置尚未提交，确定离开此页面吗？')
+}
+
+function preventProtectedWorkExit(event: BeforeUnloadEvent) {
+  if (!hasProtectedWork.value) return
+  event.preventDefault()
+  event.returnValue = ''
+}
+
 async function finalizeCurrentUpload() {
   if (uploadFinalizing.value || !uploadResult.value) return
+  const operationVersion = uploadOperationVersion
   stopUploadStatusPolling()
   uploadFinalizing.value = true
   uploadError.value = ''
   uploadRefreshError.value = ''
   try {
-    uploadFinalizeResult.value = await finalizeUpload(
+    const finalizeResult = await finalizeUpload(
       uploadResult.value.upload_id,
       uploadResult.value.upload_token,
     )
+    if (operationVersion !== uploadOperationVersion) return
+    uploadFinalizeResult.value = finalizeResult
     uploadPhase.value = 'success'
   } catch (reason) {
+    if (operationVersion !== uploadOperationVersion) return
     uploadError.value = reason instanceof Error ? reason.message : '无法检测并入库，请稍后重试'
     startUploadStatusPolling()
     return
@@ -599,6 +640,25 @@ async function downloadFilteredCitations() {
     exportingCitations.value = false
   }
 }
+function resetRouteScopedActions() {
+  filtersOpen.value = false
+  registrationOpen.value = false
+  createError.value = ''
+  uploadOperationVersion += 1
+  stopUploadStatusPolling()
+  uploadGenerating.value = false
+  uploadFinalizing.value = false
+  uploadAsset.value = null
+  uploadResult.value = null
+  uploadStatus.value = null
+  uploadFinalizeResult.value = null
+  uploadError.value = ''
+  uploadRefreshError.value = ''
+  uploadStatusError.value = ''
+  uploadCopied.value = false
+  uploadPhase.value = 'configure'
+}
+
 
 watch(
   () => [
@@ -612,7 +672,10 @@ watch(
     route.query.page,
     route.query.view,
   ],
-  () => {
+  (nextState, previousState) => {
+    if (previousState && nextState[0] !== previousState[0]) {
+      resetRouteScopedActions()
+    }
     citationRequestVersion += 1
     citationActionId.value = null
     citationCopiedId.value = null
@@ -624,10 +687,16 @@ watch(
   },
   { immediate: true },
 )
+onBeforeRouteUpdate((to, from) => (
+  to.meta.assetType === from.meta.assetType || confirmProtectedWorkExit()
+))
+onBeforeRouteLeave(confirmProtectedWorkExit)
+onMounted(() => window.addEventListener('beforeunload', preventProtectedWorkExit))
 onBeforeUnmount(() => {
   controller?.abort()
   stopUploadStatusPolling()
   if (citationCopiedTimer) window.clearTimeout(citationCopiedTimer)
+  window.removeEventListener('beforeunload', preventProtectedWorkExit)
 })
 </script>
 

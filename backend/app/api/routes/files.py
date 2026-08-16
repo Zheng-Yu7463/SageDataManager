@@ -4,7 +4,7 @@ from urllib.parse import quote
 from uuid import UUID
 
 import anyio
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from starlette.datastructures import MutableHeaders
@@ -80,9 +80,7 @@ class OpenFileResponse(FileResponse):
                 }
             )
 
-    async def _handle_simple(
-        self, send: Send, send_header_only: bool, send_pathsend: bool
-    ) -> None:
+    async def _handle_simple(self, send: Send, send_header_only: bool, send_pathsend: bool) -> None:
         await send(
             {"type": "http.response.start", "status": self.status_code, "headers": self.raw_headers}
         )
@@ -135,9 +133,7 @@ class OpenFileResponse(FileResponse):
                 if not chunk:
                     raise RuntimeError("Archive file changed while it was being delivered.")
                 offset += len(chunk)
-                await send(
-                    {"type": "http.response.body", "body": chunk, "more_body": True}
-                )
+                await send({"type": "http.response.body", "body": chunk, "more_body": True})
             await send({"type": "http.response.body", "body": b"\r\n", "more_body": True})
         await send(
             {
@@ -197,6 +193,7 @@ def content(
     file_id: UUID,
     ticket: Annotated[str, Query(min_length=1, max_length=2000)],
     session: SessionDependency,
+    request: Request,
 ) -> Response:
     delivery = None
     claims = read_file_access_token(ticket)
@@ -204,7 +201,10 @@ def content(
         raise HTTPException(status_code=403, detail="文件访问链接无效或已过期。")
     try:
         actor, mode, audit_access = authorize_file_access_grant(
-            session, claims.grant_id, file_id
+            session,
+            claims.grant_id,
+            file_id,
+            record_access=request.method != "HEAD",
         )
         delivery = open_file_delivery(
             session,

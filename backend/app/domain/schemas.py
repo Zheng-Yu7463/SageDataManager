@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -208,6 +208,13 @@ class UnclaimedFileSummary(BaseModel):
     last_seen_at: datetime
 
 
+class UnclaimedFileListResponse(BaseModel):
+    items: list[UnclaimedFileSummary]
+    total: int
+    page: int
+    page_size: int
+
+
 class ClaimUnclaimedFileRequest(BaseModel):
     asset_id: UUID
 
@@ -309,6 +316,33 @@ def normalized_asset_details(asset_type: AssetType, details: dict[str, Any]) -> 
     return PublicationMetadata.model_validate(details).model_dump(mode="json", exclude_none=True)
 
 
+TagValue = Annotated[str, Field(min_length=1, max_length=80)]
+
+
+def _strip_text(value: object) -> object:
+    return value.strip() if isinstance(value, str) else value
+
+
+def _lower_text(value: object) -> object:
+    return value.strip().lower() if isinstance(value, str) else value
+
+
+def _normalize_asset_tags(value: object) -> object:
+    if not isinstance(value, list):
+        return value
+    normalized: list[object] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            normalized.append(item)
+            continue
+        tag = item.strip()
+        if tag and tag not in seen:
+            seen.add(tag)
+            normalized.append(tag)
+    return normalized
+
+
 class AssetCreateRequest(BaseModel):
     type: AssetType
     slug: str = Field(min_length=3, max_length=160, pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
@@ -317,10 +351,20 @@ class AssetCreateRequest(BaseModel):
     status: str = Field(default="draft", min_length=1, max_length=40)
     visibility: Visibility = Visibility.LAB
     version: str | None = Field(default=None, max_length=80)
-    tags: list[str] = Field(default_factory=list, max_length=20)
+    tags: list[TagValue] = Field(default_factory=list, max_length=20)
     details: dict[str, Any] = Field(default_factory=dict)
     owner_name: str | None = Field(default=None, min_length=1, max_length=80)
     owner_email: str | None = Field(default=None, min_length=3, max_length=255)
+
+    @field_validator("title", "summary", "status", "version", mode="before")
+    @classmethod
+    def normalize_text(cls, value: object) -> object:
+        return _strip_text(value)
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def normalize_tags(cls, value: object) -> object:
+        return _normalize_asset_tags(value)
 
     @model_validator(mode="after")
     def validate_details_for_asset_type(self) -> "AssetCreateRequest":
@@ -339,8 +383,18 @@ class AssetUpdateRequest(BaseModel):
     summary: str | None = Field(default=None, max_length=5000)
     status: str | None = Field(default=None, min_length=1, max_length=40)
     visibility: Visibility | None = None
-    tags: list[str] | None = Field(default=None, max_length=20)
+    tags: list[TagValue] | None = Field(default=None, max_length=20)
     details: dict[str, Any] | None = None
+
+    @field_validator("title", "summary", "status", mode="before")
+    @classmethod
+    def normalize_text(cls, value: object) -> object:
+        return _strip_text(value)
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def normalize_tags(cls, value: object) -> object:
+        return _normalize_asset_tags(value)
 
 
 class BatchAssetImportRequest(BaseModel):
@@ -359,11 +413,21 @@ class AssetRelationCreateRequest(BaseModel):
     target_asset_id: UUID
     relation_type: str = Field(min_length=1, max_length=60)
 
+    @field_validator("relation_type", mode="before")
+    @classmethod
+    def normalize_relation_type(cls, value: object) -> object:
+        return _strip_text(value)
+
 
 class AssetVersionCreateRequest(BaseModel):
     version: str = Field(min_length=1, max_length=80)
     release_notes: str = Field(default="", max_length=5000)
     make_current: bool = True
+
+    @field_validator("version", "release_notes", mode="before")
+    @classmethod
+    def normalize_version_text(cls, value: object) -> object:
+        return _strip_text(value)
 
 
 class UploadCommandRequest(BaseModel):
@@ -517,12 +581,32 @@ class AccountSummary(BaseModel):
 class AccountCreateRequest(BaseModel):
     username: str = Field(min_length=1, max_length=80, pattern=r"^[a-z0-9]+$")
     name: str = Field(min_length=1, max_length=80)
-    email: str = Field(min_length=3, max_length=255)
+    email: str = Field(min_length=3, max_length=255, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
     password: str = Field(min_length=10, max_length=256)
+
+    @field_validator("username", mode="before")
+    @classmethod
+    def normalize_username(cls, value: object) -> object:
+        return _lower_text(value)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value: object) -> object:
+        return _strip_text(value)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_email(cls, value: object) -> object:
+        return _lower_text(value)
 
 
 class AccountInvitationCreateRequest(BaseModel):
     username: str = Field(min_length=1, max_length=80, pattern=r"^[a-z0-9]+$")
+
+    @field_validator("username", mode="before")
+    @classmethod
+    def normalize_username(cls, value: object) -> object:
+        return _lower_text(value)
 
 
 class AccountInvitationCreatedResponse(BaseModel):
@@ -548,10 +632,25 @@ class AccountInvitationAcceptRequest(BaseModel):
     )
     password: str = Field(min_length=10, max_length=256)
 
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value: object) -> object:
+        return _strip_text(value)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_email(cls, value: object) -> object:
+        return _lower_text(value)
+
 
 class AccountUpdateRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=80)
     is_active: bool | None = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def normalize_name(cls, value: object) -> object:
+        return _strip_text(value)
 
 
 class SystemUpdateCommit(BaseModel):
@@ -581,6 +680,12 @@ class SystemUpdateStatus(BaseModel):
     completed_at: str | None = None
     error: str | None = None
     backup_path: str | None = None
+    backup_in_progress: bool = False
+    last_backup_at: str | None = None
+    last_backup_path: str | None = None
+    last_backup_error: str | None = None
+    next_backup_at: str | None = None
+    scheduled_backup_interval_seconds: int = 0
     operation_id: str | None = None
     agent_restart_required: bool = False
     installer_restart_required: bool = False
@@ -596,6 +701,11 @@ class AccountLoginRequest(BaseModel):
     username: str = Field(min_length=1, max_length=80, pattern=r"^[a-z0-9]+$")
 
     password: str = Field(min_length=1, max_length=256)
+
+    @field_validator("username", mode="before")
+    @classmethod
+    def normalize_username(cls, value: object) -> object:
+        return _lower_text(value)
 
 
 class InstanceSetupStatus(BaseModel):

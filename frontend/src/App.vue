@@ -45,8 +45,13 @@ async function restoreSession() {
   }
   try {
     completeSessionRestoration(await getCurrentAccount())
-  } catch {
-    expireSession()
+  } catch (reason) {
+    if (getSessionToken()) {
+      startupError.value = reason instanceof Error ? reason.message : '无法恢复登录状态'
+      completeSessionRestoration(null)
+    } else {
+      expireSession()
+    }
   } finally {
     startupRetrying.value = false
   }

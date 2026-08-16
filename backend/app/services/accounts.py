@@ -6,11 +6,12 @@ import secrets
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.domain.models import AccountInvitation, User
+from app.domain.activity import ActivityAction
+from app.domain.models import AccountInvitation, FileAccessGrant, PersonalAccessToken, User
 from app.domain.schemas import (
     AccountCreateRequest,
     AccountInvitationAcceptRequest,
@@ -20,6 +21,7 @@ from app.domain.schemas import (
     AccountSummary,
     AccountUpdateRequest,
 )
+from app.services.activities import record_activity
 from app.services.security import create_session_token, hash_password, verify_password
 
 InvitationPurpose = Literal["registration", "recovery"]
@@ -100,8 +102,14 @@ def initialize_admin_account(
         raise AccountAuthenticationConfigurationError("服务器尚未配置 SAGE_AUTH_SESSION_SECRET。")
     user = _new_admin(payload, is_instance_owner=True)
     session.add(user)
+    record_activity(
+        session,
+        actor=user,
+        action=ActivityAction.INITIALIZED_INSTANCE,
+        description=f"创建并初始化了实例所有者账号 {user.username}",
+    )
     session.flush()
-    return account_summary(user), create_session_token(user.username or "")
+    return account_summary(user), create_session_token(user.username or "", user.session_generation)
 
 
 def _new_admin(payload: AccountCreateRequest, *, is_instance_owner: bool) -> User:
@@ -119,6 +127,18 @@ def _new_admin(payload: AccountCreateRequest, *, is_instance_owner: bool) -> Use
 
 def _invitation_digest(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _revoke_user_credentials(session: Session, user: User, now: datetime) -> None:
+    session.execute(
+        update(PersonalAccessToken)
+        .where(
+            PersonalAccessToken.user_id == user.id,
+            PersonalAccessToken.revoked_at.is_(None),
+        )
+        .values(revoked_at=now)
+    )
+    session.execute(delete(FileAccessGrant).where(FileAccessGrant.user_id == user.id))
 
 
 def _issue_invitation(
@@ -149,10 +169,26 @@ def _issue_invitation(
             expires_at=expires_at,
         )
     )
+    action = (
+        ActivityAction.ISSUED_ACCOUNT_INVITATION
+        if purpose == "registration"
+        else ActivityAction.ISSUED_ACCOUNT_RECOVERY
+    )
+    description = (
+        f"为管理员账号 {user.username} 生成了注册链接"
+        if purpose == "registration"
+        else f"为管理员账号 {user.username} 生成了密码恢复链接"
+    )
+    record_activity(
+        session,
+        actor=actor,
+        action=action,
+        description=description,
+    )
     session.flush()
     return AccountInvitationCreatedResponse(
         account=account_summary(user),
-        registration_path=f"/register/{token}",
+        registration_path=f"/register#token={token}",
         expires_at=expires_at,
         purpose=purpose,
     )
@@ -190,7 +226,9 @@ def renew_admin_invitation(
     purpose: InvitationPurpose,
 ) -> AccountInvitationCreatedResponse:
     user = session.scalar(
-        select(User).where(User.username == username.strip().lower(), User.role == "admin")
+        select(User)
+        .where(User.username == username.strip().lower(), User.role == "admin")
+        .with_for_update()
     )
     if not user:
         raise AccountNotFoundError
@@ -235,10 +273,23 @@ def accept_account_invitation(
 ) -> tuple[AccountSummary, str]:
     if not (settings.auth_session_secret or settings.fixed_account_password):
         raise AccountAuthenticationConfigurationError("服务器尚未配置 SAGE_AUTH_SESSION_SECRET。")
+    candidate = session.scalar(
+        select(AccountInvitation).where(
+            AccountInvitation.token_hash == _invitation_digest(token),
+            AccountInvitation.accepted_at.is_(None),
+            AccountInvitation.revoked_at.is_(None),
+            AccountInvitation.expires_at > datetime.now(UTC),
+        )
+    )
+    if not candidate:
+        raise AccountInvitationInvalidError
+    user = session.get(User, candidate.user_id, with_for_update=True)
+    if not user or not user.username or not user.is_active:
+        raise AccountInvitationInvalidError
     invitation = session.scalar(
         select(AccountInvitation)
         .where(
-            AccountInvitation.token_hash == _invitation_digest(token),
+            AccountInvitation.id == candidate.id,
             AccountInvitation.accepted_at.is_(None),
             AccountInvitation.revoked_at.is_(None),
             AccountInvitation.expires_at > datetime.now(UTC),
@@ -246,9 +297,6 @@ def accept_account_invitation(
         .with_for_update()
     )
     if not invitation:
-        raise AccountInvitationInvalidError
-    user = session.get(User, invitation.user_id)
-    if not user or not user.username or not user.is_active:
         raise AccountInvitationInvalidError
 
     if invitation.purpose == "registration":
@@ -268,8 +316,11 @@ def accept_account_invitation(
     else:
         raise AccountInvitationInvalidError
 
-    user.password_hash = hash_password(payload.password)
     now = datetime.now(UTC)
+    if invitation.purpose == "recovery":
+        _revoke_user_credentials(session, user, now)
+    user.password_hash = hash_password(payload.password)
+    user.session_generation += 1
     invitation.accepted_at = now
     session.execute(
         update(AccountInvitation)
@@ -281,24 +332,56 @@ def accept_account_invitation(
         )
         .values(revoked_at=now)
     )
+    action = (
+        ActivityAction.REGISTERED_ACCOUNT
+        if invitation.purpose == "registration"
+        else ActivityAction.RESET_ACCOUNT_PASSWORD
+    )
+    description = (
+        f"完成了管理员账号 {user.username} 的注册"
+        if invitation.purpose == "registration"
+        else f"重置了管理员账号 {user.username} 的密码"
+    )
+    record_activity(
+        session,
+        actor=user,
+        action=action,
+        description=description,
+    )
     session.flush()
-    return account_summary(user), create_session_token(user.username)
+    return account_summary(user), create_session_token(user.username, user.session_generation)
 
 
 def update_admin_account(
     session: Session, username: str, payload: AccountUpdateRequest, *, actor: User
 ) -> AccountSummary:
-    user = session.scalar(select(User).where(User.username == username))
+    user = session.scalar(select(User).where(User.username == username).with_for_update())
     if not user:
         raise AccountNotFoundError
+    changed = False
     if payload.name is not None:
         if not user.is_registered:
             raise AccountConflictError("待注册账号的信息应由受邀者填写。")
-        user.name = payload.name.strip()
+        name = payload.name.strip()
+        if user.name != name:
+            user.name = name
+            changed = True
     if payload.is_active is not None:
         if user.id == actor.id and not payload.is_active:
             raise AccountConflictError("不能停用当前登录账号。")
-        user.is_active = payload.is_active
+        if user.is_active != payload.is_active:
+            user.is_active = payload.is_active
+            user.session_generation += 1
+            if not payload.is_active:
+                _revoke_user_credentials(session, user, datetime.now(UTC))
+            changed = True
+    if changed:
+        record_activity(
+            session,
+            actor=actor,
+            action=ActivityAction.UPDATED_ACCOUNT,
+            description=f"更新了管理员账号 {user.username}",
+        )
     session.flush()
     return account_summary(user)
 
@@ -319,8 +402,9 @@ def login_account(session: Session, username: str, password: str) -> tuple[Accou
         raise AccountAuthenticationConfigurationError("服务器尚未配置 SAGE_AUTH_SESSION_SECRET。")
     if legacy_password_matches:
         user.password_hash = hash_password(password)
+        user.session_generation += 1
         session.flush()
-    return account_summary(user), create_session_token(username)
+    return account_summary(user), create_session_token(username, user.session_generation)
 
 
 def get_active_account(session: Session, username: str) -> User | None:

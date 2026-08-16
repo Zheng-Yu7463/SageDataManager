@@ -13,7 +13,7 @@ from app.services.access_tokens import (
     record_access_token_use,
 )
 from app.services.accounts import get_active_account
-from app.services.security import read_session_token
+from app.services.security import read_session_claims
 
 SessionDependency = Annotated[Session, Depends(get_session)]
 agent_bearer = HTTPBearer(auto_error=False)
@@ -24,11 +24,13 @@ def require_admin(
 ) -> User:
     if not x_sage_session:
         raise HTTPException(status_code=401, detail="请先登录。")
-    username = read_session_token(x_sage_session)
-    if not username:
+    claims = read_session_claims(x_sage_session)
+    if not claims:
         raise HTTPException(status_code=401, detail="登录已失效，请重新登录。")
-    user = get_active_account(session, username)
-    if not user or user.role != "admin":
+    user = get_active_account(session, claims.username)
+    if not user or user.session_generation != claims.generation:
+        raise HTTPException(status_code=401, detail="登录已失效，请重新登录。")
+    if user.role != "admin":
         raise HTTPException(status_code=403, detail="当前账号没有管理员权限。")
     return user
 

@@ -1,13 +1,14 @@
 <script setup lang="ts">
 import { CheckCircle2, CircleAlert, FileJson, FileSpreadsheet, Upload } from '@lucide/vue'
 import Papa from 'papaparse'
-import { ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeRouteLeave } from 'vue-router'
 
 import { importAssets, importAssetsYaml } from '@/api/client'
 import { useBranding } from '@/composables/useBranding'
 import type { AssetCreateInput } from '@/types'
 
-const source = ref(`[
+const defaultSource = `[
   {
     "type": "dataset",
     "slug": "example-dataset-2026",
@@ -19,7 +20,8 @@ const source = ref(`[
     "tags": ["示例"],
     "details": {}
   }
-]`)
+]`
+const source = ref(defaultSource)
 const importing = ref(false)
 const readingImportFile = ref(false)
 const sourceFormat = ref<'json' | 'yaml'>('json')
@@ -28,6 +30,22 @@ const created = ref<string[]>([])
 const { pageEyebrow } = useBranding()
 let importFileSelection = 0
 
+let savedSource = defaultSource
+let savedSourceFormat: 'json' | 'yaml' = 'json'
+
+const hasUnsavedChanges = computed(
+  () => source.value !== savedSource || sourceFormat.value !== savedSourceFormat,
+)
+
+function markSourceSaved() {
+  savedSource = source.value
+  savedSourceFormat = sourceFormat.value
+}
+
+function preventUnsavedExit(event: BeforeUnloadEvent) {
+  if (!hasUnsavedChanges.value) return
+  event.preventDefault()
+}
 function parseAssets(): AssetCreateInput[] {
   const parsed: unknown = JSON.parse(source.value)
   const assets = Array.isArray(parsed)
@@ -94,7 +112,11 @@ async function submit() {
   let assets: AssetCreateInput[]
   if (sourceFormat.value === 'yaml') {
     importing.value = true
-    try { const result = await importAssetsYaml(source.value); created.value = result.created.map((asset) => asset.title) }
+    try {
+      const result = await importAssetsYaml(source.value)
+      created.value = result.created.map((asset) => asset.title)
+      markSourceSaved()
+    }
     catch (reason) { error.value = reason instanceof Error ? reason.message : 'YAML 导入失败' }
     finally { importing.value = false }
     return
@@ -105,10 +127,19 @@ async function submit() {
   try {
     const result = await importAssets(assets)
     created.value = result.created.map((asset) => asset.title)
+    markSourceSaved()
   } catch (reason) {
     error.value = reason instanceof Error ? reason.message : '导入失败'
   } finally { importing.value = false }
 }
+
+onBeforeRouteLeave(() => {
+  if (!hasUnsavedChanges.value) return true
+  return window.confirm('批量导入内容尚未提交，确定离开此页面吗？')
+})
+
+onMounted(() => window.addEventListener('beforeunload', preventUnsavedExit))
+onBeforeUnmount(() => window.removeEventListener('beforeunload', preventUnsavedExit))
 </script>
 
 <template>

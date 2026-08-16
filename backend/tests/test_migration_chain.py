@@ -51,6 +51,13 @@ def test_empty_sqlite_database_upgrades_to_head(tmp_path: Path) -> None:
         )
         activity_indexes = {index["name"] for index in inspector.get_indexes("activities")}
         asset_indexes = {index["name"] for index in inspector.get_indexes("assets")}
+        tag_indexes = {index["name"] for index in inspector.get_indexes("tags")}
+        unclaimed_indexes = {
+            index["name"] for index in inspector.get_indexes("unclaimed_files")
+        }
+        asset_unique_constraints = inspector.get_unique_constraints("assets")
+        tag_unique_constraints = inspector.get_unique_constraints("tags")
+        unclaimed_unique_constraints = inspector.get_unique_constraints("unclaimed_files")
         upload_task_checks = inspector.get_check_constraints("upload_tasks")
         upload_task_foreign_keys = inspector.get_foreign_keys("upload_tasks")
         user_columns = {column["name"] for column in inspector.get_columns("users")}
@@ -61,7 +68,7 @@ def test_empty_sqlite_database_upgrades_to_head(tmp_path: Path) -> None:
         invitation_checks = inspector.get_check_constraints("account_invitations")
         invitation_foreign_keys = inspector.get_foreign_keys("account_invitations")
 
-    assert revision == "20260815_0021"
+    assert revision == "20260816_0023"
     assert {"operation_id", "operation_role"} <= activity_columns
     assert any(
         key["constrained_columns"] == ["claimed_asset_id"] and key["referred_table"] == "assets"
@@ -88,13 +95,33 @@ def test_empty_sqlite_database_upgrades_to_head(tmp_path: Path) -> None:
         "ix_activities_primary_action_created_id",
     } <= activity_indexes
     assert "ix_assets_archived_at_id" in asset_indexes
+    assert "ix_assets_slug" not in asset_indexes
+    assert "ix_tags_name" not in tag_indexes
+    assert "ix_unclaimed_files_relative_path" not in unclaimed_indexes
+    assert any(
+        constraint["column_names"] == ["slug"]
+        for constraint in asset_unique_constraints
+    )
+    assert any(
+        constraint["column_names"] == ["name"]
+        for constraint in tag_unique_constraints
+    )
+    assert any(
+        constraint["column_names"] == ["relative_path"]
+        for constraint in unclaimed_unique_constraints
+    )
     assert any(constraint["name"] == "ck_upload_tasks_status" for constraint in upload_task_checks)
     assert {key["referred_table"] for key in upload_task_foreign_keys} == {
         "assets",
         "personal_access_tokens",
         "users",
     }
-    assert {"password_hash", "is_registered", "is_instance_owner"} <= user_columns
+    assert {
+        "password_hash",
+        "is_registered",
+        "is_instance_owner",
+        "session_generation",
+    } <= user_columns
     assert user_indexes["uq_users_single_instance_owner"]["unique"] == 1
     assert {
         "user_id",
@@ -232,6 +259,6 @@ def test_publication_identity_migration_can_retry_after_duplicate_preflight(
 
     with engine.connect() as connection:
         assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == (
-            "20260814_0020"
+            "20260816_0023"
         )
         assert sa.inspect(connection).has_table("publication_identity_keys")

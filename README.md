@@ -50,10 +50,12 @@ docker compose up --build -d
 访问：
 
 - 管理端：http://localhost:8080
-- API 文档：http://localhost:8000/api/docs
-- 健康检查：http://localhost:8000/api/health
+- API 文档：http://localhost:8080/api/docs
+- 健康检查：http://localhost:8080/api/health
 
 `.env` 中的 `SAGE_STORAGE_ROOT` 应设置为宿主机上的实际归档目录。首次体验可保留默认值，脚本会生成 `sample-archive/` 模拟文件。Compose 会将其挂载到后端的 `/data/sage-archive`；后端需要写权限才能完成隔离上传和原子入库。
+
+`POSTGRES_PASSWORD` 可以使用包含 `@`、`:`、`/`、`#`、`%` 等字符的随机值。Compose 会把数据库连接字段分别传给后端，再由 SQLAlchemy 安全构造连接 URL；不要手工对 `.env` 中的密码做 URL 编码。`SAGE_DATABASE_URL` 仅用于不经过 Compose、直接运行后端或 Alembic 的开发场景。
 
 启动前将 `.env` 中的 `SAGE_AUTH_SESSION_SECRET` 替换为独立的长随机值。首次打开管理端时，页面会要求创建唯一的实例所有者；完成初始化后，如需演示目录，再执行 `docker compose exec backend python -m scripts.seed_demo`。
 
@@ -81,12 +83,12 @@ sudo bash deploy/install-updater.sh
 2. 为当前运行的 `backend`、`frontend` 镜像创建本次操作专用的回滚标签；
 3. 检查数据库容量和备份目录可用空间，将 PostgreSQL 自定义格式备份写入临时文件，使用 `pg_restore --list` 校验后原子落盘；
 4. 以 `--ff-only` 合并锁定的 Commit，使用该 SHA 标记并重新构建、启动前后端镜像；
-5. 通过 `/api/ready` 验证数据库连接、Alembic 版本和后端运行 Commit，同时验证前端入口、脚本资源及两个容器的镜像 Commit；
+5. 通过 `/api/ready` 验证数据库连接、Alembic 版本、认证签名密钥、归档存储根和后端运行 Commit，同时验证前端入口、脚本资源及两个容器的镜像 Commit；
 6. 验证失败时恢复旧 Commit 和受保护的旧应用镜像；数据库备份保留供人工恢复，数据库迁移不会自动降级。
 
 “检查更新”会立即创建后台检查任务，页面通过状态接口轮询结果；“立即更新”只接受这次检查返回的完整 Commit SHA。重复触发时，页面会接管现有任务并继续展示其进度。代理会将每个阶段、目标 Commit、旧 Commit 和回滚镜像持久化到 `/var/lib/sage-updater/status.json`；代理或宿主机意外重启后会先恢复或复验中断任务，不会直接开始新更新。
 
-成功更新后默认只保留最近 10 份有效数据库备份，可通过 systemd 环境变量 `SAGE_UPDATE_BACKUP_RETENTION` 调整。因此，服务器上临时修改过的 Dockerfile、未提交文件或本地提交都会阻止网页更新；应先明确提交、丢弃或迁移这些改动，再重新检查更新。
+更新代理独立于代码更新，每 24 小时自动创建并校验一次 PostgreSQL 备份；更新前创建的备份也计入同一保留策略。默认保留最近 10 份有效备份，可通过 `.env` 中的 `SAGE_UPDATE_BACKUP_INTERVAL_SECONDS` 调整间隔（设为 `0` 可关闭），通过 `SAGE_UPDATE_BACKUP_RETENTION` 调整保留数量。自动备份与检查、更新共用操作锁，不会同时运行。因此，服务器上临时修改过的 Dockerfile、未提交文件或本地提交都会阻止网页更新；应先明确提交、丢弃或迁移这些改动，再重新检查更新。
 
 数据库不会在失败时自动回滚，避免对已运行的新迁移做未经确认的破坏性恢复。应用回滚成功时页面会明确显示旧应用已恢复；应用回滚不完整时必须在服务器人工处理，并根据已保留的 dump 决定是否恢复数据库。
 
@@ -130,6 +132,13 @@ export SAGE_STORAGE_ROOT="$(pwd)/sample-archive"
 
 前端需要 Node.js 24 和 pnpm 11：
 
+```bash
+cd frontend
+corepack enable
+pnpm install --frozen-lockfile
+pnpm dev
+```
+
 ### 通过 SCP 上传文件
 
 首次使用时，在 `.env` 中确认以下参数指向归档服务器的局域网地址与宿主机目录（示例值适用于当前开发机）：
@@ -142,6 +151,8 @@ SAGE_UPLOAD_DESTINATION_ROOT=/home/zhengyu/SageDataManager/sample-archive
 ```
 
 登录后进入对应分类，先登记资产并填写基础信息。资产会在当前列表显示“暂无数据”，点击该行右侧“上传指令”，选择文件或目录并填入保存文件的那台电脑上的绝对路径，再复制命令到该电脑终端执行。命令只会将内容传到归档根下的隔离区 `.uploads/<任务 ID>`，不会直接写入正式资产目录。传输完成后回到同一弹窗点击“检测并入库”：服务端会检查实际文件、拒绝符号链接、预先列出所有重名冲突，然后一次性移动文件、建立索引并刷新目录。任一步失败都不会留下部分入库结果。SCP 用户名会自动使用当前登录账号名。
+
+上传任务在返回的 `expires_at` 后失效，不应继续传输或重试。系统会在后续创建上传任务时安全回收过期任务及其隔离区文件，避免中断任务长期占用归档磁盘。
 
 目标目录的完整结构固定为 `资产类型/资产 slug/一级目录/可选细分目录`。一级目录不可随意命名：
 
@@ -205,6 +216,10 @@ python -m scripts.seed_conference_papers --migrate-existing --no-download-pdf
 AI 客户端先读取公开的 `/agent.md`，再按其中的流程调用 `/api/agent/*`。它可以查询并读取单项资产、原地更新已有元数据、登记新资产、上传并入库文件以及导出 BibTeX。每位管理员可在“系统设置 → AI 访问令牌”创建多个个人访问令牌，分别设置名称、权限和有效期。完整令牌只显示一次，服务端只保存 HMAC 摘要；令牌可以随时撤销，活动记录会同时标记所属管理员和令牌名称。
 
 令牌权限包括查询资产、登记元数据、上传文件、正式入库和导出 BibTeX。“正式入库”默认不勾选，应只授予需要完成归档闭环的可信自动化。令牌只适用于专用 Agent API，不能调用管理员、品牌、归档或删除接口。新部署必须设置 `SAGE_AUTH_SESSION_SECRET`，否则服务器拒绝初始化管理员以及创建和验证访问令牌；`SAGE_FIXED_ACCOUNT_PASSWORD` 仅用于旧账号升级。
+
+服务端默认最多每 300 秒持久化一次令牌的最近使用时间，避免高频 Agent 请求反复写同一行；可通过 `SAGE_AGENT_TOKEN_LAST_USED_INTERVAL_SECONDS` 调整，设为 `0` 时每次请求都会更新。
+反向代理默认只接受不超过 2 MB 的 API 请求体，仅 `PUT /api/agent/uploads/{upload_id}/files/{relative_path}` 文件流式上传路径放宽到 500 MB；后端仍会独立执行单文件大小与校验和检查。
+
 
 ### 批量导入元数据
 

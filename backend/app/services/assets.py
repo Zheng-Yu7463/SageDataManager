@@ -3,6 +3,8 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from sqlalchemy import Text, and_, case, cast, func, or_, select
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
@@ -104,12 +106,21 @@ def has_publication_metadata(asset_type: AssetType, details: dict) -> bool:
     return asset_type in PUBLICATION_ASSET_TYPES and bool(details.get("source_id"))
 
 
-def asset_summary(asset: Asset) -> AssetSummary:
+def asset_summary(
+    asset: Asset,
+    *,
+    file_stats: tuple[int, int] | None = None,
+) -> AssetSummary:
     current_version = next((item.version for item in asset.versions if item.is_current), None)
     upload_directories = [
         UploadDirectoryOption(name=name, label=label)
         for name, label in UPLOAD_DIRECTORY_OPTIONS[asset.type]
     ]
+    if file_stats is None:
+        file_count = len(asset.files)
+        total_size = sum(file.file_size for file in asset.files)
+    else:
+        file_count, total_size = file_stats
     return AssetSummary(
         id=asset.id,
         type=asset.type,
@@ -122,24 +133,69 @@ def asset_summary(asset: Asset) -> AssetSummary:
         details=asset.details,
         tags=sorted(tag.name for tag in asset.tags),
         current_version=current_version,
-        total_size=sum(file.file_size for file in asset.files),
-        file_count=len(asset.files),
+        total_size=total_size,
+        file_count=file_count,
         upload_directories=upload_directories,
         default_upload_directory=upload_directories[0].name,
         updated_at=asset.updated_at,
     )
 
 
+def asset_summaries(session: Session, assets: list[Asset]) -> list[AssetSummary]:
+    if not assets:
+        return []
+    file_stats = {
+        asset_id: (file_count, total_size)
+        for asset_id, file_count, total_size in session.execute(
+            select(
+                FileRecord.asset_id,
+                func.count(FileRecord.id),
+                func.coalesce(func.sum(FileRecord.file_size), 0),
+            )
+            .where(FileRecord.asset_id.in_([asset.id for asset in assets]))
+            .group_by(FileRecord.asset_id)
+        )
+    }
+    return [
+        asset_summary(asset, file_stats=file_stats.get(asset.id, (0, 0)))
+        for asset in assets
+    ]
+
+
 def _tag_names(tag_values: list[str]) -> list[str]:
     return sorted({tag.strip() for tag in tag_values if tag.strip()})
 
 
+def tag_insert_statement(dialect_name: str, names: list[str]):
+    values = [{"name": name} for name in names]
+    if dialect_name == "postgresql":
+        return postgresql_insert(Tag).values(values).on_conflict_do_nothing(
+            index_elements=[Tag.name]
+        )
+    if dialect_name == "sqlite":
+        return sqlite_insert(Tag).values(values).on_conflict_do_nothing(
+            index_elements=[Tag.name]
+        )
+    return None
+
+
 def _tags(session: Session, tag_values: list[str]) -> list[Tag]:
     names = _tag_names(tag_values)
-    existing = {
+    if not names:
+        return []
+    statement = tag_insert_statement(session.get_bind().dialect.name, names)
+    if statement is not None:
+        session.execute(statement)
+    else:
+        existing_names = set(
+            session.scalars(select(Tag.name).where(Tag.name.in_(names))).all()
+        )
+        session.add_all(Tag(name=name) for name in names if name not in existing_names)
+        session.flush()
+    tags_by_name = {
         tag.name: tag for tag in session.scalars(select(Tag).where(Tag.name.in_(names))).all()
     }
-    return [existing.get(name) or Tag(name=name) for name in names]
+    return [tags_by_name[name] for name in names]
 
 
 def create_asset(
@@ -372,17 +428,25 @@ def add_asset_version(
     return AssetVersionSummary.model_validate(version)
 
 
-def archive_asset(session: Session, asset_id: UUID, *, actor: User) -> AssetSummary:
-    asset = session.scalar(
+def asset_for_archive_transition_statement(asset_id: UUID, *, archived: bool):
+    archive_state = (
+        Asset.archived_at.is_not(None) if archived else Asset.archived_at.is_(None)
+    )
+    return (
         select(Asset)
-        .where(Asset.id == asset_id, Asset.archived_at.is_(None))
+        .where(Asset.id == asset_id, archive_state)
         .options(
             selectinload(Asset.owner),
             selectinload(Asset.tags),
             selectinload(Asset.versions),
             selectinload(Asset.files),
         )
+        .with_for_update()
     )
+
+
+def archive_asset(session: Session, asset_id: UUID, *, actor: User) -> AssetSummary:
+    asset = session.scalar(asset_for_archive_transition_statement(asset_id, archived=False))
     if not asset:
         raise AssetNotFoundError
     asset.archived_at = datetime.now(UTC)
@@ -398,16 +462,7 @@ def archive_asset(session: Session, asset_id: UUID, *, actor: User) -> AssetSumm
 
 
 def restore_asset(session: Session, asset_id: UUID, *, actor: User) -> AssetSummary:
-    asset = session.scalar(
-        select(Asset)
-        .where(Asset.id == asset_id, Asset.archived_at.is_not(None))
-        .options(
-            selectinload(Asset.owner),
-            selectinload(Asset.tags),
-            selectinload(Asset.versions),
-            selectinload(Asset.files),
-        )
-    )
+    asset = session.scalar(asset_for_archive_transition_statement(asset_id, archived=True))
     if not asset:
         raise AssetNotFoundError
     asset.archived_at = None
@@ -453,7 +508,6 @@ def list_assets(
             selectinload(Asset.owner),
             selectinload(Asset.tags),
             selectinload(Asset.versions),
-            selectinload(Asset.files),
         )
     )
     if search_terms := _search_terms(query):
@@ -465,7 +519,8 @@ def list_assets(
     else:
         statement = statement.order_by(Asset.updated_at.desc(), Asset.id.asc())
     statement = statement.offset((page - 1) * page_size).limit(page_size)
-    return [asset_summary(item) for item in session.scalars(statement).all()], total
+    assets = list(session.scalars(statement).all())
+    return asset_summaries(session, assets), total
 
 
 def list_asset_choices(
@@ -619,7 +674,7 @@ def list_publications_for_citation_export(
     has_files: bool | None,
     venue: str | None,
     year: int | None,
-) -> list[AssetSummary]:
+) -> list[Asset]:
     filters = _asset_filters(
         asset_type=asset_type,
         query=query,
@@ -632,35 +687,42 @@ def list_publications_for_citation_export(
     statement = (
         select(Asset)
         .where(*filters)
-        .options(
-            selectinload(Asset.owner),
-            selectinload(Asset.tags),
-            selectinload(Asset.versions),
-            selectinload(Asset.files),
-        )
         .order_by(
             Asset.details["year"].as_integer().desc(),
             Asset.title.asc(),
             Asset.id.asc(),
         )
     )
-    return [asset_summary(item) for item in session.scalars(statement).all()]
+    return list(session.scalars(statement).all())
 
 
 def list_publication_catalogue_facets(
     session: Session, asset_type: AssetType
 ) -> PublicationCatalogueFacets:
-    statement = select(Asset.details).where(
+    filters = (
         Asset.type == asset_type,
         Asset.archived_at.is_(None),
     )
-    details = session.scalars(statement).all()
+    venue = Asset.details["venue"].as_string()
+    year = Asset.details["year"].as_integer()
     venues = sorted(
-        {str(item["venue"]).strip() for item in details if str(item.get("venue", "")).strip()},
+        {
+            value.strip()
+            for value in session.scalars(
+                select(venue).where(*filters, venue.is_not(None)).distinct()
+            )
+            if value and value.strip()
+        },
         key=str.casefold,
     )
     years = sorted(
-        {int(item["year"]) for item in details if isinstance(item.get("year"), int)},
+        {
+            value
+            for value in session.scalars(
+                select(year).where(*filters, year.is_not(None)).distinct()
+            )
+            if isinstance(value, int)
+        },
         reverse=True,
     )
     return PublicationCatalogueFacets(venues=venues, years=years)
@@ -678,13 +740,25 @@ def list_archived_assets(
             selectinload(Asset.owner),
             selectinload(Asset.tags),
             selectinload(Asset.versions),
-            selectinload(Asset.files),
         )
         .order_by(Asset.archived_at.desc(), Asset.id.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
     )
-    return [asset_summary(asset) for asset in session.scalars(statement).all()], total
+    assets = list(session.scalars(statement).all())
+    return asset_summaries(session, assets), total
+
+
+def assets_for_relation_statement(source_asset_id: UUID, target_asset_id: UUID):
+    return (
+        select(Asset)
+        .where(
+            Asset.id.in_([source_asset_id, target_asset_id]),
+            Asset.archived_at.is_(None),
+        )
+        .order_by(Asset.id)
+        .with_for_update()
+    )
 
 
 def add_asset_relation(
@@ -693,9 +767,7 @@ def add_asset_relation(
     if asset_id == payload.target_asset_id:
         raise AssetRelationError("资产不能关联到自身。")
     assets = session.scalars(
-        select(Asset).where(
-            Asset.id.in_([asset_id, payload.target_asset_id]), Asset.archived_at.is_(None)
-        )
+        assets_for_relation_statement(asset_id, payload.target_asset_id)
     ).all()
     asset_by_id = {asset.id: asset for asset in assets}
     source = asset_by_id.get(asset_id)
@@ -745,18 +817,24 @@ def add_asset_relation(
     )
 
 
-def remove_asset_relation(
-    session: Session, asset_id: UUID, relation_id: UUID, *, actor: User
-) -> None:
-    relation = session.scalar(
-        select(AssetRelation).where(
+def asset_relation_for_removal_statement(asset_id: UUID, relation_id: UUID):
+    return (
+        select(AssetRelation)
+        .where(
             AssetRelation.id == relation_id,
             or_(
                 AssetRelation.source_asset_id == asset_id,
                 AssetRelation.target_asset_id == asset_id,
             ),
         )
+        .with_for_update()
     )
+
+
+def remove_asset_relation(
+    session: Session, asset_id: UUID, relation_id: UUID, *, actor: User
+) -> None:
+    relation = session.scalar(asset_relation_for_removal_statement(asset_id, relation_id))
     if not relation:
         raise AssetRelationError("关联不存在或不能从当前资产移除。")
     source = session.get(Asset, relation.source_asset_id)

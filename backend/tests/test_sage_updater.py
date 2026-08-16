@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -71,6 +73,7 @@ def wait_for_manager_state(
         time.sleep(0.01)
     raise AssertionError(f"更新代理未进入预期状态：{manager.status()}")
 
+
 def prepare_checked_update(manager, target_commit: str) -> None:
     manager._replace_state(
         {
@@ -81,6 +84,7 @@ def prepare_checked_update(manager, target_commit: str) -> None:
             "update_available": True,
         }
     )
+
 
 def test_committed_recovery_reports_successful_fallback(
     tmp_path: Path,
@@ -136,6 +140,101 @@ def test_committed_recovery_reports_successful_fallback(
     assert status["backup_path"] == "backup.dump"
 
 
+def test_interrupted_recovery_preserves_the_database_backup_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote, worktree = create_repository_pair(tmp_path)
+    manager = sage_updater.UpdateManager(agent_config(tmp_path, remote, worktree))
+    old_commit = git(worktree, "rev-parse", "HEAD")
+    images = {
+        "backend": {
+            "image_name": "sage-data-manager-backend",
+            "rollback_tag": "sage-data-manager-rollback-backend:operation-id",
+        }
+    }
+    manager._replace_state(
+        {
+            **manager.status(),
+            "state": "recovering",
+            "phase": "interrupted_recovery",
+            "interrupted_phase": "docker_build",
+            "old_commit": old_commit,
+            "target_commit": "f" * 40,
+            "rollback_images": images,
+            "backup_path": "backup.dump",
+        }
+    )
+    monkeypatch.setattr(manager, "_rollback_application", lambda _commit, _rollback: None)
+    monkeypatch.setattr(manager, "_cleanup_rollback_images", lambda _rollback: None)
+    monkeypatch.setattr(
+        manager,
+        "_inspect_repository",
+        lambda fetch: {**manager.status(), "state": "idle", "phase": None},
+    )
+    manager._operation_lock.acquire()
+
+    manager._recover_interrupted_update()
+
+    status = manager.status()
+    assert status["state"] == "failed"
+    assert status["message"] == "中断任务已处理，旧应用已恢复。"
+    assert status["backup_path"] == "backup.dump"
+
+
+def test_persisted_scheduled_backup_interruption_preserves_update_state(
+    tmp_path: Path,
+) -> None:
+    remote, worktree = create_repository_pair(tmp_path)
+    config = agent_config(tmp_path, remote, worktree)
+    config.state_directory.mkdir(parents=True)
+    (config.state_directory / "status.json").write_text(
+        json.dumps(
+            {
+                "state": "failed",
+                "phase": "failed",
+                "message": "更新失败",
+                "error": "原更新错误",
+                "backup_in_progress": True,
+                "logs": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manager = sage_updater.UpdateManager(config)
+
+    status = manager.status()
+    assert status["state"] == "failed"
+    assert status["error"] == "原更新错误"
+    assert status["backup_in_progress"] is False
+    assert status["last_backup_error"] == "上一次定时数据库备份被中断。"
+
+
+@pytest.mark.parametrize("content", ["{", "[]", '{"state": "unknown"}'])
+def test_invalid_persisted_state_fails_closed_without_overwriting_evidence(
+    tmp_path: Path,
+    content: str,
+) -> None:
+    remote, worktree = create_repository_pair(tmp_path)
+    config = agent_config(tmp_path, remote, worktree)
+    config.state_directory.mkdir(parents=True)
+    state_path = config.state_directory / "status.json"
+    state_path.write_text(content, encoding="utf-8")
+
+    manager = sage_updater.UpdateManager(config)
+
+    status = manager.status()
+    assert status["enabled"] is False
+    assert status["state"] == "unavailable"
+    assert status["phase"] == "state_load_failed"
+    assert "status.json" in str(status["error"])
+    assert state_path.read_text(encoding="utf-8") == content
+    with pytest.raises(sage_updater.UpdateAgentError, match="status.json"):
+        manager.check()
+    manager.start_backup_scheduler()
+    assert manager._backup_thread is None
+
 
 def test_persisted_busy_state_starts_interrupted_recovery(
     tmp_path: Path,
@@ -167,26 +266,99 @@ def test_persisted_busy_state_starts_interrupted_recovery(
     assert manager.status()["interrupted_phase"] == "docker_build"
 
 
+def test_recovery_thread_start_failure_records_failure_and_releases_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote, worktree = create_repository_pair(tmp_path)
+    config = agent_config(tmp_path, remote, worktree)
+    config.state_directory.mkdir(parents=True)
+    (config.state_directory / "status.json").write_text(
+        json.dumps(
+            {
+                "state": "building",
+                "phase": "docker_build",
+                "backup_path": "backup.dump",
+                "logs": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FailingThread:
+        def __init__(self, **_kwargs: object) -> None:
+            self.created = True
+
+        def start(self) -> None:
+            raise RuntimeError("thread capacity exhausted")
+
+    monkeypatch.setattr(sage_updater.threading, "Thread", FailingThread)
+
+    manager = sage_updater.UpdateManager(config)
+
+    status = manager.status()
+    assert status["state"] == "failed"
+    assert status["backup_path"] == "backup.dump"
+    assert "thread capacity exhausted" in str(status["error"])
+    assert manager._operation_lock.acquire(blocking=False)
+    manager._operation_lock.release()
 
 
 def test_remote_url_normalization_accepts_https_and_ssh_forms() -> None:
     assert sage_updater.normalize_remote_url(
         "git@github.com:Zheng-Yu7463/SageDataManager.git"
-    ) == sage_updater.normalize_remote_url(
-        "https://github.com/Zheng-Yu7463/SageDataManager/"
-    )
+    ) == sage_updater.normalize_remote_url("https://github.com/Zheng-Yu7463/SageDataManager/")
 
 
-def test_dotenv_reader_handles_comments_and_quotes(tmp_path: Path) -> None:
-    path = tmp_path / ".env"
-    path.write_text(
-        "# comment\nPOSTGRES_USER='sage user'\nPOSTGRES_DB=sage\n",
-        encoding="utf-8",
+def test_postgres_environment_value_uses_running_container(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote, worktree = create_repository_pair(tmp_path)
+    manager = sage_updater.UpdateManager(agent_config(tmp_path, remote, worktree))
+    commands: list[tuple[list[str], int]] = []
+
+    def record_run(
+        command: list[str], *, timeout: int, **_kwargs: object
+    ) -> sage_updater.CommandResult:
+        commands.append((command, timeout))
+        return sage_updater.CommandResult(stdout=" sage user:@/#%= \r\n")
+
+    monkeypatch.setattr(manager, "_run", record_run)
+
+    value = manager._postgres_environment_value("POSTGRES_USER")
+
+    assert value == " sage user:@/#%= "
+    assert commands == [
+        (
+            [
+                "docker",
+                "compose",
+                "exec",
+                "-T",
+                "postgres",
+                "printenv",
+                "POSTGRES_USER",
+            ],
+            30,
+        )
+    ]
+
+
+def test_postgres_environment_value_rejects_missing_value(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote, worktree = create_repository_pair(tmp_path)
+    manager = sage_updater.UpdateManager(agent_config(tmp_path, remote, worktree))
+    monkeypatch.setattr(
+        manager,
+        "_run",
+        lambda *_args, **_kwargs: sage_updater.CommandResult(stdout="\n"),
     )
-    assert sage_updater.read_dotenv(path) == {
-        "POSTGRES_USER": "sage user",
-        "POSTGRES_DB": "sage",
-    }
+
+    with pytest.raises(sage_updater.UpdateAgentError, match="缺少 POSTGRES_DB"):
+        manager._postgres_environment_value("POSTGRES_DB")
 
 
 def test_check_reports_new_remote_commits(tmp_path: Path) -> None:
@@ -253,6 +425,32 @@ def test_check_returns_immediately_while_fetch_runs_in_background(
     assert status["state"] == "idle"
 
 
+
+def test_check_thread_start_failure_records_failure_and_releases_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote, worktree = create_repository_pair(tmp_path)
+    manager = sage_updater.UpdateManager(agent_config(tmp_path, remote, worktree))
+
+    class FailingThread:
+        def __init__(self, **_kwargs: object) -> None:
+            self.created = True
+
+        def start(self) -> None:
+            raise RuntimeError("thread capacity exhausted")
+
+    monkeypatch.setattr(sage_updater.threading, "Thread", FailingThread)
+
+    with pytest.raises(sage_updater.UpdateAgentError, match="无法启动系统更新检查"):
+        manager.check()
+
+    status = manager.status()
+    assert status["state"] == "failed"
+    assert "thread capacity exhausted" in str(status["error"])
+    assert manager._operation_lock.acquire(blocking=False)
+    manager._operation_lock.release()
+
 def test_start_update_reuses_the_remote_ref_fetched_by_check(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -267,14 +465,16 @@ def test_start_update_reuses_the_remote_ref_fetched_by_check(
     monkeypatch.setattr(
         manager,
         "_inspect_repository",
-        lambda fetch: fetch_values.append(fetch)
-        or {
-            **manager.status(),
-            "current_commit": current_commit,
-            "latest_commit": target_commit,
-            "update_available": True,
-            "worktree_clean": True,
-        },
+        lambda fetch: (
+            fetch_values.append(fetch)
+            or {
+                **manager.status(),
+                "current_commit": current_commit,
+                "latest_commit": target_commit,
+                "update_available": True,
+                "worktree_clean": True,
+            }
+        ),
     )
 
     class DeferredThread:
@@ -292,6 +492,47 @@ def test_start_update_reuses_the_remote_ref_fetched_by_check(
     assert status["state"] == "backing_up"
     assert status["latest_commit"] == target_commit
 
+
+
+def test_update_thread_start_failure_records_failure_and_releases_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote, worktree = create_repository_pair(tmp_path)
+    manager = sage_updater.UpdateManager(agent_config(tmp_path, remote, worktree))
+    current_commit = git(worktree, "rev-parse", "HEAD")
+    target_commit = "f" * 40
+    prepare_checked_update(manager, target_commit)
+    monkeypatch.setattr(
+        manager,
+        "_inspect_repository",
+        lambda fetch: {
+            **manager.status(),
+            "current_commit": current_commit,
+            "latest_commit": target_commit,
+            "update_available": True,
+            "worktree_clean": True,
+        },
+    )
+
+    class FailingThread:
+        def __init__(self, **_kwargs: object) -> None:
+            self.created = True
+
+        def start(self) -> None:
+            raise RuntimeError("thread capacity exhausted")
+
+    monkeypatch.setattr(sage_updater.threading, "Thread", FailingThread)
+
+    with pytest.raises(sage_updater.UpdateAgentError, match="无法启动系统更新任务"):
+        manager.start_update(target_commit)
+
+    status = manager.status()
+    assert status["state"] == "failed"
+    assert "thread capacity exhausted" in str(status["error"])
+    assert manager._operation_lock.acquire(blocking=False)
+    manager._operation_lock.release()
+
 def test_start_update_rejects_a_commit_other_than_the_checked_target(tmp_path: Path) -> None:
     remote, worktree = create_repository_pair(tmp_path)
     manager = sage_updater.UpdateManager(agent_config(tmp_path, remote, worktree))
@@ -303,8 +544,6 @@ def test_start_update_rejects_a_commit_other_than_the_checked_target(tmp_path: P
 
     assert manager.status()["state"] == "available"
     assert manager.status()["latest_commit"] == checked_commit
-
-
 
 
 def test_start_update_still_rejects_a_dirty_worktree(
@@ -421,9 +660,7 @@ def test_protect_running_images_creates_stable_rollback_tags(
 
     images = manager._protect_running_images("operation-id")
 
-    assert images["backend"]["rollback_tag"] == (
-        "sage-data-manager-rollback-backend:operation-id"
-    )
+    assert images["backend"]["rollback_tag"] == ("sage-data-manager-rollback-backend:operation-id")
     assert [
         "docker",
         "image",
@@ -468,8 +705,181 @@ def test_update_uses_the_commit_fetched_during_preflight(
     manager._operation_lock.acquire()
     manager._perform_update(old_commit, target_commit, "operation-id")
 
+    assert manager.status()["last_backup_path"] == "backup.dump"
     assert ["git", "merge", "--ff-only", target_commit] in commands
     assert not any(command[:2] == ["git", "pull"] for command in commands)
+
+
+def test_scheduled_backup_records_success_without_overwriting_update_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote, worktree = create_repository_pair(tmp_path)
+    manager = sage_updater.UpdateManager(agent_config(tmp_path, remote, worktree))
+    backup_path = tmp_path / "scheduled.dump"
+    manager._replace_state(
+        {
+            **manager.status(),
+            "state": "failed",
+            "phase": "failed",
+            "message": "更新失败，旧应用已恢复。",
+            "error": "镜像验证失败",
+        }
+    )
+    pruned: list[Path] = []
+    monkeypatch.setattr(manager, "_git", lambda arguments: "a" * 40)
+    monkeypatch.setattr(
+        manager,
+        "_backup_database",
+        lambda commit, **kwargs: backup_path,
+    )
+    monkeypatch.setattr(manager, "_prune_backups", pruned.append)
+
+    assert manager._perform_scheduled_backup() is True
+
+    status = manager.status()
+    assert status["state"] == "failed"
+    assert status["error"] == "镜像验证失败"
+    assert status["last_backup_path"] == backup_path.name
+    assert status["last_backup_at"]
+    assert status["last_backup_error"] is None
+    assert status["next_backup_at"]
+    assert status["backup_in_progress"] is False
+    assert pruned == [backup_path]
+    assert manager._operation_lock.acquire(blocking=False)
+    manager._operation_lock.release()
+
+
+def test_scheduled_backup_retries_later_when_update_lock_is_busy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote, worktree = create_repository_pair(tmp_path)
+    manager = sage_updater.UpdateManager(agent_config(tmp_path, remote, worktree))
+    backup_called = False
+
+    def record_backup(commit: str, **kwargs) -> Path:
+        nonlocal backup_called
+        backup_called = True
+        return tmp_path / "unexpected.dump"
+
+    monkeypatch.setattr(manager, "_backup_database", record_backup)
+    manager._operation_lock.acquire()
+    try:
+        assert manager._perform_scheduled_backup() is False
+        assert backup_called is False
+        assert manager.status()["next_backup_at"]
+    finally:
+        manager._operation_lock.release()
+
+
+def test_scheduled_backup_failure_is_persisted_separately(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote, worktree = create_repository_pair(tmp_path)
+    manager = sage_updater.UpdateManager(agent_config(tmp_path, remote, worktree))
+    manager._replace_state(
+        {
+            **manager.status(),
+            "state": "failed",
+            "error": "原更新错误",
+        }
+    )
+    monkeypatch.setattr(manager, "_git", lambda arguments: "b" * 40)
+
+    def fail_backup(commit: str, **kwargs) -> Path:
+        raise sage_updater.UpdateAgentError("测试备份失败")
+
+    monkeypatch.setattr(manager, "_backup_database", fail_backup)
+
+    assert manager._perform_scheduled_backup() is False
+
+    status = manager.status()
+    assert status["state"] == "failed"
+    assert status["error"] == "原更新错误"
+    assert status["last_backup_error"] == "测试备份失败"
+    assert status["last_backup_at"] is None
+    assert status["backup_in_progress"] is False
+
+
+def test_backup_retention_keeps_current_and_newest_backup(tmp_path: Path) -> None:
+    remote, worktree = create_repository_pair(tmp_path)
+    config = replace(
+        agent_config(tmp_path, remote, worktree),
+        backup_retention_count=2,
+    )
+    manager = sage_updater.UpdateManager(config)
+    backup_directory = config.state_directory / "backups"
+    backup_directory.mkdir(parents=True)
+    backups = [backup_directory / f"sage-{index}.dump" for index in range(3)]
+    for index, path in enumerate(backups, start=1):
+        path.touch()
+        os.utime(path, (index, index))
+
+    manager._prune_backups(backups[0])
+
+    assert backups[0].is_file()
+    assert not backups[1].exists()
+    assert backups[2].is_file()
+
+
+def test_backup_scheduler_stops_waiting_thread_cleanly(tmp_path: Path) -> None:
+    remote, worktree = create_repository_pair(tmp_path)
+    config = replace(
+        agent_config(tmp_path, remote, worktree),
+        scheduled_backup_interval_seconds=3600,
+    )
+    manager = sage_updater.UpdateManager(config)
+
+    manager.start_backup_scheduler()
+    thread = manager._backup_thread
+    assert thread is not None
+    assert thread.is_alive()
+    assert manager.status()["next_backup_at"]
+
+    manager.stop_backup_scheduler()
+
+    assert not thread.is_alive()
+    assert manager._backup_thread is None
+
+
+def test_disabled_backup_scheduler_has_no_thread(tmp_path: Path) -> None:
+    remote, worktree = create_repository_pair(tmp_path)
+    config = replace(
+        agent_config(tmp_path, remote, worktree),
+        scheduled_backup_interval_seconds=0,
+    )
+    manager = sage_updater.UpdateManager(config)
+
+    manager.start_backup_scheduler()
+
+    assert manager._backup_thread is None
+    assert manager.status()["next_backup_at"] is None
+
+
+def test_backup_scheduler_thread_start_failure_clears_thread_reference(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote, worktree = create_repository_pair(tmp_path)
+    manager = sage_updater.UpdateManager(agent_config(tmp_path, remote, worktree))
+
+    class FailingThread:
+        def __init__(self, **_kwargs: object) -> None:
+            self.created = True
+
+        def start(self) -> None:
+            raise RuntimeError("thread capacity exhausted")
+
+    monkeypatch.setattr(sage_updater.threading, "Thread", FailingThread)
+
+    with pytest.raises(sage_updater.UpdateAgentError, match="定时数据库备份"):
+        manager.start_backup_scheduler()
+
+    status = manager.status()
+    assert manager._backup_thread is None
+    assert "thread capacity exhausted" in str(status["last_backup_error"])
 
 
 def test_run_reports_multiple_stderr_lines(tmp_path: Path) -> None:
@@ -485,10 +895,89 @@ def test_run_reports_multiple_stderr_lines(tmp_path: Path) -> None:
     assert "first detail；second detail" in str(captured.value)
 
 
+def test_run_terminates_the_process_group_after_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote, worktree = create_repository_pair(tmp_path)
+    manager = sage_updater.UpdateManager(agent_config(tmp_path, remote, worktree))
+    communicate_calls: list[int | None] = []
+    kill_calls: list[tuple[int, int]] = []
+    popen_options: dict[str, object] = {}
+
+    class TimedOutProcess:
+        pid = 4321
+        returncode = -15
+
+        def communicate(self, timeout: int | None = None) -> tuple[str, str]:
+            communicate_calls.append(timeout)
+            if len(communicate_calls) == 1:
+                raise subprocess.TimeoutExpired(["test-command"], timeout)
+            return "", ""
+
+    def fake_popen(_command: list[str], **kwargs: object) -> TimedOutProcess:
+        popen_options.update(kwargs)
+        return TimedOutProcess()
+
+    monkeypatch.setattr(sage_updater.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        sage_updater.os,
+        "killpg",
+        lambda process_id, signum: kill_calls.append((process_id, signum)),
+    )
+
+    with pytest.raises(sage_updater.UpdateAgentError, match="执行超时（1 秒）"):
+        manager._run(["test-command", "argument"], timeout=1)
+
+    assert popen_options["start_new_session"] is True
+    assert communicate_calls == [1, 5]
+    assert kill_calls == [(4321, sage_updater.signal.SIGTERM)]
+
+
+def test_persist_state_flushes_file_and_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote, worktree = create_repository_pair(tmp_path)
+    manager = sage_updater.UpdateManager(agent_config(tmp_path, remote, worktree))
+    status_path = manager.config.state_directory / "status.json"
+    real_fsync = sage_updater.os.fsync
+    fsync_calls: list[int] = []
+
+    def record_fsync(file_descriptor: int) -> None:
+        fsync_calls.append(file_descriptor)
+        real_fsync(file_descriptor)
+
+    monkeypatch.setattr(sage_updater.os, "fsync", record_fsync)
+    manager._set_value("message", "durable state")
+
+    assert json.loads(status_path.read_text(encoding="utf-8"))["message"] == "durable state"
+    assert status_path.stat().st_mode & 0o777 == 0o600
+    assert not status_path.with_suffix(".tmp").exists()
+    assert len(fsync_calls) == 2
+
+
+def test_default_readiness_url_uses_frontend_proxy() -> None:
+    repository = MODULE_PATH.parents[1]
+    config = sage_updater.AgentConfig(
+        repository=repository,
+        socket_path=Path("/run/sage-updater/updater.sock"),
+        state_directory=Path("/var/lib/sage-updater"),
+        secret="s" * 64,
+    )
+
+    assert config.backend_health_url == sage_updater.urljoin(
+        config.frontend_health_url,
+        "api/ready",
+    )
+
+
 def test_installer_keeps_the_socket_mount_visible_after_agent_restart() -> None:
     repository = MODULE_PATH.parents[1]
     service = (repository / "deploy/sage-updater.service").read_text(encoding="utf-8")
     installer = (repository / "deploy/install-updater.sh").read_text(encoding="utf-8")
 
     assert "RuntimeDirectoryPreserve=yes" in service
+    assert "docker compose config --format json" in installer
+    assert '["services"]["backend"]["environment"]' in installer
     assert "docker compose up --build -d --force-recreate --no-deps backend" in installer

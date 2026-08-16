@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
@@ -18,6 +18,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def prevent_api_caching(request: Request, call_next):
+    response = await call_next(request)
+    if (
+        request.url.path == settings.api_prefix
+        or request.url.path.startswith(f"{settings.api_prefix}/")
+    ) and "cache-control" not in response.headers:
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 app.include_router(router, prefix=settings.api_prefix)
 
 
@@ -27,7 +40,7 @@ def agent_instructions() -> PlainTextResponse:
         r"""# DataManager Agent Interface
 
 Protocol version: 1.0
-Document version: 2026-08-15
+Document version: 2026-08-16
 
 This instance exposes a scoped HTTP API for authorized file-management agents.
 Use paths relative to the instance origin. The OpenAPI schema is authoritative
@@ -129,6 +142,8 @@ types. The endpoint streams bytes, supports `Range`, and returns
    resolve a `409` file conflict.
 
 The task's `expires_at` is authoritative. Do not start or retry work after it.
+Expired task records and isolated staging content are reclaimed safely when a
+later upload task is created.
 
 ## Error handling
 
@@ -170,6 +185,7 @@ All Agent mutations and file reads are attributed to the human account and PAT
 name in the activity log.
 """,
         media_type="text/markdown; charset=utf-8",
+        headers={"Cache-Control": "no-cache"},
     )
 
 
@@ -178,7 +194,7 @@ def agent_discovery() -> JSONResponse:
     return JSONResponse(
         {
             "schema_version": "1.0",
-            "documentation_version": "2026-08-15",
+            "documentation_version": "2026-08-16",
             "name": settings.app_name,
             "instructions": "/agent.md",
             "openapi": "/api/openapi.json",
@@ -223,5 +239,6 @@ def agent_discovery() -> JSONResponse:
                 "project": ["documentation", "code", "data", "outputs"],
                 "model": ["weights", "checkpoints", "configs", "evaluation"],
             },
-        }
+        },
+        headers={"Cache-Control": "no-cache"},
     )

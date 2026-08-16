@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from mimetypes import guess_type
 from pathlib import Path
@@ -10,12 +11,48 @@ from sqlalchemy.orm import Session
 from app.domain.enums import AssetType, HealthStatus
 from app.domain.models import Asset, FileRecord, ScanRun, UnclaimedFile
 from app.domain.schemas import ArchiveHealthSummary, ScanRunSummary
-from app.services.storage import file_kind, is_internal_storage_path
-from app.services.unclaimed import sync_unclaimed_files
+from app.services.storage import (
+    MAX_ARCHIVE_RELATIVE_PATH_LENGTH,
+    StorageIndexBusyError,
+    file_kind,
+    is_internal_storage_path,
+    storage_index_guard,
+)
+from app.services.unclaimed import (
+    UnclaimedFileSnapshot,
+    sync_unclaimed_file_snapshots,
+)
 
 
 class StorageScanError(Exception):
     pass
+
+
+class ScanAlreadyRunningError(Exception):
+    pass
+
+
+@contextmanager
+def _exclusive_scan(session: Session):
+    try:
+        with storage_index_guard(session, shared=False):
+            yield
+    except StorageIndexBusyError:
+        raise ScanAlreadyRunningError from None
+
+
+def _indexed_snapshot_matches(
+    record: FileRecord,
+    *,
+    file_size: int,
+    modified_at: datetime,
+) -> bool:
+    indexed_modified_at = record.modified_at
+    if indexed_modified_at is None or record.file_size != file_size:
+        return False
+    if indexed_modified_at.tzinfo is None:
+        indexed_modified_at = indexed_modified_at.replace(tzinfo=UTC)
+    return indexed_modified_at.astimezone(UTC) == modified_at
 
 
 def scan_run_summary(run: ScanRun) -> ScanRunSummary:
@@ -23,6 +60,11 @@ def scan_run_summary(run: ScanRun) -> ScanRunSummary:
 
 
 def scan_storage(session: Session, storage_root: Path) -> ScanRunSummary:
+    with _exclusive_scan(session):
+        return _scan_storage(session, storage_root)
+
+
+def _scan_storage(session: Session, storage_root: Path) -> ScanRunSummary:
     run = ScanRun(
         source="mock-archive" if storage_root.name == "sample-archive" else "storage-root"
     )
@@ -46,64 +88,95 @@ def scan_storage(session: Session, storage_root: Path) -> ScanRunSummary:
         session.flush()
         raise StorageScanError
 
-    registered_assets = session.scalars(select(Asset)).all()
-    assets = {(asset.type.value, asset.slug): asset for asset in registered_assets}
-    assets_by_id = {asset.id: asset for asset in registered_assets}
-    claimed_assets = {
-        record.relative_path: record.claimed_asset_id
-        for record in session.scalars(
-            select(UnclaimedFile).where(UnclaimedFile.claimed_asset_id.is_not(None))
-        ).all()
+    asset_rows = session.execute(select(Asset.id, Asset.type, Asset.slug)).all()
+    assets = {
+        (asset_type.value, slug): asset_id for asset_id, asset_type, slug in asset_rows
     }
+    asset_ids = {asset_id for asset_id, _, _ in asset_rows}
+    claimed_assets = dict(
+        session.execute(
+            select(UnclaimedFile.relative_path, UnclaimedFile.claimed_asset_id).where(
+                UnclaimedFile.claimed_asset_id.is_not(None)
+            )
+        ).all()
+    )
     existing = {
-        record.relative_path: record
-        for record in session.scalars(select(FileRecord)).all()
+        record.relative_path: record for record in session.scalars(select(FileRecord)).all()
     }
     seen_paths: set[str] = set()
+    unclaimed_snapshots: list[UnclaimedFileSnapshot] = []
 
     for candidate in root.rglob("*"):
-        if is_internal_storage_path(candidate.relative_to(root)):
-            continue
-        if candidate.is_symlink() or not candidate.is_file():
+        try:
+            if is_internal_storage_path(candidate.relative_to(root)):
+                continue
             if candidate.is_symlink():
                 run.files_skipped += 1
-            continue
-        try:
+                continue
+            if not candidate.is_file():
+                continue
             resolved = candidate.resolve(strict=True)
             relative = resolved.relative_to(root)
+            metadata = resolved.stat()
         except (OSError, ValueError):
             run.files_skipped += 1
             continue
 
         run.files_discovered += 1
         relative_path = relative.as_posix()
+        if len(relative_path) > MAX_ARCHIVE_RELATIVE_PATH_LENGTH:
+            run.files_skipped += 1
+            continue
+        file_name = resolved.name
+        candidate_kind = file_kind(resolved)
+        mime_type = guess_type(file_name)[0]
+        modified_at = datetime.fromtimestamp(metadata.st_mtime, UTC)
         parts = relative.parts
-        asset = None
+        registered_asset_id = None
         if len(parts) >= 3:
             try:
                 asset_type = AssetType(parts[0])
-                asset = assets.get((asset_type.value, parts[1]))
+                registered_asset_id = assets.get((asset_type.value, parts[1]))
             except ValueError:
                 pass
-        if not asset:
-            asset = assets_by_id.get(claimed_assets.get(relative_path))
-        if not asset:
+        if registered_asset_id is None:
+            unclaimed_snapshots.append(
+                UnclaimedFileSnapshot(
+                    relative_path=relative_path,
+                    file_name=file_name,
+                    file_kind=candidate_kind,
+                    mime_type=mime_type,
+                    file_size=metadata.st_size,
+                    modified_at=modified_at,
+                )
+            )
+        asset_id = registered_asset_id
+        if asset_id is None:
+            claimed_asset_id = claimed_assets.get(relative_path)
+            if claimed_asset_id in asset_ids:
+                asset_id = claimed_asset_id
+        if asset_id is None:
             run.files_unclaimed += 1
             continue
 
-        stat = resolved.stat()
         record = existing.get(relative_path)
         if not record:
-            record = FileRecord(asset_id=asset.id, relative_path=relative_path)
+            record = FileRecord(asset_id=asset_id, relative_path=relative_path)
             session.add(record)
         else:
-            record.asset_id = asset.id
-        record.file_name = resolved.name
-        record.file_kind = file_kind(resolved)
-        record.mime_type = guess_type(resolved.name)[0]
-        record.file_size = stat.st_size
+            if not _indexed_snapshot_matches(
+                record,
+                file_size=metadata.st_size,
+                modified_at=modified_at,
+            ):
+                record.checksum = None
+            record.asset_id = asset_id
+        record.file_name = file_name
+        record.file_kind = candidate_kind
+        record.mime_type = mime_type
+        record.file_size = metadata.st_size
         record.health_status = HealthStatus.HEALTHY
-        record.modified_at = datetime.fromtimestamp(stat.st_mtime, UTC)
+        record.modified_at = modified_at
         run.files_indexed += 1
         seen_paths.add(relative_path)
 
@@ -112,7 +185,7 @@ def scan_storage(session: Session, storage_root: Path) -> ScanRunSummary:
             record.health_status = HealthStatus.MISSING
             run.files_missing += 1
 
-    sync_unclaimed_files(session, root)
+    sync_unclaimed_file_snapshots(session, unclaimed_snapshots)
     run.status = "completed"
     run.message = "扫描完成；未匹配文件保留为待认领，不会自动创建资产。"
     run.completed_at = datetime.now(UTC)

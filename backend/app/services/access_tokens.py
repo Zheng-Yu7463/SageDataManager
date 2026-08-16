@@ -6,8 +6,9 @@ import secrets
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.core.config import settings
 from app.domain.activity import ActivityAction
@@ -113,9 +114,7 @@ def revoke_access_token(session: Session, user: User, token_id: UUID) -> AccessT
     return access_token_summary(token)
 
 
-def authenticate_access_token(
-    session: Session, plaintext: str
-) -> PersonalAccessToken | None:
+def authenticate_access_token(session: Session, plaintext: str) -> PersonalAccessToken | None:
     parts = plaintext.split("_", 3)
     if len(parts) != 4 or parts[:2] != ["sdm", "pat"]:
         return None
@@ -136,5 +135,24 @@ def authenticate_access_token(
 
 
 def record_access_token_use(session: Session, token: PersonalAccessToken) -> None:
-    token.last_used_at = datetime.now(UTC)
-    session.commit()
+    now = datetime.now(UTC)
+    interval = timedelta(seconds=max(0, settings.agent_token_last_used_interval_seconds))
+    cutoff = now - interval
+    if token.last_used_at is not None and _aware(token.last_used_at) >= cutoff:
+        return
+
+    result = session.execute(
+        update(PersonalAccessToken)
+        .where(
+            PersonalAccessToken.id == token.id,
+            or_(
+                PersonalAccessToken.last_used_at.is_(None),
+                PersonalAccessToken.last_used_at < cutoff,
+            ),
+        )
+        .values(last_used_at=now)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount:
+        session.commit()
+        set_committed_value(token, "last_used_at", now)

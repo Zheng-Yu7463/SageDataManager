@@ -1,15 +1,50 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.api.dependencies import require_admin
 from app.api.routes import settings as settings_routes
 from app.domain.models import User
 from app.main import app
+from app.services import system_updates
 from app.services.security import hash_password
-from app.services.system_updates import UpdateAgentUnavailableError
+from app.services.system_updates import UpdateAgentRequestError, UpdateAgentUnavailableError
 
 TARGET_COMMIT = "b" * 40
+
+
+def test_update_agent_response_size_is_bounded(monkeypatch) -> None:
+    closed = False
+
+    class OversizedResponse:
+        status = 200
+
+        def read(self, size: int) -> bytes:
+            assert size == system_updates.MAX_UPDATE_AGENT_RESPONSE_BYTES + 1
+            return b"x" * size
+
+    class Connection:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def request(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def getresponse(self) -> OversizedResponse:
+            return OversizedResponse()
+
+        def close(self) -> None:
+            nonlocal closed
+            closed = True
+
+    monkeypatch.setattr(system_updates, "UnixSocketHTTPConnection", Connection)
+    monkeypatch.setattr(system_updates.settings, "update_agent_secret", "s" * 64)
+
+    with pytest.raises(UpdateAgentRequestError, match="响应过大"):
+        system_updates.request_update_agent("GET", "/v1/status")
+
+    assert closed is True
 
 
 def update_status(**overrides: object) -> dict[str, object]:

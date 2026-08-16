@@ -15,7 +15,7 @@ import urllib.error
 import urllib.request
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -24,8 +24,15 @@ from typing import BinaryIO, NoReturn
 from urllib.parse import urljoin
 
 BUSY_STATES = {
-    "checking", "recovering", "backing_up", "pulling", "building", "restarting", "verifying"
+    "checking",
+    "recovering",
+    "backing_up",
+    "pulling",
+    "building",
+    "restarting",
+    "verifying",
 }
+KNOWN_STATES = BUSY_STATES | {"unavailable", "idle", "available", "succeeded", "failed"}
 EXPECTED_REMOTE = "https://github.com/Zheng-Yu7463/SageDataManager"
 UTC_TIMEZONE = timezone.utc  # noqa: UP017 -- host Python 3.10 lacks datetime.UTC.
 SNAP_DOCKER_BINARY = Path("/snap/docker/current/bin/docker")
@@ -49,9 +56,10 @@ class AgentConfig:
     branch: str = "main"
     remote: str = "origin"
     expected_remote: str = EXPECTED_REMOTE
-    backend_health_url: str = "http://127.0.0.1:8000/api/ready"
+    backend_health_url: str = "http://127.0.0.1:8080/api/ready"
     frontend_health_url: str = "http://127.0.0.1:8080/"
     backup_retention_count: int = 10
+    scheduled_backup_interval_seconds: int = 86400
     docker_command: tuple[str, ...] = ("docker",)
     compose_command: tuple[str, ...] = ("docker", "compose")
 
@@ -59,6 +67,7 @@ class AgentConfig:
 @dataclass(frozen=True)
 class CommandResult:
     stdout: str
+
 
 class FrontendAssetParser(HTMLParser):
     def __init__(self) -> None:
@@ -73,8 +82,6 @@ class FrontendAssetParser(HTMLParser):
             self.script_sources.append(source)
 
 
-
-
 def utc_now() -> str:
     return datetime.now(UTC_TIMEZONE).isoformat()
 
@@ -86,22 +93,6 @@ def normalize_remote_url(value: str) -> str:
     if normalized.startswith("git@github.com:"):
         normalized = "https://github.com/" + normalized.removeprefix("git@github.com:")
     return normalized.lower()
-
-
-def read_dotenv(path: Path) -> dict[str, str]:
-    values: dict[str, str] = {}
-    if not path.is_file():
-        return values
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
-            value = value[1:-1]
-        values[key.strip()] = value
-    return values
 
 
 def resolve_container_commands(
@@ -122,6 +113,9 @@ class UpdateManager:
         self.config = config
         self._lock = threading.RLock()
         self._operation_lock = threading.Lock()
+        self._backup_stop_event = threading.Event()
+        self._backup_thread: threading.Thread | None = None
+        self._state_load_error: str | None = None
         self._state: dict[str, object] = {
             "enabled": True,
             "state": "idle",
@@ -141,6 +135,12 @@ class UpdateManager:
             "completed_at": None,
             "error": None,
             "backup_path": None,
+            "backup_in_progress": False,
+            "last_backup_at": None,
+            "last_backup_path": None,
+            "last_backup_error": None,
+            "next_backup_at": None,
+            "scheduled_backup_interval_seconds": config.scheduled_backup_interval_seconds,
             "operation_id": None,
             "agent_restart_required": False,
             "installer_restart_required": False,
@@ -150,9 +150,35 @@ class UpdateManager:
             "updater_files": {},
             "logs": [],
         }
-        persisted = self._load_state()
+        try:
+            persisted = self._load_state()
+        except UpdateAgentError as error:
+            self._state_load_error = str(error)
+            self._state.update(
+                {
+                    "enabled": False,
+                    "state": "unavailable",
+                    "phase": "state_load_failed",
+                    "message": "更新状态文件异常，已停止自动更新和定时备份。",
+                    "completed_at": utc_now(),
+                    "error": self._state_load_error,
+                    "logs": [self._state_load_error],
+                }
+            )
+            return
         if persisted:
             self._state.update(persisted)
+            self._state["scheduled_backup_interval_seconds"] = (
+                config.scheduled_backup_interval_seconds
+            )
+            if self._state.get("backup_in_progress"):
+                self._state.update(
+                    {
+                        "backup_in_progress": False,
+                        "last_backup_error": "上一次定时数据库备份被中断。",
+                    }
+                )
+                self._persist_state()
             if self._state.get("state") in BUSY_STATES:
                 self._state.update(
                     {
@@ -164,11 +190,24 @@ class UpdateManager:
                 )
                 self._persist_state()
                 self._operation_lock.acquire()
-                threading.Thread(
-                    target=self._recover_interrupted_update,
-                    name="sage-system-update-recovery",
-                    daemon=False,
-                ).start()
+                try:
+                    thread = threading.Thread(
+                        target=self._recover_interrupted_update,
+                        name="sage-system-update-recovery",
+                        daemon=False,
+                    )
+                    thread.start()
+                except Exception as error:
+                    backup_path = self._state.get("backup_path")
+                    detail = f"无法启动中断更新恢复任务：{error}"
+                    try:
+                        self._set_failure(
+                            detail,
+                            message="检测到未完成更新，但自动恢复任务无法启动。",
+                            backup_path=backup_path if isinstance(backup_path, str) else None,
+                        )
+                    finally:
+                        self._operation_lock.release()
                 return
             if self._state.get("state") in {"succeeded", "failed"}:
                 if self._state.get("agent_restart_required"):
@@ -186,6 +225,138 @@ class UpdateManager:
         with self._lock:
             return json.loads(json.dumps(self._state))
 
+    def start_backup_scheduler(self) -> None:
+        if self._state_load_error:
+            return
+        interval = self.config.scheduled_backup_interval_seconds
+        with self._lock:
+            self._state["scheduled_backup_interval_seconds"] = interval
+            if interval <= 0:
+                self._state["next_backup_at"] = None
+                self._persist_state()
+                return
+            if self._parse_timestamp(self._state.get("next_backup_at")) is None:
+                self._state["next_backup_at"] = self._backup_time_after(interval)
+                self._persist_state()
+            if self._backup_thread and self._backup_thread.is_alive():
+                return
+            self._backup_stop_event.clear()
+            self._backup_thread = threading.Thread(
+                target=self._backup_scheduler_loop,
+                name="sage-database-backup-scheduler",
+                daemon=False,
+            )
+            try:
+                self._backup_thread.start()
+            except Exception as error:
+                self._backup_thread = None
+                self._record_backup_failure(f"无法启动定时数据库备份任务：{error}")
+                raise UpdateAgentError("无法启动定时数据库备份任务。") from error
+
+    def stop_backup_scheduler(self) -> None:
+        self._backup_stop_event.set()
+        thread = self._backup_thread
+        if thread and thread is not threading.current_thread():
+            thread.join()
+        self._backup_thread = None
+
+    def _backup_scheduler_loop(self) -> None:
+        while not self._backup_stop_event.is_set():
+            next_backup = self._parse_timestamp(self.status().get("next_backup_at"))
+            if next_backup is None:
+                self._schedule_next_backup()
+                continue
+            delay = max(0.0, (next_backup - datetime.now(UTC_TIMEZONE)).total_seconds())
+            if self._backup_stop_event.wait(delay):
+                return
+            self._perform_scheduled_backup()
+
+    def _perform_scheduled_backup(self) -> bool:
+        if not self._operation_lock.acquire(blocking=False):
+            retry_delay = min(300, max(1, self.config.scheduled_backup_interval_seconds))
+            self._schedule_next_backup(retry_delay)
+            return False
+        try:
+            self._set_backup_in_progress(True)
+            current_commit = self._git(["rev-parse", "HEAD"])
+            backup_path = self._backup_database(
+                current_commit,
+                operation_suffix=f"scheduled-{uuid.uuid4().hex[:8]}",
+            )
+            try:
+                self._prune_backups(backup_path)
+            except Exception as housekeeping_error:
+                self._append_log(f"无法清理过期数据库备份：{housekeeping_error}")
+            self._record_backup_success(backup_path)
+            return True
+        except Exception as error:
+            self._record_backup_failure(str(error))
+            return False
+        finally:
+            try:
+                self._set_backup_in_progress(False)
+            finally:
+                self._operation_lock.release()
+
+    def _set_backup_in_progress(self, value: bool) -> None:
+        with self._lock:
+            self._state["backup_in_progress"] = value
+            self._persist_state()
+
+    def _record_backup_success(self, backup_path: Path) -> None:
+        with self._lock:
+            self._state.update(
+                {
+                    "last_backup_at": utc_now(),
+                    "last_backup_path": backup_path.name,
+                    "last_backup_error": None,
+                    "next_backup_at": self._backup_time_after(
+                        self.config.scheduled_backup_interval_seconds
+                    ),
+                }
+            )
+            self._append_log(f"数据库备份已完成：{backup_path.name}", persist=False)
+            self._persist_state()
+
+    def _record_backup_failure(self, detail: str) -> None:
+        with self._lock:
+            self._state.update(
+                {
+                    "last_backup_error": detail or "数据库备份失败。",
+                    "next_backup_at": self._backup_time_after(
+                        self.config.scheduled_backup_interval_seconds
+                    ),
+                }
+            )
+            self._append_log(f"定时数据库备份失败：{detail}", persist=False)
+            self._persist_state()
+
+    def _schedule_next_backup(self, delay_seconds: int | None = None) -> None:
+        with self._lock:
+            self._state["next_backup_at"] = self._backup_time_after(
+                self.config.scheduled_backup_interval_seconds
+                if delay_seconds is None
+                else delay_seconds
+            )
+            self._persist_state()
+
+    def _backup_time_after(self, delay_seconds: int) -> str | None:
+        if self.config.scheduled_backup_interval_seconds <= 0:
+            return None
+        return (datetime.now(UTC_TIMEZONE) + timedelta(seconds=delay_seconds)).isoformat()
+
+    @staticmethod
+    def _parse_timestamp(value: object) -> datetime | None:
+        if not isinstance(value, str):
+            return None
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=UTC_TIMEZONE)
+        return parsed.astimezone(UTC_TIMEZONE)
+
     def _recover_interrupted_update(self) -> None:
         snapshot = self.status()
         previous_phase = str(
@@ -193,6 +364,8 @@ class UpdateManager:
         )
         old_commit = snapshot.get("old_commit")
         rollback_images = snapshot.get("rollback_images")
+        backup_path = snapshot.get("backup_path")
+        backup_name = backup_path if isinstance(backup_path, str) else None
         try:
             if previous_phase == "committed":
                 target_commit = snapshot.get("target_commit")
@@ -216,9 +389,7 @@ class UpdateManager:
                         f"新版本复验失败：{verification_error}；已恢复旧应用。"
                         "数据库迁移不会自动降级。",
                         message="新版本复验失败，旧应用已恢复。",
-                        backup_path=snapshot.get("backup_path")
-                        if isinstance(snapshot.get("backup_path"), str)
-                        else None,
+                        backup_path=backup_name,
                     )
                     return
                 _, installer_changed = self._updater_files_changed()
@@ -260,19 +431,21 @@ class UpdateManager:
                 message="中断任务已处理，旧应用已恢复。"
                 if restored
                 else "中断的检查任务已停止，请重新检查更新。",
+                backup_path=backup_name,
             )
         except Exception as error:
             self._set_failure(
                 f"中断恢复失败：{error}",
                 message="检测到未完成更新，自动恢复失败，请在服务器人工处理。",
+                backup_path=backup_name,
             )
         finally:
             self._operation_lock.release()
 
-
     def check(self) -> dict[str, object]:
+        self._require_loaded_state()
         if not self._operation_lock.acquire(blocking=False):
-            raise UpdateConflictError("已有系统更新操作正在运行。")
+            raise UpdateConflictError("已有系统更新或数据库备份操作正在运行。")
         try:
             self._set_progress("checking", "fetch", "正在连接 GitHub 获取 origin/main…", reset=True)
             thread = threading.Thread(
@@ -282,9 +455,13 @@ class UpdateManager:
             )
             thread.start()
             return self.status()
-        except Exception:
-            self._operation_lock.release()
-            raise
+        except Exception as error:
+            detail = f"无法启动系统更新检查：{error}"
+            try:
+                self._set_failure(detail)
+            finally:
+                self._operation_lock.release()
+            raise UpdateAgentError(detail) from error
 
     def _perform_check(self) -> None:
         try:
@@ -298,8 +475,9 @@ class UpdateManager:
             self._operation_lock.release()
 
     def start_update(self, expected_commit: str) -> dict[str, object]:
+        self._require_loaded_state()
         if not self._operation_lock.acquire(blocking=False):
-            raise UpdateConflictError("已有系统更新操作正在运行。")
+            raise UpdateConflictError("已有系统更新或数据库备份操作正在运行。")
         try:
             with self._lock:
                 checked_commit = self._state.get("latest_commit")
@@ -358,9 +536,13 @@ class UpdateManager:
             self._set_failure(str(error))
             self._operation_lock.release()
             raise
-        except Exception:
-            self._operation_lock.release()
-            raise
+        except Exception as error:
+            detail = f"无法启动系统更新任务：{error}"
+            try:
+                self._set_failure(detail)
+            finally:
+                self._operation_lock.release()
+            raise UpdateAgentError(detail) from error
 
     def _perform_update(
         self,
@@ -382,6 +564,7 @@ class UpdateManager:
             )
             backup_path = self._backup_database(old_commit)
             self._set_value("backup_path", backup_path.name)
+            self._record_backup_success(backup_path)
             try:
                 self._prune_backups(backup_path)
             except Exception as housekeeping_error:
@@ -547,17 +730,21 @@ class UpdateManager:
             "logs": self.status().get("logs", []),
         }
 
-    def _backup_database(self, commit: str) -> Path:
+    def _backup_database(
+        self,
+        commit: str,
+        *,
+        operation_suffix: str | None = None,
+    ) -> Path:
         self.config.state_directory.mkdir(parents=True, exist_ok=True)
         backup_directory = self.config.state_directory / "backups"
         backup_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         timestamp = datetime.now(UTC_TIMEZONE).strftime("%Y%m%dT%H%M%SZ")
-        operation_suffix = str(self.status().get("operation_id") or "manual")[:8]
-        backup_path = backup_directory / f"sage-{timestamp}-{commit[:12]}-{operation_suffix}.dump"
+        suffix = operation_suffix or str(self.status().get("operation_id") or "manual")[:8]
+        backup_path = backup_directory / f"sage-{timestamp}-{commit[:12]}-{suffix}.dump"
         partial_path = backup_path.with_suffix(".dump.partial")
-        env_values = read_dotenv(self.config.repository / ".env")
-        database_user = env_values.get("POSTGRES_USER", "sage")
-        database_name = env_values.get("POSTGRES_DB", "sage")
+        database_user = self._postgres_environment_value("POSTGRES_USER")
+        database_name = self._postgres_environment_value("POSTGRES_DB")
 
         size_result = self._run(
             [
@@ -582,7 +769,7 @@ class UpdateManager:
             raise UpdateAgentError("无法读取 PostgreSQL 数据库容量。") from error
         required_free = max(database_size * 2, 512 * 1024 * 1024)
         if shutil.disk_usage(backup_directory).free < required_free:
-            raise UpdateAgentError("备份目录可用空间不足，拒绝开始更新。")
+            raise UpdateAgentError("备份目录可用空间不足，拒绝创建数据库备份。")
 
         self._append_log(f"创建并校验数据库备份 {backup_path.name}")
         try:
@@ -606,7 +793,7 @@ class UpdateManager:
                     stdout=output,
                 )
             if partial_path.stat().st_size == 0:
-                raise UpdateAgentError("PostgreSQL 备份为空，拒绝继续更新。")
+                raise UpdateAgentError("PostgreSQL 备份为空，拒绝保留该备份。")
             with partial_path.open("rb") as backup_input:
                 self._run(
                     [
@@ -626,6 +813,22 @@ class UpdateManager:
             partial_path.unlink(missing_ok=True)
             raise
         return backup_path
+
+    def _postgres_environment_value(self, name: str) -> str:
+        value = self._run(
+            [
+                *self.config.compose_command,
+                "exec",
+                "-T",
+                "postgres",
+                "printenv",
+                name,
+            ],
+            timeout=30,
+        ).stdout.removesuffix("\n").removesuffix("\r")
+        if not value:
+            raise UpdateAgentError(f"PostgreSQL 容器缺少 {name} 环境变量。")
+        return value
 
     def _prune_backups(self, current_backup: Path) -> None:
         backups = sorted(
@@ -868,33 +1071,54 @@ class UpdateManager:
         environment = os.environ.copy()
         if extra_env:
             environment.update(extra_env)
+        text_mode = stdout is None and stdin is None
+        command_label = " ".join(command[:2])
         try:
-            completed = subprocess.run(
+            process = subprocess.Popen(
                 command,
                 cwd=self.config.repository,
-                check=False,
                 stdin=stdin,
                 stdout=stdout or subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=stdout is None and stdin is None,
-                timeout=timeout,
+                text=text_mode,
                 env=environment,
+                start_new_session=True,
             )
-        except (OSError, subprocess.TimeoutExpired) as error:
-            raise UpdateAgentError(f"命令执行失败：{command[0]} {command[1]}") from error
+        except OSError as error:
+            raise UpdateAgentError(f"命令无法启动：{command_label}") from error
 
-        standard_output = completed.stdout if isinstance(completed.stdout, str) else ""
-        standard_error = (
-            completed.stderr.decode(errors="replace")
-            if isinstance(completed.stderr, bytes)
-            else completed.stderr
+        try:
+            captured_stdout, captured_stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    process.communicate(timeout=5)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.communicate()
+            except ProcessLookupError:
+                process.communicate()
+            raise UpdateAgentError(
+                f"命令执行超时（{timeout} 秒）：{command_label}"
+            ) from error
+
+        standard_output = (
+            captured_stdout.decode(errors="replace")
+            if isinstance(captured_stdout, bytes)
+            else captured_stdout or ""
         )
-        if completed.returncode != 0:
+        standard_error = (
+            captured_stderr.decode(errors="replace")
+            if isinstance(captured_stderr, bytes)
+            else captured_stderr or ""
+        )
+        if process.returncode != 0:
             detail = (standard_error or standard_output or "未知错误").strip().splitlines()
             summary = "；".join(line.strip() for line in detail[-4:] if line.strip())
             if not summary:
                 summary = "未知错误"
-            raise UpdateAgentError(f"{command[0]} {command[1]} 失败：{summary}")
+            raise UpdateAgentError(f"{command_label} 失败：{summary}")
         if stdout is None:
             lines = [
                 line.strip()
@@ -907,7 +1131,18 @@ class UpdateManager:
 
     def _replace_state(self, values: dict[str, object]) -> None:
         with self._lock:
-            self._state = values
+            backup_state = {
+                key: self._state.get(key)
+                for key in (
+                    "backup_in_progress",
+                    "last_backup_at",
+                    "last_backup_path",
+                    "last_backup_error",
+                    "next_backup_at",
+                    "scheduled_backup_interval_seconds",
+                )
+            }
+            self._state = {**backup_state, **values}
             self._persist_state()
 
     def _set_value(self, key: str, value: object) -> None:
@@ -974,27 +1209,48 @@ class UpdateManager:
             if persist:
                 self._persist_state()
 
+    def _require_loaded_state(self) -> None:
+        if self._state_load_error:
+            raise UpdateAgentError(self._state_load_error)
+
     def _load_state(self) -> dict[str, object] | None:
         path = self.config.state_directory / "status.json"
         if not path.is_file():
             return None
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return None
-        if not isinstance(value, dict):
-            return None
+        except (OSError, json.JSONDecodeError) as error:
+            raise UpdateAgentError(
+                "更新状态文件损坏或不可读。为避免覆盖恢复信息，请在服务器检查权限，"
+                "或备份并移走 status.json 后重启更新服务。"
+            ) from error
+        if not isinstance(value, dict) or value.get("state") not in KNOWN_STATES:
+            raise UpdateAgentError(
+                "更新状态文件格式无效。为避免覆盖恢复信息，请备份并移走 status.json "
+                "后重启更新服务。"
+            )
         return value
 
     def _persist_state(self) -> None:
         self.config.state_directory.mkdir(parents=True, exist_ok=True)
         path = self.config.state_directory / "status.json"
         temporary = path.with_suffix(".tmp")
-        temporary.write_text(
-            json.dumps(self._state, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        temporary.replace(path)
+        serialized = json.dumps(self._state, ensure_ascii=False, indent=2) + "\n"
+        try:
+            with temporary.open("w", encoding="utf-8") as output:
+                output.write(serialized)
+                output.flush()
+                os.fsync(output.fileno())
+            temporary.chmod(0o600)
+            os.replace(temporary, path)
+            directory_fd = os.open(self.config.state_directory, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            raise
 
 
 class AgentHTTPServer(ThreadingMixIn, UnixStreamServer):
@@ -1060,7 +1316,6 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
             raise UpdateAgentError("请求体必须是 JSON 对象。")
         return value
 
-
     def _authorized(self) -> bool:
         expected = f"Bearer {self.server.secret}"
         actual = self.headers.get("Authorization", "")
@@ -1088,6 +1343,17 @@ def config_from_environment() -> AgentConfig:
         raise UpdateAgentError("SAGE_UPDATE_REPOSITORY 必须指向 SageDataManager 仓库。")
     if len(secret) < 32:
         raise UpdateAgentError("SAGE_UPDATE_AGENT_SECRET 至少需要 32 个字符。")
+    try:
+        backup_retention_count = int(os.environ.get("SAGE_UPDATE_BACKUP_RETENTION", "10"))
+        scheduled_backup_interval_seconds = int(
+            os.environ.get("SAGE_UPDATE_BACKUP_INTERVAL_SECONDS", "86400")
+        )
+    except ValueError as error:
+        raise UpdateAgentError("数据库备份间隔和保留数量必须是整数。") from error
+    if backup_retention_count < 1:
+        raise UpdateAgentError("SAGE_UPDATE_BACKUP_RETENTION 必须至少为 1。")
+    if scheduled_backup_interval_seconds < 0:
+        raise UpdateAgentError("SAGE_UPDATE_BACKUP_INTERVAL_SECONDS 不能小于 0。")
     docker_command, compose_command = resolve_container_commands()
     return AgentConfig(
         repository=repository,
@@ -1097,13 +1363,14 @@ def config_from_environment() -> AgentConfig:
         expected_remote=os.environ.get("SAGE_UPDATE_REMOTE_URL", EXPECTED_REMOTE),
         backend_health_url=os.environ.get(
             "SAGE_UPDATE_BACKEND_HEALTH_URL",
-            "http://127.0.0.1:8000/api/ready",
+            "http://127.0.0.1:8080/api/ready",
         ),
         frontend_health_url=os.environ.get(
             "SAGE_UPDATE_FRONTEND_HEALTH_URL",
             "http://127.0.0.1:8080/",
         ),
-        backup_retention_count=int(os.environ.get("SAGE_UPDATE_BACKUP_RETENTION", "10")),
+        backup_retention_count=backup_retention_count,
+        scheduled_backup_interval_seconds=scheduled_backup_interval_seconds,
         docker_command=docker_command,
         compose_command=compose_command,
     )
@@ -1118,6 +1385,7 @@ def serve(config: AgentConfig) -> NoReturn:
     manager = UpdateManager(config)
     server = AgentHTTPServer(config.socket_path, manager, config.secret)
     config.socket_path.chmod(0o660)
+    manager.start_backup_scheduler()
 
     def stop_server(signum: int, frame: object) -> None:
         threading.Thread(target=server.shutdown, daemon=True).start()
@@ -1127,6 +1395,7 @@ def serve(config: AgentConfig) -> NoReturn:
     try:
         server.serve_forever(poll_interval=0.5)
     finally:
+        manager.stop_backup_scheduler()
         server.server_close()
         config.socket_path.unlink(missing_ok=True)
     raise SystemExit(0)

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { CheckCircle2, KeyRound, Link2, ShieldCheck } from '@lucide/vue'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { acceptAccountInvitation, getAccountInvitation } from '@/api/client'
@@ -9,18 +9,18 @@ import type { AccountInvitationStatus, AccountLoginResponse } from '@/types'
 
 const emit = defineEmits<{ authenticated: [account: AccountLoginResponse] }>()
 const route = useRoute()
-const token = computed(() => String(route.params.token ?? ''))
+const token = computed(() => {
+  const legacyToken = String(route.params.token ?? '')
+  if (legacyToken) return legacyToken
+  return new URLSearchParams(route.hash.slice(1)).get('token') ?? ''
+})
 const invitation = ref<AccountInvitationStatus | null>(null)
 const loading = ref(true)
 const submitting = ref(false)
 const error = ref('')
-const form = ref({
-  name: '',
-  email: '',
-  password: '',
-  passwordConfirmation: '',
-})
+const form = ref(emptyForm())
 const { branding, brandTitle } = useBranding()
+let submitController: AbortController | null = null
 
 const isRegistration = computed(() => invitation.value?.purpose === 'registration')
 const formValid = computed(() => (
@@ -30,6 +30,19 @@ const formValid = computed(() => (
   && form.value.password === form.value.passwordConfirmation
 ))
 
+function emptyForm() {
+  return {
+    name: '',
+    email: '',
+    password: '',
+    passwordConfirmation: '',
+  }
+}
+
+function isAbortError(reason: unknown) {
+  return reason instanceof DOMException && reason.name === 'AbortError'
+}
+
 function formatExpiry(value: string) {
   return new Intl.DateTimeFormat('zh-CN', {
     dateStyle: 'medium',
@@ -37,38 +50,63 @@ function formatExpiry(value: string) {
   }).format(new Date(value))
 }
 
-async function loadInvitation() {
+async function loadInvitation(currentToken: string, signal: AbortSignal) {
   loading.value = true
+  invitation.value = null
   error.value = ''
+  if (!currentToken) {
+    error.value = '注册链接缺少邀请凭据。'
+    loading.value = false
+    return
+  }
   try {
-    invitation.value = await getAccountInvitation(token.value)
+    const result = await getAccountInvitation(currentToken, signal)
+    if (!signal.aborted) invitation.value = result
   } catch (reason) {
+    if (signal.aborted || isAbortError(reason)) return
     error.value = reason instanceof Error ? reason.message : '注册链接无效或已失效。'
   } finally {
-    loading.value = false
+    if (!signal.aborted) loading.value = false
   }
 }
 
 async function submit() {
   if (!invitation.value || !formValid.value) return
+  const currentToken = token.value
+  submitController?.abort()
+  const controller = new AbortController()
+  submitController = controller
   submitting.value = true
   error.value = ''
   try {
-    const response = await acceptAccountInvitation(token.value, {
+    const response = await acceptAccountInvitation(currentToken, {
       ...(isRegistration.value
         ? { name: form.value.name.trim(), email: form.value.email.trim().toLowerCase() }
         : {}),
       password: form.value.password,
-    })
-    emit('authenticated', response)
+    }, controller.signal)
+    if (!controller.signal.aborted) emit('authenticated', response)
   } catch (reason) {
+    if (controller.signal.aborted || isAbortError(reason)) return
     error.value = reason instanceof Error ? reason.message : '无法完成账号设置'
   } finally {
-    submitting.value = false
+    if (submitController === controller) {
+      submitController = null
+      submitting.value = false
+    }
   }
 }
 
-onMounted(loadInvitation)
+watch(token, (currentToken, _previousToken, onCleanup) => {
+  submitController?.abort()
+  submitting.value = false
+  form.value = emptyForm()
+  const controller = new AbortController()
+  onCleanup(() => controller.abort())
+  void loadInvitation(currentToken, controller.signal)
+}, { immediate: true })
+
+onBeforeUnmount(() => submitController?.abort())
 </script>
 
 <template>

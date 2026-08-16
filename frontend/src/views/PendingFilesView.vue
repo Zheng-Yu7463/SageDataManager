@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Check, CircleAlert, FileQuestion, RefreshCw, Search, X } from '@lucide/vue'
+import { ArrowLeft, ArrowRight, Check, CircleAlert, FileQuestion, RefreshCw, Search, X } from '@lucide/vue'
 import { useDebounceFn } from '@vueuse/core'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
@@ -10,6 +10,9 @@ import { useBranding } from '@/composables/useBranding'
 import type { AssetChoiceSummary, UnclaimedFileSummary } from '@/types'
 
 const files = ref<UnclaimedFileSummary[]>([])
+const page = ref(1)
+const pageSize = ref(50)
+const total = ref(0)
 const assetChoices = ref<AssetChoiceSummary[]>([])
 const activeFile = ref<UnclaimedFileSummary | null>(null)
 const claimDialog = ref<HTMLElement | null>(null)
@@ -27,18 +30,27 @@ const error = ref('')
 const { pageEyebrow } = useBranding()
 
 const claimOpen = computed(() => Boolean(activeFile.value))
+const pageCount = computed(() => Math.max(1, Math.ceil(total.value / pageSize.value)))
 useOverlayFocus(claimOpen, claimDialog, closeClaim)
 
-async function load() {
+async function load(nextPage = page.value) {
   filesController?.abort()
   const requestController = new AbortController()
   filesController = requestController
   loading.value = true
   error.value = ''
   try {
-    const result = await getUnclaimedFiles(requestController.signal)
+    const result = await getUnclaimedFiles(nextPage, pageSize.value, requestController.signal)
     if (filesController !== requestController) return
-    files.value = result
+    const lastPage = Math.max(1, Math.ceil(result.total / result.page_size))
+    if (!result.items.length && result.total > 0 && nextPage > lastPage) {
+      void load(lastPage)
+      return
+    }
+    files.value = result.items
+    total.value = result.total
+    page.value = result.page
+    pageSize.value = result.page_size
   } catch (reason) {
     if (filesController !== requestController) return
     if (reason instanceof DOMException && reason.name === 'AbortError') return
@@ -94,12 +106,15 @@ function closeClaim() {
 
 async function claim() {
   if (!activeFile.value || !selectedAssetId.value) return
+  const claimedFileId = activeFile.value.id
   submitting.value = true
   claimError.value = ''
   try {
-    await claimUnclaimedFile(activeFile.value.id, selectedAssetId.value)
-    files.value = files.value.filter((file) => file.id !== activeFile.value?.id)
+    await claimUnclaimedFile(claimedFileId, selectedAssetId.value)
     activeFile.value = null
+    const remainingTotal = Math.max(0, total.value - 1)
+    const lastPage = Math.max(1, Math.ceil(remainingTotal / pageSize.value))
+    await load(Math.min(page.value, lastPage))
   } catch (reason) {
     claimError.value = reason instanceof Error ? reason.message : '认领失败，请稍后重试'
   } finally {
@@ -116,9 +131,9 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="page pending-files-page">
-    <header class="page-heading"><div><p class="eyebrow">{{ pageEyebrow('ARCHIVE INTAKE') }}</p><h1>待认领文件</h1><p>这些文件已由扫描器发现，但尚未匹配到实验室登记资产。</p></div><button class="button button--outline" :disabled="loading" @click="load"><RefreshCw :size="16" />刷新列表</button></header>
+    <header class="page-heading"><div><p class="eyebrow">{{ pageEyebrow('ARCHIVE INTAKE') }}</p><h1>待认领文件</h1><p>这些文件已由扫描器发现，但尚未匹配到实验室登记资产。</p></div><button class="button button--outline" :disabled="loading" @click="load()"><RefreshCw :size="16" />刷新列表</button></header>
     <div v-if="loading" class="state-panel" role="status" aria-live="polite"><span class="loader-ring"></span><p>正在读取待认领文件…</p></div>
-    <div v-else-if="error" class="state-panel state-panel--error" role="alert"><CircleAlert :size="28" /><strong>读取失败</strong><p>{{ error }}</p><button class="button button--outline" @click="load">重试</button></div>
+    <div v-else-if="error" class="state-panel state-panel--error" role="alert"><CircleAlert :size="28" /><strong>读取失败</strong><p>{{ error }}</p><button class="button button--outline" @click="load()">重试</button></div>
     <div v-else-if="!files.length" class="empty-catalogue"><span><FileQuestion :size="30" /></span><h2>没有待认领文件</h2><p>下一次扫描发现无法匹配路径的文件时，会显示在这里。</p></div>
     <section v-else class="pending-list">
       <article v-for="file in files" :key="file.id" class="pending-row">
@@ -127,6 +142,13 @@ onBeforeUnmount(() => {
         <span>{{ file.file_kind }}</span><time>{{ formatBytes(file.file_size) }}</time>
         <button class="button button--outline button--compact" :aria-label="`认领文件：${file.file_name}`" @click="openClaim(file)">认领</button>
       </article>
+      <footer class="pending-pagination">
+        <span>共 {{ total }} 个文件 · 第 {{ page }} / {{ pageCount }} 页</span>
+        <nav aria-label="待认领文件分页">
+          <button class="button button--outline" :disabled="page === 1" @click="load(page - 1)"><ArrowLeft :size="14" />上一页</button>
+          <button class="button button--outline" :disabled="page * pageSize >= total" @click="load(page + 1)">下一页<ArrowRight :size="14" /></button>
+        </nav>
+      </footer>
     </section>
 
     <div v-if="activeFile" class="claim-backdrop" @click.self="closeClaim">
@@ -158,9 +180,12 @@ onBeforeUnmount(() => {
 .pending-row strong { display: block; overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .pending-row p { margin: 4px 0 0; overflow: hidden; color: #748178; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .pending-row span, .pending-row time { color: #68766d; font-size: 11px; white-space: nowrap; }
+.pending-pagination { display: flex; min-height: 58px; padding: 10px 18px; align-items: center; justify-content: space-between; gap: 14px; color: #79857d; background: #f8faf6; font-size: 11px; }
+.pending-pagination nav { display: flex; gap: 8px; }
+.pending-pagination .button { min-height: 36px; padding: 0 10px; font-size: 11px; }
 .pending-files-page :deep(.page-heading > .button), .button--compact { min-height: 44px; }.button--compact { min-width: 58px; padding: 0 11px; white-space: nowrap; font-size: 11px; }
 .claim-backdrop { position: fixed; z-index: 40; inset: 0; display: grid; padding: 20px; place-items: center; background: rgba(23, 34, 26, .48); }
 .claim-dialog { position: relative; width: min(100%, 500px); max-height: calc(100dvh - 40px); padding: 28px; overflow-y: auto; overscroll-behavior: contain; background: #fdfefb; border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 20px 50px rgba(24, 37, 29, .22); }
 .claim-dialog h2 { margin: 5px 0 12px; font-family: "Iowan Old Style", "Songti SC", serif; font-size: 22px; font-weight: 500; }.claim-dialog > p { color: #718077; font-size: 12px; line-height: 1.65; }.claim-dialog code { color: #56705d; font-size: 11px; }.claim-close { position: absolute; top: 13px; right: 13px; display: grid; width: 44px; height: 44px; color: #68776d; place-items: center; background: transparent; border: 0; border-radius: 50%; cursor: pointer; }.claim-close:hover { background: #eef2ed; }.claim-select-label { display: block; margin: 20px 0 7px; color: #526056; font-size: 12px; font-weight: 700; }.claim-search { display: flex; min-height: 44px; padding: 0 11px; align-items: center; gap: 8px; color: #748178; background: #fff; border: 1px solid var(--line); border-radius: 5px; }.claim-search:focus-within { border-color: var(--sage); box-shadow: 0 0 0 3px var(--sage-soft); }.claim-search input { min-width: 0; flex: 1; background: transparent; border: 0; outline: 0; }.claim-choices { display: grid; max-height: 230px; margin-top: 8px; overflow-y: auto; background: #fff; border: 1px solid var(--line); border-radius: 5px; }.claim-choices > button { display: grid; min-height: 52px; padding: 8px 10px; align-items: center; color: var(--ink); text-align: left; background: transparent; border: 0; border-bottom: 1px solid #e8ece6; grid-template-columns: minmax(0, 1fr) auto 18px; gap: 8px; cursor: pointer; }.claim-choices > button:last-of-type { border-bottom: 0; }.claim-choices > button:hover, .claim-choices > button.selected { background: var(--sage-soft); }.claim-choices span { min-width: 0; }.claim-choices strong, .claim-choices small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.claim-choices strong { font-size: 12px; }.claim-choices small { margin-top: 3px; color: #758179; font-family: ui-monospace, "SFMono-Regular", monospace; font-size: 10px; }.claim-choices em { color: #617068; font-size: 10px; font-style: normal; }.claim-choices > p { margin: 0; padding: 20px 12px; color: #748178; text-align: center; font-size: 11px; }.claim-error { margin: 10px 0 0; color: #a6633b !important; }.claim-error button { color: inherit; text-decoration: underline; background: transparent; border: 0; cursor: pointer; }.claim-dialog footer { display: flex; margin-top: 23px; justify-content: flex-end; gap: 9px; }
-@media (max-width: 600px) { .claim-backdrop { padding: 12px; }.pending-row { padding: 13px 14px; grid-template-columns: 25px minmax(0, 1fr) auto; gap: 9px; }.pending-row span, .pending-row time { display: none; }.claim-dialog { max-height: calc(100dvh - 24px); padding: 24px 20px; } }
+@media (max-width: 600px) { .claim-backdrop { padding: 12px; }.pending-row { padding: 13px 14px; grid-template-columns: 25px minmax(0, 1fr) auto; gap: 9px; }.pending-row span, .pending-row time { display: none; }.pending-pagination { padding: 10px 14px; align-items: flex-start; flex-direction: column; }.pending-pagination nav { width: 100%; }.pending-pagination nav .button { flex: 1; }.claim-dialog { max-height: calc(100dvh - 24px); padding: 24px 20px; } }
 </style>

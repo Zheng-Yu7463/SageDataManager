@@ -39,7 +39,7 @@ import type {
   UploadStatusResult,
   ScanRunSummary,
   SystemUpdateStatus,
-  UnclaimedFileSummary,
+  UnclaimedFileListResponse,
 } from '@/types'
 import { expireSession, getSessionToken } from '@/session'
 
@@ -66,12 +66,18 @@ async function request<T>(
   const headers: Record<string, string> = { Accept: 'application/json', ...extraHeaders }
   if (body) headers['Content-Type'] = 'application/json'
   if (sessionToken) headers['X-Sage-Session'] = sessionToken
-  const response = await fetch(path, {
-    headers,
-    method,
-    signal,
-    body: body ? JSON.stringify(body) : undefined,
-  })
+  let response: Response
+  try {
+    response = await fetch(path, {
+      headers,
+      method,
+      signal,
+      body: body ? JSON.stringify(body) : undefined,
+    })
+  } catch (reason) {
+    if (reason instanceof DOMException && reason.name === 'AbortError') throw reason
+    throw new ApiError('无法连接 DataManager 服务。', 0)
+  }
   if (!response.ok) {
     await raiseApiError(response, Boolean(sessionToken))
   }
@@ -181,8 +187,15 @@ export function importAssetsYaml(content: string) {
   return request<BatchAssetImportResult>('/api/assets/import/yaml', undefined, 'POST', { content })
 }
 
-export function updateAsset(assetId: string, input: AssetUpdateInput) {
-  return request<AssetSummary>(`/api/assets/${assetId}`, undefined, 'PATCH', input)
+export function updateAsset(assetId: string, input: AssetUpdateInput, expectedRevision: string) {
+  return request<AssetSummary>(
+    '/api/assets/' + assetId,
+    undefined,
+    'PATCH',
+    input,
+    'session',
+    { 'X-Sage-Asset-Revision': expectedRevision },
+  )
 }
 export function importAssets(assets: AssetCreateInput[]) {
   return request<BatchAssetImportResult>('/api/assets/import', undefined, 'POST', { assets })
@@ -223,8 +236,9 @@ export function runArchiveScan() {
   return request<ScanRunSummary>('/api/archive/scans', undefined, 'POST')
 }
 
-export function getUnclaimedFiles(signal?: AbortSignal) {
-  return request<UnclaimedFileSummary[]>('/api/archive/unclaimed', signal)
+export function getUnclaimedFiles(page = 1, pageSize = 50, signal?: AbortSignal) {
+  const params = new URLSearchParams({ page: String(page), page_size: String(pageSize) })
+  return request<UnclaimedFileListResponse>(`/api/archive/unclaimed?${params}`, signal)
 }
 
 export function claimUnclaimedFile(unclaimedFileId: string, assetId: string) {
@@ -273,8 +287,8 @@ export function getCurrentAccount() {
   return request<AccountSummary>('/api/auth/me')
 }
 
-export function getAdminAccounts() {
-  return request<AccountSummary[]>('/api/auth/admin-accounts')
+export function getAdminAccounts(signal?: AbortSignal) {
+  return request<AccountSummary[]>('/api/auth/admin-accounts', signal)
 }
 
 export function createAdminAccountInvitation(username: string) {
@@ -297,23 +311,29 @@ export function renewAdminAccountInvitation(
   )
 }
 
-export function getAccountInvitation(token: string) {
+export function getAccountInvitation(token: string, signal?: AbortSignal) {
   return request<AccountInvitationStatus>(
-    `/api/auth/invitations/${encodeURIComponent(token)}`,
-    undefined,
+    '/api/auth/invitations',
+    signal,
     'GET',
     undefined,
     'none',
+    { 'X-Sage-Invitation-Token': token },
   )
 }
 
-export function acceptAccountInvitation(token: string, input: AccountInvitationAcceptInput) {
+export function acceptAccountInvitation(
+  token: string,
+  input: AccountInvitationAcceptInput,
+  signal?: AbortSignal,
+) {
   return request<AccountLoginResponse>(
-    `/api/auth/invitations/${encodeURIComponent(token)}/accept`,
-    undefined,
+    '/api/auth/invitations/accept',
+    signal,
     'POST',
     input,
     'none',
+    { 'X-Sage-Invitation-Token': token },
   )
 }
 
@@ -321,8 +341,8 @@ export function updateAdminAccount(username: string, input: AccountUpdateInput) 
   return request<AccountSummary>(`/api/auth/admin-accounts/${username}`, undefined, 'PATCH', input)
 }
 
-export function getAccessTokens() {
-  return request<AccessTokenSummary[]>('/api/auth/access-tokens')
+export function getAccessTokens(signal?: AbortSignal) {
+  return request<AccessTokenSummary[]>('/api/auth/access-tokens', signal)
 }
 
 export function createAccessToken(input: AccessTokenCreateInput) {

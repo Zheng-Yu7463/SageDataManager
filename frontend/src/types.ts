@@ -248,6 +248,14 @@ export interface UnclaimedFileSummary {
   last_seen_at: string
 }
 
+export interface UnclaimedFileListResponse {
+  items: UnclaimedFileSummary[]
+  total: number
+  page: number
+  page_size: number
+}
+
+
 export interface FileClaimResult {
   asset_id: string
   file: FileSummary
@@ -424,6 +432,12 @@ export interface SystemUpdateStatus {
   completed_at: string | null
   error: string | null
   backup_path: string | null
+  backup_in_progress: boolean
+  last_backup_at: string | null
+  last_backup_path: string | null
+  last_backup_error: string | null
+  next_backup_at: string | null
+  scheduled_backup_interval_seconds: number
   operation_id: string | null
   agent_restart_required: boolean
   installer_restart_required: boolean

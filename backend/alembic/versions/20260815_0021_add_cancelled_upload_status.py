@@ -15,19 +15,19 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.drop_constraint("ck_upload_tasks_status", "upload_tasks", type_="check")
-    op.create_check_constraint(
-        "ck_upload_tasks_status",
-        "upload_tasks",
-        "status IN ('active', 'completed', 'cancelled')",
-    )
+    with op.batch_alter_table("upload_tasks") as batch_op:
+        batch_op.drop_constraint("ck_upload_tasks_status", type_="check")
+        batch_op.create_check_constraint(
+            "ck_upload_tasks_status",
+            "status IN ('active', 'completed', 'cancelled')",
+        )
 
 
 def downgrade() -> None:
     op.execute("UPDATE upload_tasks SET status = 'active' WHERE status = 'cancelled'")
-    op.drop_constraint("ck_upload_tasks_status", "upload_tasks", type_="check")
-    op.create_check_constraint(
-        "ck_upload_tasks_status",
-        "upload_tasks",
-        "status IN ('active', 'completed')",
-    )
+    with op.batch_alter_table("upload_tasks") as batch_op:
+        batch_op.drop_constraint("ck_upload_tasks_status", type_="check")
+        batch_op.create_check_constraint(
+            "ck_upload_tasks_status",
+            "status IN ('active', 'completed')",
+        )

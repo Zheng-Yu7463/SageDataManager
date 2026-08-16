@@ -23,6 +23,7 @@ function systemUpdateStatus(overrides: Record<string, unknown> = {}) {
     branch: 'main',
     current_commit: null,
     latest_commit: null,
+    checked_at: null,
     update_available: false,
     behind_count: 0,
     ahead_count: 0,
@@ -33,6 +34,15 @@ function systemUpdateStatus(overrides: Record<string, unknown> = {}) {
     completed_at: null,
     error: null,
     backup_path: null,
+    backup_in_progress: false,
+    last_backup_at: null,
+    last_backup_path: null,
+    last_backup_error: null,
+    next_backup_at: null,
+    scheduled_backup_interval_seconds: 86400,
+    operation_id: null,
+    agent_restart_required: false,
+    installer_restart_required: false,
     logs: [],
     ...overrides,
   }
@@ -101,6 +111,78 @@ async function mockRejectedLogin(page: Page) {
     })
   })
 }
+
+async function mockInvitationBootstrap(page: Page) {
+  await page.route('**/api/auth/setup-status', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({ initialized: true, authentication_ready: true }),
+    })
+  })
+  await page.route('**/api/settings/branding', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        product_name: 'SAGE',
+        product_subtitle: 'RESEARCH ARCHIVE',
+        organization_name: 'SAGE Lab',
+        slogan: '科学 · 数据 · 成长 · 卓越',
+        slogan_secondary: 'Science · Archive · Growth · Excellence',
+        primary_color: '#2E7351',
+        logo_url: null,
+        revision: 'revision-1',
+      }),
+    })
+  })
+}
+
+test('邀请页切换 token 时取消旧请求并清空密码', async ({ page }) => {
+  await mockInvitationBootstrap(page)
+  const requestedTokens: string[] = []
+  let releaseSlowRequest!: () => void
+  const slowRequest = new Promise<void>((resolve) => { releaseSlowRequest = resolve })
+  await page.route('**/api/auth/invitations', async (route) => {
+    const invitationToken = route.request().headers()['x-sage-invitation-token'] ?? ''
+    requestedTokens.push(invitationToken)
+    if (invitationToken === 'slow-token') await slowRequest
+    const username = invitationToken === 'first-token' ? 'first-admin' : invitationToken === 'final-token' ? 'final-admin' : 'stale-admin'
+    try {
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify({
+          username,
+          purpose: 'recovery',
+          expires_at: '2099-01-01T00:00:00Z',
+        }),
+      })
+    } catch {
+      // An aborted stale invitation request no longer has a response channel.
+    }
+  })
+
+  await page.goto('/register/first-token')
+  await expect(page.getByText('first-admin', { exact: true })).toBeVisible()
+  await page.getByLabel('密码', { exact: true }).fill('sensitive-password')
+  await page.getByLabel('确认密码').fill('sensitive-password')
+
+  await page.evaluate(() => {
+    window.history.pushState({}, '', '/register/slow-token')
+    window.dispatchEvent(new PopStateEvent('popstate'))
+  })
+  await expect.poll(() => requestedTokens.includes('slow-token')).toBe(true)
+  await page.evaluate(() => {
+    window.history.pushState({}, '', '/register/final-token')
+    window.dispatchEvent(new PopStateEvent('popstate'))
+  })
+
+  await expect(page.getByText('final-admin', { exact: true })).toBeVisible()
+  await expect(page.getByLabel('密码', { exact: true })).toHaveValue('')
+  await expect(page.getByLabel('确认密码')).toHaveValue('')
+  releaseSlowRequest()
+  await expect(page.getByText('final-admin', { exact: true })).toBeVisible()
+  await expect(page.getByText('stale-admin', { exact: true })).toBeHidden()
+  expect(requestedTokens).toEqual(['first-token', 'slow-token', 'final-token'])
+})
 
 test('空实例引导创建唯一的首个管理员', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 740 })
@@ -206,6 +288,21 @@ async function mockEmptyCatalogue(page: Page) {
   })
 }
 
+async function mockLiteratureFacets(page: Page) {
+  await page.route('**/api/assets?*', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: [],
+        total: 0,
+        page: 1,
+        page_size: 20,
+        publication_facets: { venues: ['ICLR'], years: [2026] },
+      }),
+    })
+  })
+}
+
 async function navigateTo(page: Page, linkName: string | RegExp) {
   const menuButton = page.getByRole('button', { name: '打开导航' })
   if (await menuButton.isVisible()) await menuButton.click()
@@ -294,6 +391,18 @@ test('上传入库成功后目录刷新失败仍保留成功结果', async ({ pa
       }),
     })
   })
+  await page.route('**/api/archive/uploads/*/status', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        upload_id: '81818181-8181-8181-8181-818181818181',
+        status: 'ready',
+        uploaded_file_count: 1,
+        total_size: 2048,
+        expires_at: '2026-08-15T03:00:00Z',
+      }),
+    })
+  })
   let finalizeRequests = 0
   await page.route('**/api/archive/uploads/*/finalize', async (route) => {
     finalizeRequests += 1
@@ -304,6 +413,7 @@ test('上传入库成功后目录刷新失败仍保留成功结果', async ({ pa
         imported_file_count: 1,
         total_size: 2048,
         relative_paths: ['literature/test/original/paper.pdf'],
+        checksums: {},
       }),
     })
   })
@@ -629,6 +739,7 @@ test('品牌写操作共享同一个事务状态', async ({ page }) => {
   await page.getByLabel('产品名称').fill('SAGE Archive')
   await page.getByRole('button', { name: '保存文字与主色' }).click()
   await expect(page.getByRole('button', { name: '正在保存' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '刷新' })).toBeDisabled()
   await expect(page.getByRole('button', { name: '选择图片' })).toBeDisabled()
   await expect(page.getByLabel('选择实例 Logo 图片')).toBeDisabled()
   await expect(page.getByLabel('产品名称')).toBeDisabled()
@@ -770,6 +881,7 @@ test('实例所有者可在窄屏安全启动系统更新', async ({ page }) => 
     update_available: true,
     behind_count: 2,
     worktree_clean: true,
+    checked_at: '2026-08-15T08:01:00Z',
     remote_url: 'https://github.com/Zheng-Yu7463/SageDataManager.git',
     commits: [
       {
@@ -830,7 +942,7 @@ test('实例所有者可在窄屏安全启动系统更新', async ({ page }) => 
   await expect(dialog).toBeHidden()
   await expect(updatePanel.getByText('正在备份 PostgreSQL 数据库…')).toBeVisible()
   await expect(updatePanel.locator('.system-update-progress')).toBeVisible()
-  expect(applyPayloads).toEqual([{ password: 'test-password' }])
+  expect(applyPayloads).toEqual([{ password: 'test-password', target_commit: latestCommit }])
 
   updateState = systemUpdateStatus({
     ...updateState,
@@ -851,6 +963,21 @@ test('实例所有者可在窄屏安全启动系统更新', async ({ page }) => 
 })
 
 test('设置页令牌加载失败不影响管理员账号事实', async ({ page }) => {
+  await page.route('**/api/settings/branding', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        product_name: 'SAGE',
+        product_subtitle: 'RESEARCH ARCHIVE',
+        organization_name: 'SAGE Lab',
+        slogan: '科学 · 数据 · 成长 · 卓越',
+        slogan_secondary: 'Science · Archive · Growth · Excellence',
+        primary_color: '#2E7351',
+        logo_url: null,
+        revision: 'revision-1',
+      }),
+    })
+  })
   await page.route('**/api/dashboard', async (route) => {
     await route.fulfill({
       contentType: 'application/json',
@@ -893,7 +1020,7 @@ test('设置页令牌加载失败不影响管理员账号事实', async ({ page 
 
   await expect(page.getByRole('heading', { name: '管理员账号' })).toBeVisible()
   await expect(page.locator('.accounts-table')).toContainText('testadmin')
-  await expect(page.getByRole('alert')).toContainText('令牌服务暂时不可用')
+  await expect(page.locator('.agent-access-error')).toContainText('令牌服务暂时不可用')
   await expect(page.getByText('没有有效的 AI 访问令牌')).toBeHidden()
   await expect(page.getByRole('button', { name: '刷新' })).toBeEnabled()
 })
@@ -1051,6 +1178,7 @@ test('AI 访问令牌保护一次性明文并归档失效记录', async ({ page 
 
 test('目录筛选与视图状态可通过 URL 恢复', async ({ page }) => {
   await signIn(page)
+  await mockLiteratureFacets(page)
   await navigateTo(page, '文献 Literature')
   await page.getByRole('button', { name: /筛选条件/ }).click()
   await page.getByLabel('发表来源').selectOption('ICLR')
@@ -1065,6 +1193,7 @@ test('目录筛选与视图状态可通过 URL 恢复', async ({ page }) => {
 
 test('目录筛选浮层支持键盘和外部关闭', async ({ page }) => {
   await signIn(page)
+  await mockLiteratureFacets(page)
   await page.goto('/literature')
   const trigger = page.getByRole('button', { name: /筛选条件/ })
 
@@ -1563,10 +1692,10 @@ test('搜索与品牌文件控件提供稳定的可访问名称', async ({ page 
 test('待认领文件必须搜索并明确选择目标资产', async ({ page }) => {
   await mockEmptyDashboard(page)
   await signInWithMockAccount(page)
-  await page.route('**/api/archive/unclaimed', async (route) => {
+  await page.route('**/api/archive/unclaimed?*', async (route) => {
     await route.fulfill({
       contentType: 'application/json',
-      body: JSON.stringify([{
+      body: JSON.stringify({ items: [{
         id: '11111111-1111-1111-1111-111111111111',
         relative_path: 'incoming/unassigned.pdf',
         file_name: 'unassigned.pdf',
@@ -1576,7 +1705,7 @@ test('待认领文件必须搜索并明确选择目标资产', async ({ page }) 
         modified_at: null,
         first_seen_at: '2026-08-13T04:00:00Z',
         last_seen_at: '2026-08-13T04:00:00Z',
-      }]),
+      }], total: 1, page: 1, page_size: 50 }),
     })
   })
   await page.route('**/api/assets/choices?*', async (route) => {
@@ -1617,11 +1746,11 @@ test('待认领文件加载期间禁止重复刷新', async ({ page }) => {
   await signIn(page)
   let releaseRequest: (() => void) | undefined
   const requestReleased = new Promise<void>((resolve) => { releaseRequest = resolve })
-  await page.route('**/api/archive/unclaimed', async (route) => {
+  await page.route('**/api/archive/unclaimed?*', async (route) => {
     await requestReleased
     await route.fulfill({
       contentType: 'application/json',
-      body: JSON.stringify([{
+      body: JSON.stringify({ items: [{
         id: '99999999-0000-0000-0000-000000000000',
         relative_path: 'unclaimed/latest.pdf',
         file_name: 'latest.pdf',
@@ -1629,7 +1758,7 @@ test('待认领文件加载期间禁止重复刷新', async ({ page }) => {
         mime_type: 'application/pdf',
         file_size: 128,
         modified_at: '2026-08-13T06:00:00Z',
-      }]),
+      }], total: 1, page: 1, page_size: 50 }),
     })
   })
 
@@ -1658,10 +1787,10 @@ test('低高度移动端认领弹窗保持完整可滚动', async ({ page }) => 
       }),
     })
   })
-  await page.route('**/api/archive/unclaimed', async (route) => {
+  await page.route('**/api/archive/unclaimed?*', async (route) => {
     await route.fulfill({
       contentType: 'application/json',
-      body: JSON.stringify([{
+      body: JSON.stringify({ items: [{
         id: '12121212-3434-5656-7878-909090909090',
         relative_path: 'incoming/a-very-long-unclaimed-publication-file-name.pdf',
         file_name: 'a-very-long-unclaimed-publication-file-name.pdf',
@@ -1671,7 +1800,7 @@ test('低高度移动端认领弹窗保持完整可滚动', async ({ page }) => 
         modified_at: '2026-08-14T02:00:00Z',
         first_seen_at: '2026-08-14T02:00:00Z',
         last_seen_at: '2026-08-14T02:00:00Z',
-      }]),
+      }], total: 1, page: 1, page_size: 50 }),
     })
   })
   await page.route('**/api/assets/choices?*', async (route) => {
@@ -2064,6 +2193,7 @@ test('文献登记提交完整期刊引用元数据', async ({ page }) => {
   await page.getByRole('button', { name: '登记文献' }).click()
   await page.getByLabel('标题').fill('测试期刊文献')
   await page.getByLabel('资产标识（slug）').fill('test-journal-literature')
+  await page.getByLabel('摘要（必填）').fill('用于验证完整期刊引用元数据。')
   const submit = page.getByRole('button', { name: '确认登记' })
   await expect(submit).toBeDisabled()
   await page.getByLabel('来源或期刊').fill('Nature Communications')
@@ -2104,6 +2234,7 @@ test('文献登记冲突保留表单并在固定操作区显示错误', async ({
   await page.getByRole('button', { name: '登记文献' }).click()
   await page.getByLabel('标题').fill('重复文献')
   await page.getByLabel('资产标识（slug）').fill('duplicate-literature')
+  await page.getByLabel('摘要（必填）').fill('用于验证重复文献冲突。')
   await page.getByLabel('来源或期刊').fill('ICLR')
   await page.getByLabel('文献类别').fill('Conference Poster')
   await page.getByLabel('作者（逗号分隔）').fill('Ada Lovelace')
@@ -2120,6 +2251,8 @@ test('文献登记冲突保留表单并在固定操作区显示错误', async ({
   await expect(page.getByLabel('标题')).toHaveValue('重复文献')
   await expect(submit).toBeInViewport()
   await expect(error).toBeInViewport()
+
+  page.once('dialog', async (confirmation) => confirmation.accept())
 
   await page.keyboard.press('Escape')
   await expect(dialog).toBeHidden()
@@ -2311,6 +2444,7 @@ test('详情切换后不会被上一项的延迟引用覆盖', async ({ page }) 
   await expect(page.getByText('不应出现的旧引用')).toBeHidden()
   await page.getByRole('button', { name: '编辑' }).click()
   await page.getByRole('dialog', { name: '编辑资产' }).getByLabel('标题').fill('不应带回上一项的草稿')
+  page.once('dialog', async (dialog) => dialog.accept())
   await page.goBack()
   await expect(page.getByRole('heading', { name: '延迟引用文献' })).toBeVisible()
   await expect(page.getByRole('dialog', { name: '编辑资产' })).toBeHidden()

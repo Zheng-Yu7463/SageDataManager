@@ -1,8 +1,9 @@
+from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
 import yaml
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
@@ -28,6 +29,7 @@ from app.domain.schemas import (
     RelatedAssetSummary,
 )
 from app.services.assets import (
+    AssetConflictError,
     AssetMetadataError,
     AssetNotFoundError,
     AssetRelationError,
@@ -235,11 +237,24 @@ def update(
     payload: AssetUpdateRequest,
     session: SessionDependency,
     current_user: AdminDependency,
+    x_sage_asset_revision: Annotated[datetime, Header(alias="X-Sage-Asset-Revision")],
 ) -> AssetSummary:
     try:
-        result = update_asset(session, asset_id, payload, actor=current_user)
+        result = update_asset(
+            session,
+            asset_id,
+            payload,
+            actor=current_user,
+            expected_revision=x_sage_asset_revision,
+        )
         session.commit()
         return result
+    except AssetConflictError:
+        session.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="资产已被其他操作更新，请重新读取详情后再提交。",
+        ) from None
     except AssetNotFoundError:
         session.rollback()
         raise HTTPException(status_code=404, detail="资产不存在或已归档。") from None

@@ -1,7 +1,7 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import AdminDependency, require_admin
@@ -12,20 +12,26 @@ from app.domain.schemas import (
     ClaimUnclaimedFileRequest,
     FileClaimResult,
     ScanRunSummary,
-    UnclaimedFileSummary,
+    UnclaimedFileListResponse,
     UploadCommandRequest,
     UploadCommandResponse,
     UploadFinalizeRequest,
     UploadFinalizeResponse,
     UploadStatusResponse,
 )
-from app.services.archive import StorageScanError, archive_health, scan_storage
+from app.services.archive import (
+    ScanAlreadyRunningError,
+    StorageScanError,
+    archive_health,
+    scan_storage,
+)
 from app.services.transfers import (
     UploadCommandError,
     UploadConflictError,
     UploadContentError,
     UploadNotReadyError,
     UploadTicketError,
+    cleanup_expired_upload_tasks,
     finalize_upload,
     generate_upload_command,
     upload_status,
@@ -54,8 +60,18 @@ def health(session: SessionDependency) -> ArchiveHealthSummary:
 
 
 @router.get("/unclaimed")
-def unclaimed_files(session: SessionDependency) -> list[UnclaimedFileSummary]:
-    return list_unclaimed_files(session)
+def unclaimed_files(
+    session: SessionDependency,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=50, ge=1, le=100),
+) -> UnclaimedFileListResponse:
+    items, total = list_unclaimed_files(session, page=page, page_size=page_size)
+    return UnclaimedFileListResponse(
+        items=items,
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
 
 
 @router.post("/unclaimed/{unclaimed_file_id}/claim")
@@ -144,6 +160,7 @@ def upload_command(
     payload: UploadCommandRequest, session: SessionDependency, current_user: AdminDependency
 ) -> UploadCommandResponse:
     try:
+        cleanup_expired_upload_tasks(session, settings.storage_root)
         result = generate_upload_command(
             session,
             payload,
@@ -172,6 +189,9 @@ def create_scan(session: SessionDependency, current_user: AdminDependency) -> Sc
     except StorageScanError:
         session.commit()
         raise HTTPException(status_code=409, detail="存储根不可用，无法执行扫描。") from None
+    except ScanAlreadyRunningError:
+        session.rollback()
+        raise HTTPException(status_code=409, detail="已有归档扫描正在运行，请等待完成。") from None
     except Exception:
         session.rollback()
         raise

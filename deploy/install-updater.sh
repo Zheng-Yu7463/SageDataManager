@@ -24,7 +24,12 @@ if [[ "${repository}" == *$'\n'* || "${repository}" == *'&'* || "${repository}" 
   exit 1
 fi
 
-current_secret="$(sed -n 's/^SAGE_UPDATE_AGENT_SECRET=//p' "${environment_file}" | tail -n 1)"
+compose_configuration="$(cd "${repository}" && docker compose config --format json)"
+current_secret="$(
+  python3 -c 'import json, sys; print(json.load(sys.stdin)["services"]["backend"]["environment"].get("SAGE_UPDATE_AGENT_SECRET", ""))' \
+    <<<"${compose_configuration}"
+)"
+unset compose_configuration
 if [[ -z "${current_secret}" ]]; then
   if command -v openssl >/dev/null 2>&1; then
     generated_secret="$(openssl rand -hex 32)"

@@ -10,6 +10,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+import app.services.transfers as transfer_service
 from app.core.config import settings
 from app.db.base import Base
 from app.db.session import get_session
@@ -89,15 +90,15 @@ def test_agent_discovery_is_public_and_contains_no_secret() -> None:
 
     assert instructions.status_code == 200
     assert instructions.headers["content-type"].startswith("text/markdown")
+    assert instructions.headers["cache-control"] == "no-cache"
+    assert discovery.headers["cache-control"] == "no-cache"
     assert "Authorization: Bearer" in instructions.text
     assert "sdm_pat_<public-id>_<secret>" in instructions.text
     discovery_data = discovery.json()
     assert discovery_data["openapi"] == "/api/openapi.json"
     assert discovery_data["schema_version"] == "1.0"
     assert "file_read" in discovery_data["capabilities"]
-    assert discovery_data["scopes"]["files:read"] == [
-        "GET /files/{file_id}/content"
-    ]
+    assert discovery_data["scopes"]["files:read"] == ["GET /files/{file_id}/content"]
     assert discovery_data["limits"]["maximum_file_size_bytes"] == 500_000_000
     assert "X-Sage-Asset-Revision" in instructions.text
     assert "archive:finalize" in instructions.text
@@ -114,12 +115,8 @@ def test_agent_discovery_is_public_and_contains_no_secret() -> None:
     )
     assert revision_header["required"] is True
     assert "409" in patch_asset["responses"]
-    upload_file = openapi["paths"][
-        "/api/agent/uploads/{upload_id}/files/{relative_path}"
-    ]["put"]
-    assert {"400", "401", "403", "409", "413", "422"} <= set(
-        upload_file["responses"]
-    )
+    upload_file = openapi["paths"]["/api/agent/uploads/{upload_id}/files/{relative_path}"]["put"]
+    assert {"400", "401", "403", "409", "413", "422"} <= set(upload_file["responses"])
 
 
 def test_personal_tokens_are_shown_once_hashed_and_revocable(monkeypatch) -> None:
@@ -234,7 +231,15 @@ def test_agent_authentication_persists_last_used_time(monkeypatch) -> None:
     token_id = session.scalar(select(PersonalAccessToken.id))
     app.dependency_overrides[get_session] = lambda: session
     try:
-        assert TestClient(app).get("/api/agent/me", headers=bearer(plaintext)).status_code == 200
+        client = TestClient(app)
+        assert client.get("/api/agent/me", headers=bearer(plaintext)).status_code == 200
+        token = session.get(PersonalAccessToken, token_id)
+        assert token is not None
+        first_used_at = token.last_used_at
+
+        assert client.get("/api/agent/me", headers=bearer(plaintext)).status_code == 200
+        session.refresh(token)
+        assert token.last_used_at == first_used_at
     finally:
         app.dependency_overrides.clear()
         bind = session.get_bind()
@@ -387,9 +392,7 @@ def test_agent_can_read_and_update_existing_metadata_with_audit_identity(monkeyp
             json={"summary": "Stale overwrite"},
         )
         assert stale.status_code == 409
-        assert session.get(Asset, asset.id).summary == (
-            "Updated by an authorized metadata agent."
-        )
+        assert session.get(Asset, asset.id).summary == ("Updated by an authorized metadata agent.")
         activities = session.scalars(
             select(Activity).where(Activity.action == "updated_metadata")
         ).all()
@@ -518,8 +521,10 @@ def test_agent_can_upload_and_finalize_a_file(tmp_path: Path, monkeypatch) -> No
         assert replayed.json() == finalized.json()
         assert rejected_upload.status_code == 403
         assert (
-            tmp_path / "literature/agent-upload-paper/original/official/paper.pdf"
-        ).read_bytes().startswith(b"%PDF")
+            (tmp_path / "literature/agent-upload-paper/original/official/paper.pdf")
+            .read_bytes()
+            .startswith(b"%PDF")
+        )
         file_record = session.scalar(select(FileRecord))
         assert file_record is not None
         assert file_record.checksum == expected_checksum
@@ -532,9 +537,41 @@ def test_agent_can_upload_and_finalize_a_file(tmp_path: Path, monkeypatch) -> No
         session.close()
 
 
-def test_agent_upload_rejects_mismatched_declared_checksum(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_agent_upload_returns_conflict_while_the_task_is_busy(tmp_path: Path, monkeypatch) -> None:
+    session = make_session()
+    user, asset = create_user_and_asset(session)
+    monkeypatch.setattr(settings, "auth_session_secret", "agent-test-secret")
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    plaintext = create_token(session, user, ["files:upload"])
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        client = TestClient(app)
+        task = client.post(
+            "/api/agent/uploads",
+            headers=bearer(plaintext),
+            json={"asset_id": str(asset.id), "target_subdirectory": "original"},
+        ).json()
+        upload_url = f"/api/agent/uploads/{task['upload_id']}/files/paper.pdf"
+        upload_headers = {
+            **bearer(plaintext),
+            "X-Sage-Upload-Token": task["upload_token"],
+        }
+
+        with transfer_service.upload_task_guard(tmp_path, UUID(task["upload_id"])):
+            busy = client.put(upload_url, headers=upload_headers, content=b"content")
+
+        assert busy.status_code == 409
+        assert busy.json()["detail"] == "上传任务正在处理，请检查任务状态后重试。"
+        assert not (tmp_path / ".uploads").exists()
+
+        retried = client.put(upload_url, headers=upload_headers, content=b"content")
+        assert retried.status_code == 200
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
+def test_agent_upload_rejects_mismatched_declared_checksum(tmp_path: Path, monkeypatch) -> None:
     session = make_session()
     user, asset = create_user_and_asset(session)
     monkeypatch.setattr(settings, "auth_session_secret", "agent-test-secret")
@@ -601,9 +638,7 @@ def test_agent_upload_task_is_bound_to_the_creating_access_token(
         session.close()
 
 
-def test_agent_upload_reports_an_unavailable_storage_root(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_agent_upload_reports_an_unavailable_storage_root(tmp_path: Path, monkeypatch) -> None:
     session = make_session()
     user, asset = create_user_and_asset(session)
     monkeypatch.setattr(settings, "auth_session_secret", "agent-test-secret")
@@ -661,12 +696,19 @@ def test_agent_upload_rejects_path_escape_and_empty_files(tmp_path: Path, monkey
             headers=upload_headers,
             content=b"unsafe",
         )
+        reserved = client.put(
+            f"/api/agent/uploads/{task['upload_id']}/files/notes/.sage-upload-complete",
+            headers=upload_headers,
+            content=b"reserved",
+        )
         empty = client.put(
             f"/api/agent/uploads/{task['upload_id']}/files/empty.pdf",
             headers=upload_headers,
             content=b"",
         )
         assert escaped.status_code in {404, 409}
+        assert reserved.status_code == 409
+        assert "系统保留名称" in reserved.json()["detail"]
         assert empty.status_code == 409
         assert not (tmp_path / "escape.pdf").exists()
         assert not (tmp_path / ".uploads").exists()
@@ -675,9 +717,7 @@ def test_agent_upload_rejects_path_escape_and_empty_files(tmp_path: Path, monkey
         session.close()
 
 
-def test_agent_upload_rejects_files_over_the_configured_limit(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_agent_upload_rejects_files_over_the_configured_limit(tmp_path: Path, monkeypatch) -> None:
     session = make_session()
     user, asset = create_user_and_asset(session)
     monkeypatch.setattr(settings, "auth_session_secret", "agent-test-secret")
@@ -807,14 +847,10 @@ def test_access_token_accepts_the_complete_scope_set() -> None:
     assert len(payload.scopes) == 6
 
 
-def test_agent_can_range_read_an_indexed_file_with_pat_audit(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_agent_can_range_read_an_indexed_file_with_pat_audit(tmp_path: Path, monkeypatch) -> None:
     session = make_session()
     user, asset = create_user_and_asset(session)
-    archived_file = (
-        tmp_path / "literature" / asset.slug / "original" / "agent-fixture.txt"
-    )
+    archived_file = tmp_path / "literature" / asset.slug / "original" / "agent-fixture.txt"
     archived_file.parent.mkdir(parents=True)
     content = b"0123456789"
     archived_file.write_bytes(content)
@@ -848,6 +884,16 @@ def test_agent_can_range_read_an_indexed_file_with_pat_audit(
             f"/api/agent/files/{record.id}/content",
             headers=bearer(read_only_metadata_token),
         )
+        head_response = client.head(
+            f"/api/agent/files/{record.id}/content",
+            headers=bearer(plaintext),
+        )
+        assert head_response.status_code == 200
+        assert head_response.content == b""
+        assert (
+            session.scalars(select(Activity).where(Activity.action == "downloaded_file")).all()
+            == []
+        )
         response = client.get(
             f"/api/agent/files/{record.id}/content",
             headers={**bearer(plaintext), "Range": "bytes=2-5"},
@@ -868,9 +914,7 @@ def test_agent_can_range_read_an_indexed_file_with_pat_audit(
         session.close()
 
 
-def test_agent_can_recover_and_cancel_its_upload_task(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_agent_can_recover_and_cancel_its_upload_task(tmp_path: Path, monkeypatch) -> None:
     session = make_session()
     user, asset = create_user_and_asset(session)
     monkeypatch.setattr(settings, "auth_session_secret", "agent-test-secret")
@@ -944,6 +988,103 @@ def test_agent_can_recover_and_cancel_its_upload_task(
         upload_task = session.get(UploadTask, UUID(task["upload_id"]))
         assert upload_task is not None
         assert upload_task.status == "cancelled"
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
+def test_agent_upload_cancel_preserves_files_when_status_commit_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = make_session()
+    user, asset = create_user_and_asset(session)
+    monkeypatch.setattr(settings, "auth_session_secret", "agent-test-secret")
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    plaintext = create_token(session, user, ["files:upload"], name="commit-failure-token")
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        client = TestClient(app)
+        created = client.post(
+            "/api/agent/uploads",
+            headers=bearer(plaintext),
+            json={"asset_id": str(asset.id), "target_subdirectory": "original"},
+        )
+        task = created.json()
+        task_id = UUID(task["upload_id"])
+        task_headers = {
+            **bearer(plaintext),
+            "X-Sage-Upload-Token": task["upload_token"],
+        }
+        upload_url = task["file_upload_url_template"].replace("{relative_path}", "notes.txt")
+        assert client.put(upload_url, headers=task_headers, content=b"keep me").status_code == 200
+        staged_file = tmp_path / ".uploads" / str(task_id) / "notes.txt"
+        original_commit = session.commit
+
+        def fail_cancel_commit() -> None:
+            upload_task = session.get(UploadTask, task_id)
+            if upload_task and upload_task.status == "cancelled":
+                raise RuntimeError("forced cancellation commit failure")
+            original_commit()
+
+        monkeypatch.setattr(session, "commit", fail_cancel_commit)
+
+        with pytest.raises(RuntimeError, match="forced cancellation commit failure"):
+            client.delete(task["cancel_url"], headers=task_headers)
+
+        upload_task = session.get(UploadTask, task_id)
+        assert upload_task is not None
+        assert upload_task.status == "active"
+        assert staged_file.read_bytes() == b"keep me"
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
+def test_agent_upload_cancel_cleanup_failure_can_be_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = make_session()
+    user, asset = create_user_and_asset(session)
+    monkeypatch.setattr(settings, "auth_session_secret", "agent-test-secret")
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    plaintext = create_token(session, user, ["files:upload"], name="cleanup-retry-token")
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        client = TestClient(app)
+        created = client.post(
+            "/api/agent/uploads",
+            headers=bearer(plaintext),
+            json={"asset_id": str(asset.id), "target_subdirectory": "original"},
+        )
+        task = created.json()
+        task_id = UUID(task["upload_id"])
+        task_headers = {
+            **bearer(plaintext),
+            "X-Sage-Upload-Token": task["upload_token"],
+        }
+        upload_url = task["file_upload_url_template"].replace("{relative_path}", "notes.txt")
+        assert client.put(upload_url, headers=task_headers, content=b"remove me").status_code == 200
+        original_rmtree = transfer_service.shutil.rmtree
+
+        def fail_cleanup(path: Path) -> None:
+            raise OSError("forced cleanup failure")
+
+        monkeypatch.setattr(transfer_service.shutil, "rmtree", fail_cleanup)
+        first_cancel = client.delete(task["cancel_url"], headers=task_headers)
+
+        assert first_cancel.status_code == 409
+        assert "已取消" in first_cancel.json()["detail"]
+        upload_task = session.get(UploadTask, task_id)
+        assert upload_task is not None
+        assert upload_task.status == "cancelled"
+        assert (tmp_path / ".uploads" / str(task_id) / "notes.txt").is_file()
+
+        monkeypatch.setattr(transfer_service.shutil, "rmtree", original_rmtree)
+        retried = client.delete(task["cancel_url"], headers=task_headers)
+
+        assert retried.status_code == 200
+        assert retried.json()["status"] == "cancelled"
+        assert not (tmp_path / ".uploads").exists()
     finally:
         app.dependency_overrides.clear()
         session.close()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import os
 import shutil
@@ -31,7 +32,15 @@ from app.domain.schemas import (
 )
 from app.services.activities import record_activity
 from app.services.security import create_upload_token, read_upload_token
-from app.services.storage import UPLOAD_PARTS_DIRECTORY, UPLOAD_STAGING_DIRECTORY, file_kind
+from app.services.storage import (
+    MAX_ARCHIVE_RELATIVE_PATH_LENGTH,
+    UPLOAD_LOCKS_DIRECTORY,
+    UPLOAD_PARTS_DIRECTORY,
+    UPLOAD_STAGING_DIRECTORY,
+    StorageIndexBusyError,
+    file_kind,
+    storage_index_guard,
+)
 from app.services.upload_directories import upload_directory_names
 
 
@@ -55,6 +64,10 @@ class UploadContentError(UploadError):
     pass
 
 
+class UploadBusyError(UploadContentError):
+    pass
+
+
 class UploadTooLargeError(UploadContentError):
     pass
 
@@ -66,6 +79,57 @@ class UploadConflictError(UploadError):
         hidden_count = len(paths) - 8
         suffix = f"\n另有 {hidden_count} 个冲突路径" if hidden_count > 0 else ""
         super().__init__(f"以下归档路径已存在，请先处理冲突：\n{visible_paths}{suffix}")
+
+
+@contextmanager
+def upload_task_guard(storage_root: Path, upload_id: UUID) -> Iterator[None]:
+    root_descriptor: int | None = None
+    lock_directory_descriptor: int | None = None
+    lock_descriptor: int | None = None
+    locked = False
+    try:
+        try:
+            root = storage_root.resolve(strict=True)
+        except (FileNotFoundError, NotADirectoryError) as error:
+            raise UploadContentError("存储根不可用，无法处理上传任务。") from error
+        if not root.is_dir():
+            raise UploadContentError("存储根不可用，无法处理上传任务。")
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        root_descriptor = os.open(root, directory_flags)
+        with suppress(FileExistsError):
+            os.mkdir(UPLOAD_LOCKS_DIRECTORY, mode=0o700, dir_fd=root_descriptor)
+        lock_directory_descriptor = os.open(
+            UPLOAD_LOCKS_DIRECTORY,
+            directory_flags,
+            dir_fd=root_descriptor,
+        )
+        lock_descriptor = os.open(
+            f"{upload_id}.lock",
+            os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+            dir_fd=lock_directory_descriptor,
+        )
+        try:
+            fcntl.flock(lock_descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise UploadBusyError("上传任务正在处理，请检查任务状态后重试。") from None
+        locked = True
+        yield
+    except UploadError:
+        raise
+    except OSError as error:
+        raise UploadContentError("上传任务锁不可用，请检查存储根权限。") from error
+    finally:
+        if locked and lock_descriptor is not None:
+            with suppress(OSError):
+                fcntl.flock(lock_descriptor, fcntl.LOCK_UN)
+        for descriptor in (
+            lock_descriptor,
+            lock_directory_descriptor,
+            root_descriptor,
+        ):
+            if descriptor is not None:
+                os.close(descriptor)
 
 
 UPLOAD_COMPLETION_MARKER = ".sage-upload-complete"
@@ -153,13 +217,9 @@ def generate_upload_command(
         raise UploadCommandError("SCP 目标根目录必须使用绝对路径。")
 
     upload_id = uuid4()
-    staging_relative_path = (
-        PurePosixPath(UPLOAD_STAGING_DIRECTORY) / str(upload_id)
-    ).as_posix()
+    staging_relative_path = (PurePosixPath(UPLOAD_STAGING_DIRECTORY) / str(upload_id)).as_posix()
     staging_destination = root / staging_relative_path
-    archive_relative_path = (
-        PurePosixPath(asset.type.value) / asset.slug / subdirectory
-    ).as_posix()
+    archive_relative_path = (PurePosixPath(asset.type.value) / asset.slug / subdirectory).as_posix()
     remote_login = f"{ssh_user.strip()}@{ssh_host.strip()}"
     remote_mkdir = f"mkdir -p -- {quote(staging_destination.as_posix())}"
     recursive = "-r " if payload.recursive else ""
@@ -217,9 +277,7 @@ def create_agent_upload(
         raise UploadCommandError("目标资产不存在或已归档。")
     subdirectory = _validated_subdirectory(asset, target_subdirectory)
     upload_id = uuid4()
-    archive_relative_path = (
-        PurePosixPath(asset.type.value) / asset.slug / subdirectory
-    ).as_posix()
+    archive_relative_path = (PurePosixPath(asset.type.value) / asset.slug / subdirectory).as_posix()
     upload_token, expires_at = create_upload_token(
         upload_id, asset.id, subdirectory.as_posix(), actor.username or ""
     )
@@ -298,7 +356,6 @@ def validate_agent_upload(
         upload_token,
         actor,
         access_token,
-        for_update=True,
     )
     if task.status != "active":
         raise UploadTicketError("上传任务已结束，请重新创建上传任务。")
@@ -310,7 +367,7 @@ def staged_upload_destination(
     upload_id: UUID,
     relative_path: str,
 ) -> tuple[Path, Path]:
-    if len(relative_path) > 1000 or "\x00" in relative_path:
+    if len(relative_path) > MAX_ARCHIVE_RELATIVE_PATH_LENGTH or "\x00" in relative_path:
         raise UploadContentError("上传文件路径过长或包含无效字符。")
     upload_path = PurePosixPath(relative_path.strip())
     if (
@@ -330,7 +387,13 @@ def staged_upload_destination(
     if staging_root.is_symlink():
         raise UploadContentError("上传临时区不是有效目录，无法接收文件。")
     destination = staging_root.joinpath(str(upload_id), *upload_path.parts)
-    if upload_path.parts[0] == UPLOAD_COMPLETION_MARKER:
+    reserved_names = {
+        UPLOAD_COMPLETION_MARKER,
+        UPLOAD_LOCKS_DIRECTORY,
+        UPLOAD_PARTS_DIRECTORY,
+        UPLOAD_STAGING_DIRECTORY,
+    }
+    if any(part in reserved_names for part in upload_path.parts):
         raise UploadContentError("上传文件路径使用了系统保留名称。")
     if destination.exists() or destination.is_symlink():
         raise UploadConflictError([upload_path.as_posix()])
@@ -361,13 +424,33 @@ def complete_agent_file_upload(
     destination: Path,
     checksum_sha256: str,
 ) -> AgentUploadedFileResponse:
+    staging_root = next(
+        (
+            ancestor
+            for ancestor in destination.parents
+            if ancestor.name == UPLOAD_STAGING_DIRECTORY
+        ),
+        None,
+    )
+    if staging_root is None:
+        raise UploadContentError("上传文件目标不在临时区内。")
+    storage_root = staging_root.parent
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists() or destination.is_symlink():
         raise UploadConflictError([relative_path])
+    linked = False
     try:
         os.link(temporary_file, destination)
+        linked = True
+        _fsync_directory_chain(storage_root, destination.parent)
     except FileExistsError:
         raise UploadConflictError([relative_path]) from None
+    except Exception:
+        if linked:
+            destination.unlink(missing_ok=True)
+            with suppress(OSError):
+                _fsync_directory_chain(storage_root, destination.parent)
+        raise
     temporary_file.unlink()
     return AgentUploadedFileResponse(
         upload_id=upload_id,
@@ -375,6 +458,25 @@ def complete_agent_file_upload(
         file_size=destination.stat().st_size,
         checksum_sha256=checksum_sha256,
     )
+
+
+def _fsync_directory(directory: Path) -> None:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    descriptor = os.open(directory, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _fsync_directory_chain(root: Path, leaf: Path) -> None:
+    current = root
+    _fsync_directory(current)
+    for part in leaf.relative_to(root).parts:
+        current /= part
+        _fsync_directory(current)
 
 
 def _staged_files(staging_directory: Path, *, completion_marker_required: bool) -> list[Path]:
@@ -540,6 +642,26 @@ def cancel_agent_upload(
     actor: User,
     access_token: PersonalAccessToken,
 ) -> AgentUploadCancelResponse:
+    with upload_task_guard(storage_root, upload_id):
+        return _cancel_agent_upload(
+            session,
+            storage_root,
+            upload_id,
+            upload_token,
+            actor=actor,
+            access_token=access_token,
+        )
+
+
+def _cancel_agent_upload(
+    session: Session,
+    storage_root: Path,
+    upload_id: UUID,
+    upload_token: str,
+    *,
+    actor: User,
+    access_token: PersonalAccessToken,
+) -> AgentUploadCancelResponse:
     task = _agent_upload_task(
         session,
         upload_id,
@@ -550,8 +672,6 @@ def cancel_agent_upload(
     )
     if task.status == "completed":
         raise UploadContentError("已完成的上传任务不能取消。")
-    if task.status == "cancelled":
-        return AgentUploadCancelResponse(upload_id=task.id, status="cancelled")
 
     try:
         root = storage_root.resolve(strict=True)
@@ -567,20 +687,26 @@ def cancel_agent_upload(
         staging_directory.exists() and not staging_directory.is_dir()
     ):
         raise UploadContentError("上传任务临时目录无效，无法安全清理。")
-    if staging_directory.exists():
-        shutil.rmtree(staging_directory)
-    if staging_root.exists() and not any(staging_root.iterdir()):
-        staging_root.rmdir()
 
-    task.status = "cancelled"
-    task.completed_at = datetime.now(UTC)
-    session.flush()
+    if task.status != "cancelled":
+        task.status = "cancelled"
+        task.completed_at = datetime.now(UTC)
+        session.flush()
+        session.commit()
+
+    if staging_directory.exists():
+        try:
+            shutil.rmtree(staging_directory)
+        except OSError as error:
+            raise UploadContentError("上传任务已取消，但临时文件清理失败，请重试。") from error
+    if staging_root.exists():
+        with suppress(OSError):
+            if not any(staging_root.iterdir()):
+                staging_root.rmdir()
     return AgentUploadCancelResponse(upload_id=task.id, status="cancelled")
 
 
-def _open_staged_files(
-    staging_directory: Path, staged_files: list[Path]
-) -> list[OpenStagedFile]:
+def _open_staged_files(staging_directory: Path, staged_files: list[Path]) -> list[OpenStagedFile]:
     opened: list[OpenStagedFile] = []
     try:
         for path in staged_files:
@@ -659,6 +785,87 @@ def _remove_empty_archive_directories(directories: set[Path], storage_root: Path
             continue
 
 
+def _remove_upload_staging(
+    storage_root: Path,
+    upload_id: UUID,
+    *,
+    cleanup_error: str,
+) -> None:
+    try:
+        root = storage_root.resolve(strict=True)
+    except (FileNotFoundError, NotADirectoryError) as error:
+        raise UploadContentError(cleanup_error) from error
+    if not root.is_dir():
+        raise UploadContentError(cleanup_error)
+    staging_root = root / UPLOAD_STAGING_DIRECTORY
+    if not staging_root.exists():
+        return
+    if staging_root.is_symlink() or not staging_root.is_dir():
+        raise UploadContentError(cleanup_error)
+    staging_directory = staging_root / str(upload_id)
+    if staging_directory.is_symlink() or (
+        staging_directory.exists() and not staging_directory.is_dir()
+    ):
+        raise UploadContentError(cleanup_error)
+    try:
+        if staging_directory.exists():
+            shutil.rmtree(staging_directory)
+            _fsync_directory(staging_root)
+        if not any(staging_root.iterdir()):
+            staging_root.rmdir()
+            _fsync_directory(root)
+    except OSError as error:
+        raise UploadContentError(cleanup_error) from error
+
+
+def _cleanup_completed_upload_staging(storage_root: Path, upload_id: UUID) -> None:
+    _remove_upload_staging(
+        storage_root,
+        upload_id,
+        cleanup_error="文件已完成入库，但临时区清理失败，请重试完成请求。",
+    )
+
+
+def cleanup_expired_upload_tasks(
+    session: Session,
+    storage_root: Path,
+    *,
+    limit: int = 100,
+) -> int:
+    now = datetime.now(UTC)
+    candidate_ids = session.scalars(
+        select(UploadTask.id)
+        .where(UploadTask.expires_at <= now)
+        .order_by(UploadTask.expires_at, UploadTask.id)
+        .limit(max(1, min(limit, 100)))
+    ).all()
+    cleaned = 0
+    for upload_id in candidate_ids:
+        try:
+            with upload_task_guard(storage_root, upload_id):
+                task = session.get(UploadTask, upload_id, with_for_update=True)
+                if not task:
+                    session.rollback()
+                    continue
+                expires_at = task.expires_at
+                if expires_at.tzinfo is None:
+                    expires_at = expires_at.replace(tzinfo=UTC)
+                if expires_at > now:
+                    session.rollback()
+                    continue
+                _remove_upload_staging(
+                    storage_root,
+                    upload_id,
+                    cleanup_error="过期上传任务临时区清理失败。",
+                )
+                session.delete(task)
+                session.commit()
+                cleaned += 1
+        except UploadContentError:
+            session.rollback()
+    return cleaned
+
+
 def _copy_without_overwrite(
     source: OpenStagedFile,
     destination_parent_descriptor: int,
@@ -697,9 +904,7 @@ def _copy_without_overwrite(
                 follow_symlinks=False,
             )
         except OSError as error:
-            raise UploadContentError(
-                "上传文件在入库期间发生变化，请重新上传后重试。"
-            ) from error
+            raise UploadContentError("上传文件在入库期间发生变化，请重新上传后重试。") from error
         identity = (source.metadata.st_dev, source.metadata.st_ino)
         current_identity = (current_metadata.st_dev, current_metadata.st_ino)
         path_identity = (path_metadata.st_dev, path_metadata.st_ino)
@@ -719,9 +924,12 @@ def _copy_without_overwrite(
             or stable_fields != current_fields
         ):
             raise UploadContentError("上传文件在入库期间发生变化，请重新上传后重试。")
+        os.fsync(destination_parent_descriptor)
     except Exception:
         with suppress(FileNotFoundError):
             os.unlink(destination.name, dir_fd=destination_parent_descriptor)
+        with suppress(OSError):
+            os.fsync(destination_parent_descriptor)
         raise
     finally:
         if target_descriptor is not None:
@@ -730,6 +938,32 @@ def _copy_without_overwrite(
 
 
 def finalize_upload(
+    session: Session,
+    storage_root: Path,
+    upload_id: UUID,
+    upload_token: str,
+    *,
+    actor: User,
+    access_token: PersonalAccessToken | None = None,
+) -> UploadFinalizeResponse:
+    with upload_task_guard(storage_root, upload_id):
+        try:
+            with storage_index_guard(session, shared=True):
+                return _finalize_upload(
+                    session,
+                    storage_root,
+                    upload_id,
+                    upload_token,
+                    actor=actor,
+                    access_token=access_token,
+                )
+        except StorageIndexBusyError:
+            raise UploadBusyError(
+                "归档扫描正在运行，请等待扫描完成后重试入库。"
+            ) from None
+
+
+def _finalize_upload(
     session: Session,
     storage_root: Path,
     upload_id: UUID,
@@ -752,13 +986,13 @@ def finalize_upload(
     ):
         raise UploadTicketError("上传凭据无效或已过期，请重新生成上传命令。")
     if task.status == "completed" and task.result:
-        return UploadFinalizeResponse.model_validate(task.result)
+        result = UploadFinalizeResponse.model_validate(task.result)
+        _cleanup_completed_upload_staging(storage_root, upload_id)
+        return result
     if task.status != "active":
         raise UploadTicketError("上传任务已取消，请重新创建上传任务。")
 
-    asset = session.scalar(
-        select(Asset).where(Asset.id == claims.asset_id).with_for_update()
-    )
+    asset = session.scalar(select(Asset).where(Asset.id == claims.asset_id).with_for_update())
     if not asset or asset.archived_at:
         raise UploadTicketError("目标资产不存在或已归档，请重新生成上传命令。")
     subdirectory = _validated_subdirectory(asset, task.target_subdirectory)
@@ -785,6 +1019,10 @@ def finalize_upload(
     relative_paths = [destination.relative_to(root).as_posix() for destination in destinations]
 
     try:
+        if any(len(path) > MAX_ARCHIVE_RELATIVE_PATH_LENGTH for path in relative_paths):
+            raise UploadContentError(
+                "归档路径超过数据库允许的 1000 个字符，请缩短目录或文件名。"
+            )
         database_conflicts = set(
             session.scalars(
                 select(FileRecord.relative_path).where(FileRecord.relative_path.in_(relative_paths))
@@ -820,6 +1058,7 @@ def finalize_upload(
                     try:
                         os.mkdir(directory_name, dir_fd=parent_descriptor)
                         created_archive_directories.add(parent_path)
+                        os.fsync(parent_descriptor)
                     except FileExistsError:
                         pass
                     next_descriptor = os.open(
@@ -913,9 +1152,7 @@ def finalize_upload(
             relative_paths=relative_paths,
             checksums={
                 relative_path: published.checksum_sha256
-                for published, relative_path in zip(
-                    published_files, relative_paths, strict=True
-                )
+                for published, relative_path in zip(published_files, relative_paths, strict=True)
             },
         )
         task.status = "completed"
@@ -924,21 +1161,21 @@ def finalize_upload(
         session.flush()
         session.commit()
     except Exception:
-        session.rollback()
-        for published in reversed(published_files):
-            with suppress(FileNotFoundError):
-                os.unlink(published.path.name, dir_fd=published.parent_descriptor)
-        _remove_empty_archive_directories(created_archive_directories, root)
+        try:
+            for published in reversed(published_files):
+                with suppress(FileNotFoundError):
+                    os.unlink(published.path.name, dir_fd=published.parent_descriptor)
+                with suppress(OSError):
+                    os.fsync(published.parent_descriptor)
+            _remove_empty_archive_directories(created_archive_directories, root)
+        finally:
+            # PostgreSQL transaction locks must cover filesystem compensation too.
+            session.rollback()
         raise
     finally:
         _close_staged_files(opened_files)
         for published in published_files:
             os.close(published.parent_descriptor)
 
-    try:
-        shutil.rmtree(staging_directory)
-        if staging_root.exists() and not any(staging_root.iterdir()):
-            staging_root.rmdir()
-    except OSError:
-        pass
+    _cleanup_completed_upload_staging(storage_root, upload_id)
     return result
