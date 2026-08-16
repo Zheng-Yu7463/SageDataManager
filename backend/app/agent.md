@@ -177,6 +177,13 @@ Asset detail responses contain indexed file IDs and relative paths. Read one wit
 
 `GET /api/agent/files/{file_id}/content?mode=download`
 
+Inspect its current `Content-Length`, `Last-Modified`, `ETag`, and range support before a
+download or resume with:
+
+`HEAD /api/agent/files/{file_id}/content?mode=download`
+
+HEAD returns no body and does not create a download activity entry.
+
 Use `mode=preview` only for supported text, PDF, JSON, YAML, CSV, and image types. The endpoint
 streams bytes, supports HTTP `Range`, and returns `Cache-Control: private, no-store`. Stream large
 responses to disk; do not load an entire archive file into model context or memory. A file path on

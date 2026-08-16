@@ -60,7 +60,7 @@ async def prevent_api_caching(request: Request, call_next):
 app.include_router(router, prefix=settings.api_prefix)
 
 AGENT_PROTOCOL_VERSION = "1.0"
-AGENT_DOCUMENT_VERSION = "2026-08-17.19"
+AGENT_DOCUMENT_VERSION = "2026-08-17.20"
 AGENT_INSTRUCTIONS = (
     Path(__file__)
     .with_name("agent.md")
@@ -119,7 +119,10 @@ def agent_discovery() -> JSONResponse:
             ],
             "scopes": {
                 "assets:read": ["GET /assets", "GET /assets/{asset_id}"],
-                "files:read": ["GET /files/{file_id}/content"],
+                "files:read": [
+                    "HEAD /files/{file_id}/content",
+                    "GET /files/{file_id}/content",
+                ],
                 "metadata:write": ["POST /assets", "PATCH /assets/{asset_id}"],
                 "files:upload": [
                     "POST /uploads",

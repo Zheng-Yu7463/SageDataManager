@@ -113,6 +113,7 @@ def test_agent_discovery_is_public_and_contains_no_secret() -> None:
     assert 'target_subdirectory:"original"' not in instructions.text
     assert "$UPLOAD_ID?include_checksums=true" in instructions.text
     assert ".relative_paths == [$path]" in instructions.text
+    assert "HEAD returns no body and does not create a download activity entry" in instructions.text
     assert "SAGE_TOKEN=" not in instructions.text
     discovery_data = discovery.json()
     assert discovery_data["openapi"] == "/api/openapi.json"
@@ -140,7 +141,10 @@ def test_agent_discovery_is_public_and_contains_no_secret() -> None:
     }
     assert "file_read" in discovery_data["capabilities"]
     assert "upload_manifest_summary" in discovery_data["capabilities"]
-    assert discovery_data["scopes"]["files:read"] == ["GET /files/{file_id}/content"]
+    assert discovery_data["scopes"]["files:read"] == [
+        "HEAD /files/{file_id}/content",
+        "GET /files/{file_id}/content",
+    ]
     assert discovery_data["limits"]["maximum_file_size_bytes"] == 500_000_000
     assert discovery_data["limits"]["maximum_upload_files_per_task"] == 10_000
     assert discovery_data["limits"]["maximum_upload_total_bytes"] == 50_000_000_000
@@ -201,6 +205,7 @@ def test_agent_discovery_is_public_and_contains_no_secret() -> None:
         ("post", "/api/agent/assets"),
         ("get", "/api/agent/assets/{asset_id}"),
         ("patch", "/api/agent/assets/{asset_id}"),
+        ("head", "/api/agent/files/{file_id}/content"),
         ("get", "/api/agent/files/{file_id}/content"),
         ("get", "/api/agent/assets/{asset_id}/citation/bibtex"),
         ("post", "/api/agent/uploads"),
@@ -215,6 +220,9 @@ def test_agent_discovery_is_public_and_contains_no_secret() -> None:
     assert get_assets["security"] == [{"HTTPBearer": []}]
     file_content = openapi["paths"]["/api/agent/files/{file_id}/content"]["get"]
     assert file_content["summary"] == "Read or download an indexed file"
+    head_file_content = openapi["paths"]["/api/agent/files/{file_id}/content"]["head"]
+    assert head_file_content["summary"] == "Inspect an indexed file before download"
+    assert head_file_content["security"] == [{"HTTPBearer": []}]
     patch_asset = openapi["paths"]["/api/agent/assets/{asset_id}"]["patch"]
     revision_header = next(
         parameter

@@ -236,7 +236,15 @@ def agent_asset(
     return result
 
 
-@router.head("/files/{file_id}/content", include_in_schema=False)
+@router.head(
+    "/files/{file_id}/content",
+    summary="Inspect an indexed file before download",
+    description="Returns the same file metadata headers as GET without a response body.",
+    responses={
+        404: {"description": "File or active asset not found"},
+        409: {"description": "File is unavailable or cannot be previewed"},
+    },
+)
 @router.get(
     "/files/{file_id}/content",
     summary="Read or download an indexed file",
