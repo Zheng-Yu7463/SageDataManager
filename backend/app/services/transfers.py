@@ -34,7 +34,9 @@ from app.domain.schemas import (
 from app.services.activities import record_activity
 from app.services.security import create_upload_token, read_upload_token
 from app.services.storage import (
+    MAX_ARCHIVE_PATH_COMPONENT_BYTES,
     MAX_ARCHIVE_PATH_COMPONENT_LENGTH,
+    MAX_ARCHIVE_RELATIVE_PATH_BYTES,
     MAX_ARCHIVE_RELATIVE_PATH_LENGTH,
     UPLOAD_LOCKS_DIRECTORY,
     UPLOAD_PARTS_DIRECTORY,
@@ -179,20 +181,29 @@ def _new_upload_task(
     return task
 
 
-def _canonical_relative_upload_path(value: str, *, maximum_length: int) -> PurePosixPath | None:
+def _canonical_relative_upload_path(
+    value: str, *, maximum_length: int, maximum_bytes: int
+) -> PurePosixPath | None:
     path_parts = value.split("/")
+    try:
+        value_bytes = len(value.encode("utf-8"))
+        component_bytes = [len(part.encode("utf-8")) for part in path_parts]
+    except UnicodeEncodeError:
+        return None
     if (
         len(value) > maximum_length
+        or value_bytes > maximum_bytes
         or "\x00" in value
         or any(part in {"", ".", ".."} for part in path_parts)
         or any(len(part) > MAX_ARCHIVE_PATH_COMPONENT_LENGTH for part in path_parts)
+        or any(length > MAX_ARCHIVE_PATH_COMPONENT_BYTES for length in component_bytes)
     ):
         return None
     return PurePosixPath(*path_parts)
 
 
 def _validated_subdirectory(asset: Asset, value: str) -> PurePosixPath:
-    subdirectory = _canonical_relative_upload_path(value, maximum_length=400)
+    subdirectory = _canonical_relative_upload_path(value, maximum_length=400, maximum_bytes=400)
     if subdirectory is None:
         raise UploadCommandError("目标子目录必须是归档目录内的规范相对路径。")
     allowed_subdirectories = upload_directory_names(asset.type)
@@ -382,7 +393,9 @@ def _agent_upload_destination(
     relative_path: str,
 ) -> tuple[PurePosixPath, Path, Path]:
     upload_path = _canonical_relative_upload_path(
-        relative_path, maximum_length=MAX_ARCHIVE_RELATIVE_PATH_LENGTH
+        relative_path,
+        maximum_length=MAX_ARCHIVE_RELATIVE_PATH_LENGTH,
+        maximum_bytes=MAX_ARCHIVE_RELATIVE_PATH_BYTES,
     )
     if upload_path is None:
         raise UploadContentError("上传文件路径必须是任务内的安全相对路径。")

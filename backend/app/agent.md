@@ -200,8 +200,8 @@ changes after hashing, stop and rebuild the manifest.
 4. Upload each file with `PUT` to `file_upload_url_template`. Percent-encode each UTF-8 path segment
    while preserving `/` separators. Use only canonical relative paths. Empty files, empty path
    components (including repeated or trailing `/`), absolute paths, `.` or `..` components,
-   components longer than 255 characters, reserved internal names, and paths longer than 1000
-   characters are rejected.
+   components longer than 255 characters or UTF-8 bytes, reserved internal names, and paths
+   longer than 1000 characters or UTF-8 bytes are rejected.
 5. Send `X-Sage-Upload-Token` and, when available, the lowercase 64-character SHA-256 in
    `X-Sage-Content-SHA256`. Compare the response's `file_size` and `checksum_sha256` with the local
    manifest before continuing. A repeated PUT is idempotent only when the same path already contains

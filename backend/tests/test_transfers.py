@@ -110,6 +110,8 @@ def test_agent_file_publish_rolls_back_link_when_directory_sync_fails(
         "nested/./file.txt",
         "nested/../file.txt",
         "nested/",
+        "文" * 86,
+        "/".join(["文" * 84] * 4),
     ],
 )
 def test_agent_upload_rejects_noncanonical_relative_paths(
@@ -117,6 +119,27 @@ def test_agent_upload_rejects_noncanonical_relative_paths(
 ) -> None:
     with pytest.raises(UploadContentError, match="安全相对路径"):
         staged_upload_destination(tmp_path, uuid4(), relative_path)
+
+
+def test_agent_upload_accepts_a_255_byte_path_component(tmp_path: Path) -> None:
+    relative_path = "文" * 83 + ".a.txt"
+    content = b"utf-8 boundary"
+    temporary_file = tmp_path / "temporary-upload"
+    temporary_file.write_bytes(content)
+    upload_id = uuid4()
+    assert len(relative_path.encode("utf-8")) == 255
+
+    destination, _ = staged_upload_destination(tmp_path, upload_id, relative_path)
+    result = complete_agent_file_upload(
+        upload_id,
+        relative_path,
+        temporary_file,
+        destination,
+        hashlib.sha256(content).hexdigest(),
+    )
+
+    assert result.relative_path == relative_path
+    assert destination.read_bytes() == content
 
 
 def make_session() -> Session:

@@ -132,7 +132,9 @@ def test_agent_discovery_is_public_and_contains_no_secret() -> None:
     assert discovery_data["scopes"]["files:read"] == ["GET /files/{file_id}/content"]
     assert discovery_data["limits"]["maximum_file_size_bytes"] == 500_000_000
     assert discovery_data["limits"]["maximum_upload_path_characters"] == 1000
+    assert discovery_data["limits"]["maximum_upload_path_bytes"] == 1000
     assert discovery_data["limits"]["maximum_upload_path_component_characters"] == 255
+    assert discovery_data["limits"]["maximum_upload_path_component_bytes"] == 255
     assert discovery_data["uploads"] == {
         "task_token_header": "X-Sage-Upload-Token",
         "checksum_header": "X-Sage-Content-SHA256",
@@ -940,6 +942,12 @@ def test_agent_upload_rejects_path_escape_and_empty_files(tmp_path: Path, monkey
             headers=upload_headers,
             content=b"reserved",
         )
+        oversized_name = "文" * 86
+        oversized_component = client.put(
+            f"/api/agent/uploads/{task['upload_id']}/files/{oversized_name}",
+            headers=upload_headers,
+            content=b"too long for the filesystem",
+        )
         empty = client.put(
             f"/api/agent/uploads/{task['upload_id']}/files/empty.pdf",
             headers=upload_headers,
@@ -948,6 +956,8 @@ def test_agent_upload_rejects_path_escape_and_empty_files(tmp_path: Path, monkey
         assert escaped.status_code in {404, 409}
         assert reserved.status_code == 409
         assert "系统保留名称" in reserved.json()["detail"]
+        assert oversized_component.status_code == 409
+        assert oversized_component.headers["x-sage-error-code"] == "upload_invalid"
         assert empty.status_code == 409
         assert not (tmp_path / "escape.pdf").exists()
         assert not (tmp_path / ".uploads").exists()
