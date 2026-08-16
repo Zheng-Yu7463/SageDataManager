@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import stat
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from os import stat_result
@@ -121,8 +122,12 @@ def _open_indexed_file(storage_root: Path, relative_path: PurePosixPath) -> tupl
                 )
             except OSError:
                 raise FileUnavailableError from None
-            os.close(parent_descriptor)
+            previous_descriptor = parent_descriptor
             parent_descriptor = child_descriptor
+            try:
+                os.close(previous_descriptor)
+            except OSError:
+                raise FileUnavailableError from None
 
         try:
             descriptor = os.open(
@@ -135,14 +140,17 @@ def _open_indexed_file(storage_root: Path, relative_path: PurePosixPath) -> tupl
         try:
             current = os.fstat(descriptor)
         except OSError:
-            os.close(descriptor)
+            with suppress(OSError):
+                os.close(descriptor)
             raise FileUnavailableError from None
         if not stat.S_ISREG(current.st_mode):
-            os.close(descriptor)
+            with suppress(OSError):
+                os.close(descriptor)
             raise FileUnavailableError
         return descriptor, current
     finally:
-        os.close(parent_descriptor)
+        with suppress(OSError):
+            os.close(parent_descriptor)
 
 
 def verify_file_access(session: Session, file_id: UUID, mode: str) -> None:

@@ -131,6 +131,40 @@ def test_delivery_rejects_an_intermediate_directory_symlink(tmp_path: Path) -> N
     assert session.scalars(select(Activity)).all() == []
 
 
+def test_delivery_closes_child_descriptor_when_parent_close_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = make_session()
+    actor, record = create_file_record(session, tmp_path)
+    original_open = os.open
+    original_close = os.close
+    opened_descriptors: list[int] = []
+    close_calls = 0
+
+    def tracked_open(*args, **kwargs):
+        descriptor = original_open(*args, **kwargs)
+        opened_descriptors.append(descriptor)
+        return descriptor
+
+    def fail_first_close(descriptor: int) -> None:
+        nonlocal close_calls
+        close_calls += 1
+        original_close(descriptor)
+        if close_calls == 1:
+            raise OSError('simulated directory close failure')
+
+    monkeypatch.setattr('app.services.file_access.os.open', tracked_open)
+    monkeypatch.setattr('app.services.file_access.os.close', fail_first_close)
+
+    with pytest.raises(FileUnavailableError):
+        open_file_delivery(session, tmp_path, record.id, 'download', actor=actor)
+
+    assert len(opened_descriptors) == 2
+    for descriptor in opened_descriptors:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+    assert session.scalars(select(Activity)).all() == []
+
 @pytest.mark.parametrize("change", ["size", "modified-time"])
 def test_delivery_rejects_a_file_changed_since_indexing_without_auditing(
     tmp_path: Path, change: str
