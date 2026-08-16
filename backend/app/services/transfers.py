@@ -24,6 +24,7 @@ from app.domain.schemas import (
     AgentUploadCancelResponse,
     AgentUploadCreateResponse,
     AgentUploadedFileResponse,
+    AgentUploadFileStatus,
     AgentUploadStatusResponse,
     UploadCommandRequest,
     UploadCommandResponse,
@@ -367,16 +368,16 @@ def staged_upload_destination(
     upload_id: UUID,
     relative_path: str,
 ) -> tuple[Path, Path]:
-    if len(relative_path) > MAX_ARCHIVE_RELATIVE_PATH_LENGTH or "\x00" in relative_path:
-        raise UploadContentError("上传文件路径过长或包含无效字符。")
-    upload_path = PurePosixPath(relative_path.strip())
+    path_parts = relative_path.split("/")
     if (
-        upload_path.is_absolute()
-        or not upload_path.parts
-        or any(part in {"", ".", ".."} for part in upload_path.parts)
-        or any(len(part) > 255 for part in upload_path.parts)
+        len(relative_path) > MAX_ARCHIVE_RELATIVE_PATH_LENGTH
+        or "\x00" in relative_path
+        or relative_path.startswith("/")
+        or any(part in {"", ".", ".."} for part in path_parts)
+        or any(len(part) > 255 for part in path_parts)
     ):
         raise UploadContentError("上传文件路径必须是任务内的安全相对路径。")
+    upload_path = PurePosixPath(*path_parts)
     try:
         root = storage_root.resolve(strict=True)
     except (FileNotFoundError, NotADirectoryError) as error:
@@ -434,6 +435,12 @@ def complete_agent_file_upload(
     )
     if staging_root is None:
         raise UploadContentError("上传文件目标不在临时区内。")
+    try:
+        canonical_relative_path = destination.relative_to(
+            staging_root / str(upload_id)
+        ).as_posix()
+    except ValueError as error:
+        raise UploadContentError("上传文件目标不属于当前任务。") from error
     storage_root = staging_root.parent
     destination.parent.mkdir(parents=True, exist_ok=True)
     if destination.exists() or destination.is_symlink():
@@ -454,7 +461,7 @@ def complete_agent_file_upload(
     temporary_file.unlink()
     return AgentUploadedFileResponse(
         upload_id=upload_id,
-        relative_path=PurePosixPath(relative_path).as_posix(),
+        relative_path=canonical_relative_path,
         file_size=destination.stat().st_size,
         checksum_sha256=checksum_sha256,
     )
@@ -620,16 +627,24 @@ def agent_upload_status(
         files = _staged_files(staging_directory, completion_marker_required=False)
     except UploadNotReadyError:
         files = []
+    uploaded_files: list[AgentUploadFileStatus] = []
     try:
-        total_size = sum(path.stat().st_size for path in files)
+        for path in files:
+            uploaded_files.append(
+                AgentUploadFileStatus(
+                    relative_path=path.relative_to(staging_directory).as_posix(),
+                    file_size=path.stat().st_size,
+                )
+            )
     except OSError as error:
         raise UploadContentError("上传文件正在变化，请稍后重试。") from error
     return AgentUploadStatusResponse(
         upload_id=task.id,
-        status="ready" if files else "waiting",
-        uploaded_file_count=len(files),
-        total_size=total_size,
+        status="ready" if uploaded_files else "waiting",
+        uploaded_file_count=len(uploaded_files),
+        total_size=sum(file.file_size for file in uploaded_files),
         expires_at=task.expires_at,
+        files=uploaded_files,
     )
 
 

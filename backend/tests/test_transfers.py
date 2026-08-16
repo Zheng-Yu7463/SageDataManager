@@ -28,6 +28,7 @@ from app.services.transfers import (
     complete_agent_file_upload,
     finalize_upload,
     generate_upload_command,
+    staged_upload_destination,
     upload_status,
 )
 
@@ -92,6 +93,24 @@ def test_agent_file_publish_rolls_back_link_when_directory_sync_fails(
 
     assert temporary_file.exists()
     assert not destination.exists()
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "",
+        "/absolute.txt",
+        "nested//file.txt",
+        "nested/./file.txt",
+        "nested/../file.txt",
+        "nested/",
+    ],
+)
+def test_agent_upload_rejects_noncanonical_relative_paths(
+    tmp_path: Path, relative_path: str
+) -> None:
+    with pytest.raises(UploadContentError, match="安全相对路径"):
+        staged_upload_destination(tmp_path, uuid4(), relative_path)
 
 
 def make_session() -> Session:

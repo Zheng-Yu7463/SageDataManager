@@ -191,9 +191,10 @@ changes after hashing, stop and rebuild the manifest.
 3. Create a task with `POST /api/agent/uploads` and retain `upload_id`, `upload_token`, `expires_at`,
    URL fields, and `archive_relative_path` in process memory.
 4. Upload each file with `PUT` to `file_upload_url_template`. Percent-encode each UTF-8 path segment
-   while preserving `/` separators. Use only relative paths. Empty files, absolute paths, `.` or
-   `..` components, components longer than 255 characters, reserved internal names, and complete
-   archive paths longer than 1000 characters are rejected.
+   while preserving `/` separators. Use only canonical relative paths. Empty files, empty path
+   components (including repeated or trailing `/`), absolute paths, `.` or `..` components,
+   components longer than 255 characters, reserved internal names, and paths longer than 1000
+   characters are rejected.
 5. Send `X-Sage-Upload-Token` and, when available, the lowercase 64-character SHA-256 in
    `X-Sage-Content-SHA256`. Compare the response's `file_size` and `checksum_sha256` with the local
    manifest before continuing.
@@ -201,14 +202,19 @@ changes after hashing, stop and rebuild the manifest.
    document for this value instead of assuming the default. A `413` rejects the whole file and
    leaves no partial staged file.
 7. Recover after an interruption with `GET` on `status_url`, sending the PAT and
-   `X-Sage-Upload-Token`. States are `waiting`, `ready`, `completed`, and `cancelled`. Status reports
-   aggregate file count and size, not a per-file manifest.
-8. Before finalization, verify that every upload response succeeded and that status count and total
-   size match the local manifest. Do not finalize an incomplete or ambiguous task.
-9. Finalize with `POST` to `finalize_url` and JSON `{"upload_token":"<upload-token>"}`. Verify
-   `imported_file_count`, `total_size`, `relative_paths`, and `checksums` in the response. Finalize
-   is idempotent when repeated with the same upload ID, PAT, and upload token.
-10. Cancel an unused task with `DELETE` on `cancel_url`, sending both credentials. Cancellation is
+   `X-Sage-Upload-Token`. States are `waiting`, `ready`, `completed`, and `cancelled`. For an
+   active task, `files` lists every atomically accepted `relative_path` and `file_size`.
+8. If a PUT response was lost after sending `X-Sage-Content-SHA256`, a matching path and size in
+   status means the server accepted the complete file and verified the supplied checksum. Do not
+   upload that path again. If no checksum was supplied or the path/size differs, stop and report
+   the ambiguity.
+9. Before finalization, verify that every upload response succeeded or was recovered through status,
+   and that the status file list, count, and total size match the local manifest. Do not finalize an
+   incomplete or ambiguous task.
+10. Finalize with `POST` to `finalize_url` and JSON `{"upload_token":"<upload-token>"}`. Verify
+    `imported_file_count`, `total_size`, `relative_paths`, and `checksums` in the response. Finalize
+    is idempotent when repeated with the same upload ID, PAT, and upload token.
+11. Cancel an unused task with `DELETE` on `cancel_url`, sending both credentials. Cancellation is
     idempotent, removes staged content, and cannot cancel a completed task.
 
 Allowed first components:
@@ -252,7 +258,7 @@ with jitter. Honor a longer `Retry-After`. Do not run unbounded polling or retry
 | POST asset create | Do not blindly repeat. Search again by all identities and slug first. |
 | PATCH asset | Read latest detail and retry only if the intended merge is still valid. |
 | POST upload task | Do not blindly repeat because the first task may exist but its secret response was lost. Search cannot recover that token; report the ambiguity and allow it to expire. |
-| PUT file | Check task status first. Because status is aggregate-only, do not claim success or blindly overwrite after an ambiguous response. |
+| PUT file | Check task status first. Treat a matching path and size as recovered only when the original PUT supplied the local SHA-256; otherwise report the ambiguity. |
 | POST finalize | Safe to retry with the same upload ID, PAT, and upload token. |
 | DELETE cancel | Safe to retry with the same upload ID, PAT, and upload token unless status is `completed`. |
 
