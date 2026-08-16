@@ -10,6 +10,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+import app.services.access_tokens as access_token_service
 import app.services.transfers as transfer_service
 from app.api.routes import agent as agent_routes
 from app.core.config import settings
@@ -333,6 +334,49 @@ def test_token_creation_requires_a_server_signing_secret(monkeypatch) -> None:
         session.rollback()
     finally:
         session.close()
+
+
+def test_well_formed_unknown_token_uses_the_hmac_path(monkeypatch) -> None:
+    session = make_session()
+    monkeypatch.setattr(settings, "auth_session_secret", "agent-test-secret")
+    comparisons: list[tuple[str, str]] = []
+    original_compare = access_token_service.hmac.compare_digest
+
+    def record_compare(left: str, right: str) -> bool:
+        comparisons.append((left, right))
+        return original_compare(left, right)
+
+    monkeypatch.setattr(access_token_service.hmac, "compare_digest", record_compare)
+
+    try:
+        result = access_token_service.authenticate_access_token(
+            session,
+            "sdm_pat_unknown_public_id_unknown-secret",
+        )
+    finally:
+        session.close()
+
+    assert result is None
+    assert len(comparisons) == 1
+    assert all(len(value) == 64 for value in comparisons[0])
+
+
+def test_unknown_token_reports_missing_signing_configuration(monkeypatch) -> None:
+    session = make_session()
+    monkeypatch.setattr(settings, "auth_session_secret", "")
+    monkeypatch.setattr(settings, "fixed_account_password", "")
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        response = TestClient(app).get(
+            "/api/agent/me",
+            headers=bearer("sdm_pat_unknown_public_id_unknown-secret"),
+        )
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+    assert response.status_code == 503
+    assert response.headers["x-sage-error-code"] == "agent_auth_unavailable"
 
 
 def test_agent_authentication_persists_last_used_time(monkeypatch) -> None:

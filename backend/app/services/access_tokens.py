@@ -119,16 +119,19 @@ def authenticate_access_token(session: Session, plaintext: str) -> PersonalAcces
     if len(parts) != 4 or parts[:2] != ["sdm", "pat"]:
         return None
     public_id, secret = parts[2], parts[3]
+    candidate_hash = _token_secret_hash(secret)
     token = session.scalar(
         select(PersonalAccessToken).where(PersonalAccessToken.public_id == public_id)
     )
+    stored_hash = token.secret_hash if token else "0" * 64
+    secret_matches = hmac.compare_digest(stored_hash, candidate_hash)
     now = datetime.now(UTC)
     if (
         not token
+        or not secret_matches
         or token.revoked_at is not None
         or _aware(token.expires_at) <= now
         or not token.user.is_active
-        or not hmac.compare_digest(token.secret_hash, _token_secret_hash(secret))
     ):
         return None
     return token
