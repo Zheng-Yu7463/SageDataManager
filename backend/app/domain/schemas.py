@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
@@ -226,6 +227,7 @@ class FileClaimResult(BaseModel):
     file: FileSummary
 
 
+MAX_ASSET_DETAILS_BYTES = 256_000
 MAX_PUBLICATION_AUTHOR_LENGTH = 200
 PublicationAuthor = Annotated[
     str, Field(min_length=1, max_length=MAX_PUBLICATION_AUTHOR_LENGTH)
@@ -333,6 +335,22 @@ def _lower_text(value: object) -> object:
     return value.strip().lower() if isinstance(value, str) else value
 
 
+def _validate_asset_details_size(value: object) -> object:
+    if value is None:
+        return value
+    try:
+        encoded_size = len(
+            json.dumps(
+                value, ensure_ascii=False, separators=(",", ":")
+            ).encode("utf-8")
+        )
+    except (RecursionError, TypeError, ValueError) as error:
+        raise ValueError("details 必须是可序列化的 JSON 对象。") from error
+    if encoded_size > MAX_ASSET_DETAILS_BYTES:
+        raise ValueError(f"details 不能超过 {MAX_ASSET_DETAILS_BYTES} 个 UTF-8 字节。")
+    return value
+
+
 def _normalize_asset_tags(value: object) -> object:
     if not isinstance(value, list):
         return value
@@ -372,6 +390,11 @@ class AssetCreateRequest(BaseModel):
     def normalize_tags(cls, value: object) -> object:
         return _normalize_asset_tags(value)
 
+    @field_validator("details", mode="before")
+    @classmethod
+    def validate_details_size(cls, value: object) -> object:
+        return _validate_asset_details_size(value)
+
     @model_validator(mode="after")
     def validate_details_for_asset_type(self) -> "AssetCreateRequest":
         self.details = normalized_asset_details(self.type, self.details)
@@ -401,6 +424,11 @@ class AssetUpdateRequest(BaseModel):
     @classmethod
     def normalize_tags(cls, value: object) -> object:
         return _normalize_asset_tags(value)
+
+    @field_validator("details", mode="before")
+    @classmethod
+    def validate_details_size(cls, value: object) -> object:
+        return _validate_asset_details_size(value)
 
 
 class BatchAssetImportRequest(BaseModel):

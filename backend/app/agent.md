@@ -98,6 +98,8 @@ Common create fields are `type`, `slug`, `title`, `summary`, `status`, `visibili
   `owner_name` and `owner_email`; they cannot be used to impersonate another owner.
 - Publication `authors` contains 1-200 names; each normalized name is at most
   {{MAXIMUM_PUBLICATION_AUTHOR_CHARACTERS}} characters.
+- `details` must remain compact metadata and is limited to {{MAXIMUM_ASSET_DETAILS_BYTES}} UTF-8
+  JSON bytes per asset. Store large text, generated output, and binary content as files.
 - Unknown `details` fields for datasets, projects, and models may be preserved, but must not be
   guessed. Use stable, descriptive keys already established by similar assets.
 

@@ -135,6 +135,7 @@ def test_agent_discovery_is_public_and_contains_no_secret() -> None:
     assert discovery_data["scopes"]["files:read"] == ["GET /files/{file_id}/content"]
     assert discovery_data["limits"]["maximum_file_size_bytes"] == 500_000_000
     assert discovery_data["limits"]["maximum_publication_author_characters"] == 200
+    assert discovery_data["limits"]["maximum_asset_details_bytes"] == 256_000
     assert discovery_data["limits"]["maximum_upload_path_characters"] == 1000
     assert discovery_data["limits"]["maximum_upload_path_bytes"] == 1000
     assert discovery_data["limits"]["maximum_upload_path_component_characters"] == 255
@@ -534,6 +535,34 @@ def test_agent_rejects_oversized_publication_author_name(monkeypatch) -> None:
         assert response.headers["x-sage-error-code"] == "request_invalid"
         assert session.scalar(
             select(Asset).where(Asset.slug == "oversized-author-paper")
+        ) is None
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
+def test_agent_rejects_oversized_asset_details(monkeypatch) -> None:
+    session = make_session()
+    user, _ = create_user_and_asset(session)
+    monkeypatch.setattr(settings, "auth_session_secret", "agent-test-secret")
+    plaintext = create_token(session, user, ["metadata:write"])
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        response = TestClient(app).post(
+            "/api/agent/assets",
+            headers=bearer(plaintext),
+            json={
+                "type": "project",
+                "slug": "oversized-details-project",
+                "title": "Oversized Details Project",
+                "details": {"generated_output": "x" * 256_000},
+            },
+        )
+
+        assert response.status_code == 422
+        assert response.headers["x-sage-error-code"] == "request_invalid"
+        assert session.scalar(
+            select(Asset).where(Asset.slug == "oversized-details-project")
         ) is None
     finally:
         app.dependency_overrides.clear()

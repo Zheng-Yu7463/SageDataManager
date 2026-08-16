@@ -8,7 +8,7 @@ from app.api.dependencies import AGENT_ERROR_CODE_HEADER
 from app.api.router import router
 from app.core.config import settings
 from app.domain.enums import AssetType
-from app.domain.schemas import MAX_PUBLICATION_AUTHOR_LENGTH
+from app.domain.schemas import MAX_ASSET_DETAILS_BYTES, MAX_PUBLICATION_AUTHOR_LENGTH
 from app.services.storage import (
     MAX_ARCHIVE_PATH_COMPONENT_BYTES,
     MAX_ARCHIVE_PATH_COMPONENT_LENGTH,
@@ -60,7 +60,7 @@ async def prevent_api_caching(request: Request, call_next):
 app.include_router(router, prefix=settings.api_prefix)
 
 AGENT_PROTOCOL_VERSION = "1.0"
-AGENT_DOCUMENT_VERSION = "2026-08-17.13"
+AGENT_DOCUMENT_VERSION = "2026-08-17.14"
 AGENT_INSTRUCTIONS = (
     Path(__file__)
     .with_name("agent.md")
@@ -72,6 +72,7 @@ AGENT_INSTRUCTIONS = (
         "{{MAXIMUM_PUBLICATION_AUTHOR_CHARACTERS}}",
         str(MAX_PUBLICATION_AUTHOR_LENGTH),
     )
+    .replace("{{MAXIMUM_ASSET_DETAILS_BYTES}}", str(MAX_ASSET_DETAILS_BYTES))
 )
 
 
@@ -147,6 +148,7 @@ def agent_discovery() -> JSONResponse:
                 "maximum_publication_author_characters": (
                     MAX_PUBLICATION_AUTHOR_LENGTH
                 ),
+                "maximum_asset_details_bytes": MAX_ASSET_DETAILS_BYTES,
                 "maximum_upload_path_characters": MAX_ARCHIVE_RELATIVE_PATH_LENGTH,
                 "maximum_upload_path_bytes": MAX_ARCHIVE_RELATIVE_PATH_BYTES,
                 "maximum_upload_path_component_characters": (MAX_ARCHIVE_PATH_COMPONENT_LENGTH),
