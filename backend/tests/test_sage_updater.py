@@ -9,6 +9,7 @@ import threading
 import time
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1022,3 +1023,33 @@ def test_installer_keeps_the_socket_mount_visible_after_agent_restart() -> None:
     assert "docker compose config --format json" in installer
     assert '["services"]["backend"]["environment"]' in installer
     assert "docker compose up --build -d --force-recreate --no-deps backend" in installer
+
+
+def test_http_conflict_response_exposes_stable_error_code() -> None:
+    captured: dict[str, object] = {}
+
+    class BusyManager:
+        def check(self) -> dict[str, object]:
+            raise sage_updater.UpdateConflictError("操作仍在执行。")
+
+    def authorized() -> bool:
+        return True
+
+    def capture(status_code: int, value: dict[str, object]) -> None:
+        captured.update(status_code=status_code, value=value)
+
+    handler = sage_updater.AgentRequestHandler.__new__(sage_updater.AgentRequestHandler)
+    handler.path = "/v1/check"
+    handler.server = SimpleNamespace(manager=BusyManager())
+    handler._authorized = authorized
+    handler._json = capture
+
+    handler.do_POST()
+
+    assert captured == {
+        "status_code": 409,
+        "value": {
+            "detail": "操作仍在执行。",
+            "code": "update_operation_running",
+        },
+    }

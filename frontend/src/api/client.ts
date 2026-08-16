@@ -43,10 +43,11 @@ import type {
 } from '@/types'
 import { expireSession, getSessionToken } from '@/session'
 
-class ApiError extends Error {
+export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly code: string | null = null,
   ) {
     super(message)
   }
@@ -114,7 +115,7 @@ async function raiseApiError(response: Response, authenticatedRequest: boolean):
   } catch {
     // Keep the HTTP status message when the response has no JSON body.
   }
-  throw new ApiError(message, response.status)
+  throw new ApiError(message, response.status, response.headers.get('X-Sage-Error-Code'))
 }
 
 export function getDashboard(signal?: AbortSignal) {

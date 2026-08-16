@@ -121,6 +121,26 @@ def test_check_update_accepts_a_background_operation(monkeypatch) -> None:
     assert response.json()["state"] == "checking"
     assert calls == [("POST", "/v1/check")]
 
+
+def test_update_conflict_exposes_a_stable_error_code(monkeypatch) -> None:
+    def conflict(method: str, path: str) -> dict[str, object]:
+        raise UpdateAgentRequestError(
+            "此文案可独立调整。",
+            code="update_operation_running",
+        )
+
+    monkeypatch.setattr(settings_routes, "request_update_agent", conflict)
+    app.dependency_overrides[require_admin] = lambda: account(owner=False)
+    try:
+        response = TestClient(app).post("/api/settings/system-update/check")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "此文案可独立调整。"
+    assert response.headers["x-sage-error-code"] == "update_operation_running"
+
+
 def test_unconfigured_update_agent_is_reported_without_exposing_an_error(monkeypatch) -> None:
     def unavailable(method: str, path: str) -> dict[str, object]:
         raise UpdateAgentUnavailableError("宿主机更新服务尚未配置。")

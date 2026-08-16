@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import re
 import socket
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,7 @@ from typing import Any
 from app.core.config import settings
 
 MAX_UPDATE_AGENT_RESPONSE_BYTES = 1_000_000
+UPDATE_AGENT_ERROR_CODE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 
 class UpdateAgentUnavailableError(Exception):
@@ -16,7 +18,9 @@ class UpdateAgentUnavailableError(Exception):
 
 
 class UpdateAgentRequestError(Exception):
-    pass
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class UnixSocketHTTPConnection(http.client.HTTPConnection):
@@ -94,7 +98,11 @@ def request_update_agent(
         raise UpdateAgentRequestError("宿主机更新服务返回了无效响应。")
     if response.status >= 400:
         detail = body.get("detail")
+        code = body.get("code")
         raise UpdateAgentRequestError(
-            detail if isinstance(detail, str) else "宿主机更新服务拒绝了请求。"
+            detail if isinstance(detail, str) else "宿主机更新服务拒绝了请求。",
+            code=code
+            if isinstance(code, str) and UPDATE_AGENT_ERROR_CODE_PATTERN.fullmatch(code)
+            else None,
         )
     return body

@@ -1332,7 +1332,10 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
                 return
             self._json(404, {"detail": "Not found"})
         except UpdateConflictError as error:
-            self._json(409, {"detail": str(error)})
+            self._json(
+                409,
+                {"detail": str(error), "code": "update_operation_running"},
+            )
         except UpdateAgentError as error:
             self._json(422, {"detail": str(error)})
 

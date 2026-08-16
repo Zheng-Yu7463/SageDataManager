@@ -1140,9 +1140,10 @@ test('检查更新在后台运行并由页面轮询结果', async ({ page }) => 
       message: '正在连接 GitHub 获取 origin/main…',
     })
     await route.fulfill({
-      status: 202,
+      status: 409,
+      headers: { 'X-Sage-Error-Code': 'update_operation_running' },
       contentType: 'application/json',
-      body: JSON.stringify(updateState),
+      body: JSON.stringify({ detail: '另一项后台任务仍在执行。' }),
     })
   })
 

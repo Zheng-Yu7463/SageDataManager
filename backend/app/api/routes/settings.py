@@ -157,7 +157,8 @@ def _update_agent_response(
             raise HTTPException(status_code=503, detail=str(error)) from None
         return SystemUpdateStatus.model_validate(disabled_update_status(str(error)))
     except UpdateAgentRequestError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from None
+        headers = {"X-Sage-Error-Code": error.code} if error.code else None
+        raise HTTPException(status_code=409, detail=str(error), headers=headers) from None
 
 
 @router.get("/system-update")

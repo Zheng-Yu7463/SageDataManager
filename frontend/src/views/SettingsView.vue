@@ -3,7 +3,7 @@ import { Bot, Check, CircleAlert, Clipboard, ExternalLink, GitMerge, ImageUp, Ke
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { onBeforeRouteLeave } from 'vue-router'
 
-import { applySystemUpdate, checkSystemUpdate, createAccessToken, createAdminAccountInvitation, getAccessTokens, getAdminAccounts, getInstanceBranding, getSystemUpdateStatus, removeInstanceLogo, renewAdminAccountInvitation, revokeAccessToken, updateAdminAccount, updateInstanceBranding, uploadInstanceLogo } from '@/api/client'
+import { ApiError, applySystemUpdate, checkSystemUpdate, createAccessToken, createAdminAccountInvitation, getAccessTokens, getAdminAccounts, getInstanceBranding, getSystemUpdateStatus, removeInstanceLogo, renewAdminAccountInvitation, revokeAccessToken, updateAdminAccount, updateInstanceBranding, uploadInstanceLogo } from '@/api/client'
 import { useBranding } from '@/composables/useBranding'
 import { useOverlayFocus } from '@/composables/useOverlayFocus'
 import { useSession } from '@/session'
@@ -774,7 +774,8 @@ async function checkForSystemUpdate() {
   } catch (reason) {
     const message = reason instanceof Error ? reason.message : '检查更新失败'
     await loadSystemUpdate(true)
-    const operationAlreadyRunning = message === '已有系统更新操作正在运行。'
+    const operationAlreadyRunning = reason instanceof ApiError
+      && reason.code === 'update_operation_running'
     if (systemUpdateBusy.value || operationAlreadyRunning) {
       systemUpdateError.value = ''
       startUpdatePolling()
