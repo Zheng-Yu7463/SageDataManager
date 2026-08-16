@@ -62,6 +62,7 @@ const { branding, applyBranding, pageEyebrow } = useBranding()
 const { account } = useSession()
 const currentUsername = computed(() => account.value?.username ?? '')
 const loading = computed(() => accountsLoading.value || tokensLoading.value || brandingLoading.value || systemUpdateLoading.value)
+const accountsUnavailable = computed(() => accountsLoading.value || Boolean(accountsError.value))
 const brandingUnavailable = computed(() => brandingLoading.value || Boolean(brandingLoadError.value))
 const settingsMutationInProgress = computed(() => (
   creating.value
@@ -482,7 +483,7 @@ function backupScheduleLabel(intervalSeconds: number) {
 }
 
 function openCreate() {
-  if (accountsLoading.value || issuingInvitationUsername.value) return
+  if (accountsUnavailable.value || issuingInvitationUsername.value) return
   form.value = { username: '' }
   createError.value = ''
   accountInvitation.value = null
@@ -523,7 +524,7 @@ function storeInvitation(invitation: AccountInvitationCreated) {
 }
 
 async function createAccount() {
-  if (!accountFormValid.value || accountsLoading.value) return
+  if (!accountFormValid.value || accountsUnavailable.value) return
   accountsController?.abort()
   accountsController = undefined
   accountsLoading.value = false
@@ -540,7 +541,7 @@ async function createAccount() {
 
 async function issueAccountInvitation(account: AccountSummary) {
   if (
-    accountsLoading.value
+    accountsUnavailable.value
     || updatingUsernames.value.has(account.username)
     || issuingInvitationUsername.value !== null
     || !canManageAccount(account)
@@ -598,7 +599,7 @@ async function copyAccountInvitation() {
 
 async function toggleAccount(account: AccountSummary) {
   if (
-    accountsLoading.value
+    accountsUnavailable.value
     || account.username === currentUsername.value
     || updatingUsernames.value.has(account.username)
     || !canManageAccount(account)
@@ -861,7 +862,7 @@ onBeforeUnmount(() => {
         <h1>系统设置</h1>
         <p>配置当前 DataManager 实例的品牌、访问权限与系统版本。</p>
       </div>
-      <div class="settings-actions"><button class="button button--outline" :disabled="settingsMutationInProgress" @click="refreshSettings"><RefreshCw :size="16" />刷新</button><button class="button button--primary" :disabled="accountsLoading || creating || issuingInvitationUsername !== null" @click="openCreate"><Plus :size="16" />新增管理员</button></div>
+      <div class="settings-actions"><button class="button button--outline" :disabled="settingsMutationInProgress" @click="refreshSettings"><RefreshCw :size="16" />刷新</button><button class="button button--primary" :disabled="accountsUnavailable || creating || issuingInvitationUsername !== null" @click="openCreate"><Plus :size="16" />新增管理员</button></div>
     </header>
 
     <nav class="settings-section-nav" aria-label="设置分区">
@@ -994,7 +995,7 @@ onBeforeUnmount(() => {
         <div><UserRound :size="19" /><span><strong>{{ accounts.length }}</strong><small>管理员账号</small></span></div>
         <p>账号名同时用于生成 SCP 上传命令中的服务器用户名。</p>
       </section>
-      <p v-if="accountsError" class="settings-error" role="alert">{{ accountsError }}</p>
+      <p v-if="accountsError" class="accounts-load-error agent-access-error settings-error" role="alert">{{ accountsError }} <button type="button" :disabled="accountsLoading" @click="loadAccounts">重试</button></p>
       <section class="accounts-panel" aria-labelledby="accounts-title">
         <header><div><h2 id="accounts-title">管理员账号</h2><p>新增账号时只预留 SSH 用户名；姓名、邮箱和密码由受邀者本人填写。</p></div><span>{{ accounts.length }} accounts</span></header>
         <div class="accounts-table">
@@ -1003,8 +1004,8 @@ onBeforeUnmount(() => {
             <div class="account-copy"><strong>{{ account.name || '等待本人注册' }}</strong><small>{{ account.username }}<template v-if="account.email"> · {{ account.email }}</template></small></div>
             <span class="account-role">{{ account.is_instance_owner ? '实例所有者' : account.role }}</span>
             <span class="account-status" :class="{ 'account-status--pending': !account.is_registered, 'account-status--inactive': !account.is_active }">{{ !account.is_registered ? '待注册' : account.is_active ? '已启用' : '已停用' }}</span>
-            <button class="button button--outline account-toggle" :disabled="updatingUsernames.has(account.username) || account.username === currentUsername || !account.is_registered || !canManageAccount(account)" :aria-label="`${updatingUsernames.has(account.username) ? '正在处理' : account.is_active ? '停用管理员' : '启用管理员'}：${account.name || account.username}`" :title="!canManageAccount(account) ? '只有实例所有者可以管理实例所有者账号' : !account.is_registered ? '待注册账号不能切换状态' : account.username === currentUsername ? '当前登录账号不可自行停用' : ''" @click="toggleAccount(account)"><UserRoundX v-if="account.is_active" :size="15" /><Check v-else :size="15" />{{ updatingUsernames.has(account.username) ? '处理中' : account.is_active ? '停用' : '启用' }}</button>
-            <button class="account-invitation-button" type="button" :disabled="issuingInvitationUsername !== null || updatingUsernames.has(account.username) || !account.is_active || !canManageAccount(account)" :aria-label="accountInvitationActionLabel(account)" :title="accountInvitationActionTitle(account)" @click="issueAccountInvitation(account)"><RefreshCw v-if="issuingInvitationUsername === account.username" :size="16" class="spin-icon" /><Link2 v-else :size="16" /></button>
+            <button class="button button--outline account-toggle" :disabled="accountsUnavailable || updatingUsernames.has(account.username) || account.username === currentUsername || !account.is_registered || !canManageAccount(account)" :aria-label="`${updatingUsernames.has(account.username) ? '正在处理' : account.is_active ? '停用管理员' : '启用管理员'}：${account.name || account.username}`" :title="!canManageAccount(account) ? '只有实例所有者可以管理实例所有者账号' : !account.is_registered ? '待注册账号不能切换状态' : account.username === currentUsername ? '当前登录账号不可自行停用' : ''" @click="toggleAccount(account)"><UserRoundX v-if="account.is_active" :size="15" /><Check v-else :size="15" />{{ updatingUsernames.has(account.username) ? '处理中' : account.is_active ? '停用' : '启用' }}</button>
+            <button class="account-invitation-button" type="button" :disabled="accountsUnavailable || issuingInvitationUsername !== null || updatingUsernames.has(account.username) || !account.is_active || !canManageAccount(account)" :aria-label="accountInvitationActionLabel(account)" :title="accountInvitationActionTitle(account)" @click="issueAccountInvitation(account)"><RefreshCw v-if="issuingInvitationUsername === account.username" :size="16" class="spin-icon" /><Link2 v-else :size="16" /></button>
             <p v-if="accountActionErrors[account.username]" class="account-row-error" role="alert">{{ accountActionErrors[account.username] }}</p>
           </div>
         </div>

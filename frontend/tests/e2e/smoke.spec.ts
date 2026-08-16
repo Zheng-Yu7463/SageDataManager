@@ -759,6 +759,72 @@ test('品牌设置读取失败后冻结旧值并可局部重试', async ({ page 
   await expect(loadError).toBeHidden()
 })
 
+test('管理员列表刷新失败后冻结旧状态并可局部重试', async ({ page }) => {
+  let accountRequests = 0
+  const accounts = [
+    {
+      id: '45454545-4545-4545-4545-454545454545',
+      username: 'testadmin',
+      name: '测试管理员',
+      email: 'test-admin@sage.test',
+      role: 'admin',
+      upload_username: 'testadmin',
+      is_active: true,
+      is_instance_owner: true,
+      is_registered: true,
+    },
+    {
+      id: '56565656-5656-5656-5656-565656565656',
+      username: 'colleague',
+      name: '协作管理员',
+      email: 'colleague@sage.test',
+      role: 'admin',
+      upload_username: 'colleague',
+      is_active: true,
+      is_instance_owner: false,
+      is_registered: true,
+    },
+  ]
+  await mockInvitationBootstrap(page)
+  await mockEmptyDashboard(page)
+  await page.route('**/api/auth/access-tokens', async (route) => {
+    await route.fulfill({ contentType: 'application/json', body: '[]' })
+  })
+  await page.route('**/api/auth/admin-accounts', async (route) => {
+    accountRequests += 1
+    if (accountRequests === 2) {
+      await route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: '管理员服务暂时不可用' }),
+      })
+      return
+    }
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(accounts) })
+  })
+  await signInWithMockAccount(page)
+  await navigateTo(page, '系统设置')
+
+  await expect(page.locator('.accounts-table')).toContainText('colleague')
+  await page.getByRole('button', { name: '刷新' }).click()
+
+  const loadError = page.locator('.accounts-load-error')
+  const toggle = page.getByRole('button', { name: '停用管理员：协作管理员' })
+  const invitation = page.getByRole('button', { name: '生成密码恢复链接：协作管理员' })
+  await expect(loadError).toContainText('管理员服务暂时不可用')
+  await expect(page.getByRole('button', { name: '新增管理员' })).toBeDisabled()
+  await expect(toggle).toBeDisabled()
+  await expect(invitation).toBeDisabled()
+
+  await loadError.getByRole('button', { name: '重试' }).click()
+
+  await expect.poll(() => accountRequests).toBe(3)
+  await expect(loadError).toBeHidden()
+  await expect(page.getByRole('button', { name: '新增管理员' })).toBeEnabled()
+  await expect(toggle).toBeEnabled()
+  await expect(invitation).toBeEnabled()
+})
+
 test('设置读取挂起时可中止并重新加载', async ({ page }) => {
   let brandingRequests = 0
   let releaseHangingRequest!: () => void
