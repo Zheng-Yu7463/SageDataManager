@@ -693,6 +693,26 @@ test('页面导航同步浏览器标题与滚动位置', async ({ page }) => {
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0)
 })
 
+test('设置分区导航支持快速定位并适配窄屏', async ({ page }) => {
+  await mockEmptyDashboard(page)
+  await mockEmptySettingsCollections(page)
+  await signInWithMockAccount(page)
+  await page.goto('/settings')
+
+  const sectionNavigation = page.getByRole('navigation', { name: '设置分区' })
+  await expect(sectionNavigation.getByRole('link')).toHaveCount(4)
+  await sectionNavigation.getByRole('link', { name: '系统与更新' }).click()
+  await expect(page).toHaveURL(/#settings-system-update/)
+  await expect(page.locator('#settings-system-update')).toBeInViewport()
+  await expect.poll(() => page.locator('#settings-system-update').evaluate((element) => element.getBoundingClientRect().top)).toBeGreaterThanOrEqual(120)
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await sectionNavigation.getByRole('link', { name: 'AI 访问令牌' }).click()
+  await expect(page).toHaveURL(/#settings-agent-access/)
+  await expect(page.locator('#settings-agent-access')).toBeInViewport()
+  await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBe(390)
+})
+
 test('品牌设置保存后立即更新全站标识', async ({ page }) => {
   await page.route('**/api/settings/branding', async (route) => {
     if (route.request().method() !== 'PATCH') {
