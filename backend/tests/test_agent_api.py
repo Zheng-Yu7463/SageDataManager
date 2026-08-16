@@ -118,6 +118,22 @@ def test_agent_discovery_is_public_and_contains_no_secret() -> None:
     assert discovery_data["uploads"] == {
         "task_token_header": "X-Sage-Upload-Token",
         "checksum_header": "X-Sage-Content-SHA256",
+        "error_code_header": "X-Sage-Error-Code",
+        "retry_after_header": "Retry-After",
+        "error_codes": [
+            "invalid_checksum",
+            "invalid_content_length",
+            "upload_busy",
+            "upload_cancel_failed",
+            "upload_conflict",
+            "upload_credentials_invalid",
+            "upload_invalid",
+            "upload_not_ready",
+            "upload_status_unavailable",
+            "upload_target_invalid",
+            "upload_token_missing",
+            "upload_too_large",
+        ],
         "status_values": ["waiting", "ready", "completed", "cancelled"],
         "empty_files_allowed": False,
         "file_put_idempotency": {
@@ -525,6 +541,14 @@ def test_agent_can_upload_and_finalize_a_file(tmp_path: Path, monkeypatch) -> No
         assert task.status_code == 201
         task_data = task.json()
 
+        not_ready = client.post(
+            task_data["finalize_url"],
+            headers=bearer(plaintext),
+            json={"upload_token": task_data["upload_token"]},
+        )
+        assert not_ready.status_code == 409
+        assert not_ready.headers["x-sage-error-code"] == "upload_not_ready"
+
         content = b"%PDF-1.7\nagent fixture\n%%EOF"
         expected_checksum = hashlib.sha256(content).hexdigest()
         upload = client.put(
@@ -574,7 +598,9 @@ def test_agent_can_upload_and_finalize_a_file(tmp_path: Path, monkeypatch) -> No
             content=content,
         )
         assert conflicting_replay.status_code == 409
+        assert conflicting_replay.headers["x-sage-error-code"] == "upload_conflict"
         assert unverifiable_replay.status_code == 409
+        assert unverifiable_replay.headers["x-sage-error-code"] == "upload_conflict"
 
         finalized = client.post(
             task_data["finalize_url"],
@@ -656,7 +682,9 @@ def test_invalid_agent_upload_task_does_not_create_a_lock_file(tmp_path: Path, m
         )
 
         assert cancelled.status_code == 403
+        assert cancelled.headers["x-sage-error-code"] == "upload_credentials_invalid"
         assert finalized.status_code == 403
+        assert finalized.headers["x-sage-error-code"] == "upload_credentials_invalid"
         assert not (tmp_path / UPLOAD_LOCKS_DIRECTORY).exists()
     finally:
         app.dependency_overrides.clear()
@@ -688,6 +716,8 @@ def test_agent_upload_returns_conflict_while_the_task_is_busy(tmp_path: Path, mo
 
         assert busy.status_code == 409
         assert busy.json()["detail"] == "上传任务正在处理，请检查任务状态后重试。"
+        assert busy.headers["x-sage-error-code"] == "upload_busy"
+        assert busy.headers["retry-after"] == "1"
         assert not (tmp_path / ".uploads").exists()
 
         retried = client.put(upload_url, headers=upload_headers, content=b"content")
@@ -724,6 +754,7 @@ def test_agent_upload_rejects_mismatched_declared_checksum(tmp_path: Path, monke
 
         assert response.status_code == 409
         assert "SHA-256 校验失败" in response.json()["detail"]
+        assert response.headers["x-sage-error-code"] == "upload_invalid"
         assert not (tmp_path / ".uploads").exists()
     finally:
         app.dependency_overrides.clear()
@@ -792,6 +823,7 @@ def test_agent_upload_reports_an_unavailable_storage_root(tmp_path: Path, monkey
 
         assert response.status_code == 409
         assert "存储根不可用" in response.json()["detail"]
+        assert response.headers["x-sage-error-code"] == "upload_invalid"
         assert not missing_root.exists()
         assert not (tmp_path / ".uploads").exists()
     finally:
@@ -858,6 +890,18 @@ def test_agent_upload_rejects_files_over_the_configured_limit(tmp_path: Path, mo
             headers=bearer(plaintext),
             json={"asset_id": str(asset.id), "target_subdirectory": "original"},
         ).json()
+        invalid_length = client.put(
+            f"/api/agent/uploads/{task['upload_id']}/files/invalid-length.pdf",
+            headers={
+                **bearer(plaintext),
+                "X-Sage-Upload-Token": task["upload_token"],
+                "Content-Length": "-1",
+            },
+            content=b"",
+        )
+        assert invalid_length.status_code == 400
+        assert invalid_length.headers["x-sage-error-code"] == "invalid_content_length"
+
         response = client.put(
             f"/api/agent/uploads/{task['upload_id']}/files/oversized.pdf",
             headers={
@@ -867,6 +911,7 @@ def test_agent_upload_rejects_files_over_the_configured_limit(tmp_path: Path, mo
             content=b"12345",
         )
         assert response.status_code == 413
+        assert response.headers["x-sage-error-code"] == "upload_too_large"
         assert not (tmp_path / ".uploads").exists()
     finally:
         app.dependency_overrides.clear()
@@ -901,6 +946,7 @@ def test_agent_upload_cleans_partial_file_when_stream_exceeds_limit(
         )
 
         assert response.status_code == 413
+        assert response.headers["x-sage-error-code"] == "upload_too_large"
         assert not (tmp_path / ".uploads").exists()
     finally:
         app.dependency_overrides.clear()

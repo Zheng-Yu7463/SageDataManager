@@ -245,7 +245,21 @@ task, and content already indexed elsewhere. Ask the user how to resolve those c
 ## 9. Retry and error policy
 
 FastAPI errors normally use `{"detail":"message"}`. Preserve the status and sanitized detail in
-diagnostics.
+diagnostics. Upload endpoints also return a stable `X-Sage-Error-Code` header. Branch on that code,
+not localized `detail` text. `upload_busy` also includes `Retry-After`; wait at least that many
+seconds, inspect task status, and retry only when the operation table below permits it.
+
+| Upload error code | Required action |
+| --- | --- |
+| `upload_token_missing` | Supply the original task token in the required header. |
+| `upload_credentials_invalid` | Stop; the task, PAT, or task token is invalid, expired, or mismatched. |
+| `upload_target_invalid` | Re-check the asset and allowed archive directory; ask if intent is ambiguous. |
+| `invalid_content_length`, `invalid_checksum` | Correct the malformed request header before retrying. |
+| `upload_too_large` | Stop; split or otherwise change the payload only with user authorization. |
+| `upload_busy` | Honor `Retry-After`, inspect status, and make one safe retry. |
+| `upload_not_ready` | Inspect status and reconcile the accepted files with the local manifest. |
+| `upload_conflict` | Stop and resolve the path or duplicate-content conflict with the user. |
+| `upload_invalid`, `upload_status_unavailable`, `upload_cancel_failed` | Stop and diagnose the reported storage, path, checksum, or task-state failure. |
 
 | Status | Required action |
 | --- | --- |
@@ -253,7 +267,7 @@ diagnostics.
 | `401` | Stop; obtain valid PAT or required upload credentials. |
 | `403` | Stop; verify scope and task/PAT ownership. Do not broaden scope automatically. |
 | `404` | Re-read/search; the resource may be absent or archived. |
-| `409` | Inspect the detail and current state. Resolve revision, metadata, path, checksum, task-busy, or duplicate-content conflict before retrying. |
+| `409` | Inspect `X-Sage-Error-Code` when present, then use the detail and current state to resolve the conflict before retrying. |
 | `413` | Do not retry the same payload; the file exceeds the limit. |
 | `422` | Correct fields and types using OpenAPI before retrying. |
 | `429` | Honor `Retry-After`, otherwise use the bounded schedule below. |

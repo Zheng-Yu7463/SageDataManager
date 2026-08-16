@@ -42,7 +42,7 @@ async def prevent_api_caching(request: Request, call_next):
 app.include_router(router, prefix=settings.api_prefix)
 
 AGENT_PROTOCOL_VERSION = "1.0"
-AGENT_DOCUMENT_VERSION = "2026-08-17.5"
+AGENT_DOCUMENT_VERSION = "2026-08-17.6"
 AGENT_INSTRUCTIONS = (
     Path(__file__)
     .with_name("agent.md")
@@ -109,6 +109,22 @@ def agent_discovery() -> JSONResponse:
             "uploads": {
                 "task_token_header": "X-Sage-Upload-Token",
                 "checksum_header": "X-Sage-Content-SHA256",
+                "error_code_header": "X-Sage-Error-Code",
+                "retry_after_header": "Retry-After",
+                "error_codes": [
+                    "invalid_checksum",
+                    "invalid_content_length",
+                    "upload_busy",
+                    "upload_cancel_failed",
+                    "upload_conflict",
+                    "upload_credentials_invalid",
+                    "upload_invalid",
+                    "upload_not_ready",
+                    "upload_status_unavailable",
+                    "upload_target_invalid",
+                    "upload_token_missing",
+                    "upload_too_large",
+                ],
                 "status_values": ["waiting", "ready", "completed", "cancelled"],
                 "empty_files_allowed": False,
                 "file_put_idempotency": {

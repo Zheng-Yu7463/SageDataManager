@@ -52,6 +52,7 @@ from app.services.file_access import (
     open_file_delivery,
 )
 from app.services.transfers import (
+    UploadBusyError,
     UploadCommandError,
     UploadConflictError,
     UploadContentError,
@@ -74,6 +75,20 @@ from app.services.transfers import (
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 SessionDependency = Annotated[Session, Depends(get_session)]
+AGENT_ERROR_CODE_HEADER = "X-Sage-Error-Code"
+
+
+def _agent_error(
+    status_code: int,
+    code: str,
+    detail: str,
+    *,
+    retry_after: int | None = None,
+) -> HTTPException:
+    headers = {AGENT_ERROR_CODE_HEADER: code}
+    if retry_after is not None:
+        headers["Retry-After"] = str(retry_after)
+    return HTTPException(status_code=status_code, detail=detail, headers=headers)
 
 
 def validate_streaming_upload(
@@ -365,7 +380,7 @@ def agent_create_upload(
         return result
     except UploadCommandError as error:
         session.rollback()
-        raise HTTPException(status_code=409, detail=str(error)) from None
+        raise _agent_error(409, "upload_target_invalid", str(error)) from None
     except Exception:
         session.rollback()
         raise
@@ -383,7 +398,7 @@ def agent_get_upload_status(
     x_sage_upload_token: Annotated[str | None, Header()] = None,
 ) -> AgentUploadStatusResponse:
     if not x_sage_upload_token:
-        raise HTTPException(status_code=401, detail="缺少 X-Sage-Upload-Token。")
+        raise _agent_error(401, "upload_token_missing", "缺少 X-Sage-Upload-Token。")
     try:
         return agent_upload_status(
             session,
@@ -395,10 +410,10 @@ def agent_get_upload_status(
         )
     except UploadTicketError as error:
         session.rollback()
-        raise HTTPException(status_code=403, detail=str(error)) from None
+        raise _agent_error(403, "upload_credentials_invalid", str(error)) from None
     except UploadContentError as error:
         session.rollback()
-        raise HTTPException(status_code=409, detail=str(error)) from None
+        raise _agent_error(409, "upload_status_unavailable", str(error)) from None
 
 
 @router.delete(
@@ -416,7 +431,7 @@ def agent_cancel_upload(
     x_sage_upload_token: Annotated[str | None, Header()] = None,
 ) -> AgentUploadCancelResponse:
     if not x_sage_upload_token:
-        raise HTTPException(status_code=401, detail="缺少 X-Sage-Upload-Token。")
+        raise _agent_error(401, "upload_token_missing", "缺少 X-Sage-Upload-Token。")
     try:
         validate_agent_upload_ticket(
             session,
@@ -436,10 +451,13 @@ def agent_cancel_upload(
         return result
     except UploadTicketError as error:
         session.rollback()
-        raise HTTPException(status_code=403, detail=str(error)) from None
+        raise _agent_error(403, "upload_credentials_invalid", str(error)) from None
+    except UploadBusyError as error:
+        session.rollback()
+        raise _agent_error(409, "upload_busy", str(error), retry_after=1) from None
     except UploadContentError as error:
         session.rollback()
-        raise HTTPException(status_code=409, detail=str(error)) from None
+        raise _agent_error(409, "upload_cancel_failed", str(error)) from None
     except Exception:
         session.rollback()
         raise
@@ -471,20 +489,24 @@ async def agent_upload_file(
     x_sage_content_sha256: Annotated[str | None, Header()] = None,
 ) -> AgentUploadedFileResponse:
     if not x_sage_upload_token:
-        raise HTTPException(status_code=401, detail="缺少 X-Sage-Upload-Token。")
+        raise _agent_error(401, "upload_token_missing", "缺少 X-Sage-Upload-Token。")
     content_length = request.headers.get("content-length")
     try:
         declared_size = int(content_length) if content_length else None
     except ValueError:
-        raise HTTPException(status_code=400, detail="Content-Length 无效。") from None
+        raise _agent_error(
+            400, "invalid_content_length", "Content-Length 无效。"
+        ) from None
+    if declared_size is not None and declared_size < 0:
+        raise _agent_error(400, "invalid_content_length", "Content-Length 无效。")
     if declared_size is not None and declared_size > settings.agent_upload_max_bytes:
-        raise HTTPException(status_code=413, detail="上传文件超过服务器限制。")
+        raise _agent_error(413, "upload_too_large", "上传文件超过服务器限制。")
     expected_checksum = (x_sage_content_sha256 or "").strip().lower()
     if expected_checksum and (
         len(expected_checksum) != 64
         or any(character not in "0123456789abcdef" for character in expected_checksum)
     ):
-        raise HTTPException(status_code=400, detail="X-Sage-Content-SHA256 格式无效。")
+        raise _agent_error(400, "invalid_checksum", "X-Sage-Content-SHA256 格式无效。")
     try:
         await anyio.to_thread.run_sync(
             validate_streaming_upload,
@@ -542,13 +564,19 @@ async def agent_upload_file(
             return result
     except UploadTicketError as error:
         session.rollback()
-        raise HTTPException(status_code=403, detail=str(error)) from None
+        raise _agent_error(403, "upload_credentials_invalid", str(error)) from None
+    except UploadBusyError as error:
+        session.rollback()
+        raise _agent_error(409, "upload_busy", str(error), retry_after=1) from None
     except UploadTooLargeError as error:
         session.rollback()
-        raise HTTPException(status_code=413, detail=str(error)) from None
-    except (UploadContentError, UploadConflictError, ValueError) as error:
+        raise _agent_error(413, "upload_too_large", str(error)) from None
+    except UploadConflictError as error:
         session.rollback()
-        raise HTTPException(status_code=409, detail=str(error)) from None
+        raise _agent_error(409, "upload_conflict", str(error)) from None
+    except (UploadContentError, ValueError) as error:
+        session.rollback()
+        raise _agent_error(409, "upload_invalid", str(error)) from None
     except Exception:
         session.rollback()
         raise
@@ -587,10 +615,19 @@ def agent_finalize_upload(
         )
     except UploadTicketError as error:
         session.rollback()
-        raise HTTPException(status_code=403, detail=str(error)) from None
-    except (UploadNotReadyError, UploadContentError, UploadConflictError) as error:
+        raise _agent_error(403, "upload_credentials_invalid", str(error)) from None
+    except UploadBusyError as error:
         session.rollback()
-        raise HTTPException(status_code=409, detail=str(error)) from None
+        raise _agent_error(409, "upload_busy", str(error), retry_after=1) from None
+    except UploadNotReadyError as error:
+        session.rollback()
+        raise _agent_error(409, "upload_not_ready", str(error)) from None
+    except UploadConflictError as error:
+        session.rollback()
+        raise _agent_error(409, "upload_conflict", str(error)) from None
+    except UploadContentError as error:
+        session.rollback()
+        raise _agent_error(409, "upload_invalid", str(error)) from None
     except Exception:
         session.rollback()
         raise
