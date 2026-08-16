@@ -390,6 +390,19 @@ def test_check_rejects_a_dirty_worktree(tmp_path: Path) -> None:
     status = wait_for_manager_state(manager, {"failed"})
 
     assert "未提交" in str(status["error"])
+    assert "?? local-note.txt" in str(status["error"])
+    assert "git status --short" in str(status["error"])
+
+
+def test_dirty_worktree_message_bounds_the_reported_changes() -> None:
+    message = sage_updater.UpdateManager._dirty_worktree_message(
+        "\n".join(f"?? local-{index}.txt" for index in range(7))
+    )
+
+    assert "?? local-0.txt" in message
+    assert "?? local-4.txt" in message
+    assert "local-5.txt" not in message
+    assert "另有 2 项" in message
 
 
 def test_check_returns_immediately_while_fetch_runs_in_background(
@@ -557,10 +570,14 @@ def test_start_update_still_rejects_a_dirty_worktree(
     monkeypatch.setattr(
         manager,
         "_inspect_repository",
-        lambda fetch: {**manager.status(), "worktree_clean": False},
+        lambda fetch: {
+            **manager.status(),
+            "worktree_clean": False,
+            "worktree_changes": [" M compose.yaml"],
+        },
     )
 
-    with pytest.raises(sage_updater.UpdateAgentError, match="未提交"):
+    with pytest.raises(sage_updater.UpdateAgentError, match="M compose.yaml"):
         manager.start_update(target_commit)
 
     assert manager.status()["state"] == "failed"

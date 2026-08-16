@@ -495,7 +495,13 @@ class UpdateManager:
             self._set_progress("checking", "preflight", "正在校验已检查的 Commit…", reset=True)
             inspected = self._inspect_repository(fetch=False)
             if not inspected["worktree_clean"]:
-                raise UpdateAgentError("Git 工作区存在未提交内容，拒绝自动更新。")
+                worktree_changes = inspected.get("worktree_changes")
+                worktree_output = (
+                    "\n".join(str(item) for item in worktree_changes)
+                    if isinstance(worktree_changes, list)
+                    else ""
+                )
+                raise UpdateAgentError(self._dirty_worktree_message(worktree_output))
             if inspected["latest_commit"] != expected_commit:
                 raise UpdateConflictError("origin/main 已发生变化，请重新检查并确认更新。")
             if not inspected["update_available"]:
@@ -660,9 +666,10 @@ class UpdateManager:
 
         worktree_output = self._git(["status", "--porcelain"])
         worktree_clean = not worktree_output
+        worktree_changes = [line for line in worktree_output.splitlines() if line]
         if fetch:
             if not worktree_clean:
-                raise UpdateAgentError("Git 工作区存在未提交内容，拒绝自动更新。")
+                raise UpdateAgentError(self._dirty_worktree_message(worktree_output))
             self._run(
                 ["git", "fetch", "--quiet", self.config.remote, self.config.branch],
                 timeout=180,
@@ -717,6 +724,7 @@ class UpdateManager:
             "behind_count": behind_count,
             "ahead_count": ahead_count,
             "worktree_clean": worktree_clean,
+            "worktree_changes": worktree_changes[:20],
             "remote_url": remote_url,
             "commits": commits,
             "started_at": None,
@@ -729,6 +737,19 @@ class UpdateManager:
             "rollback_images": {},
             "logs": self.status().get("logs", []),
         }
+
+    @staticmethod
+    def _dirty_worktree_message(worktree_output: str) -> str:
+        changes = [line for line in worktree_output.splitlines() if line]
+        visible_changes = "；".join(changes[:5])
+        remaining = len(changes) - len(changes[:5])
+        if remaining > 0:
+            visible_changes += f"；另有 {remaining} 项"
+        detail = f"：{visible_changes}" if visible_changes else ""
+        return (
+            f"Git 工作区存在未提交内容，拒绝自动更新{detail}。"
+            "请在服务器仓库运行 git status --short，并提交、移走或还原这些内容后重试。"
+        )
 
     def _backup_database(
         self,
