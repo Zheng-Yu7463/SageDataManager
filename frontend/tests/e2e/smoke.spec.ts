@@ -1316,6 +1316,9 @@ test('管理员邀请链接生成保持单飞', async ({ page }) => {
   await expect(dialog).toBeVisible()
   await expect(dialog).toContainText('请将链接私下发送给 alpha')
   expect(invitationRequests).toEqual(['alpha'])
+
+  await dialog.getByRole('button', { name: '完成' }).click()
+  await expect(dialog).toBeHidden()
 })
 
 test('AI 访问令牌保护一次性明文并归档失效记录', async ({ page }) => {

@@ -488,6 +488,13 @@ function closeCreate() {
   accountInvitation.value = null
 }
 
+function acknowledgeAccountInvitation() {
+  accountInvitation.value = null
+  accountInvitationCopied.value = false
+  createError.value = ''
+  createOpen.value = false
+}
+
 function storeInvitation(invitation: AccountInvitationCreated) {
   accountInvitation.value = invitation
   accountInvitationCopied.value = false
@@ -1072,7 +1079,7 @@ onBeforeUnmount(() => {
           </div>
           <p class="account-invitation-expiry">有效至 {{ formatTokenDate(accountInvitation.expires_at) }}，成功使用一次后立即失效。</p>
           <p v-if="createError" class="settings-error" role="alert">{{ createError }}</p>
-          <footer><button class="button button--primary" type="button" @click="closeCreate">完成</button></footer>
+          <footer><button class="button button--primary" type="button" @click="acknowledgeAccountInvitation">完成</button></footer>
         </template>
         <template v-else>
           <p class="eyebrow">ADMIN INVITATION</p>
