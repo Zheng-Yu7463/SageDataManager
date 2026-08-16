@@ -92,6 +92,8 @@ sudo bash deploy/install-updater.sh
 
 网页提示 Git 工作区存在未提交内容时，会列出最多 5 条 Git 状态项。请在服务器仓库运行 `git status --short` 核对完整列表，再提交、移走或还原这些内容；更新代理不会自行删除服务器文件。
 
+更新状态只保存脱敏后的远端地址，不会回传 HTTP(S) 或 SSH URL 中的 userinfo、查询参数和 fragment。仍建议使用 Git credential helper 或 SSH agent，不要把 GitHub PAT 直接写进 `origin` URL。
+
 数据库不会在失败时自动回滚，避免对已运行的新迁移做未经确认的破坏性恢复。应用回滚成功时页面会明确显示旧应用已恢复；应用回滚不完整时必须在服务器人工处理，并根据已保留的 dump 决定是否恢复数据库。
 
 常用诊断命令：

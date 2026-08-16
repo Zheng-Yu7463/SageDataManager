@@ -21,7 +21,7 @@ from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from socketserver import ThreadingMixIn, UnixStreamServer
 from typing import BinaryIO, NoReturn
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 BUSY_STATES = {
     "checking",
@@ -93,6 +93,21 @@ def normalize_remote_url(value: str) -> str:
     if normalized.startswith("git@github.com:"):
         normalized = "https://github.com/" + normalized.removeprefix("git@github.com:")
     return normalized.lower()
+
+
+def redact_remote_url(value: str) -> str:
+    stripped = value.strip()
+    try:
+        parsed = urlsplit(stripped)
+        if parsed.scheme not in {"http", "https", "ssh"} or not parsed.hostname:
+            return stripped
+        hostname = parsed.hostname
+        if ":" in hostname:
+            hostname = f"[{hostname}]"
+        port = f":{parsed.port}" if parsed.port is not None else ""
+        return urlunsplit((parsed.scheme, f"{hostname}{port}", parsed.path, "", ""))
+    except ValueError:
+        return "<invalid remote URL>"
 
 
 def resolve_container_commands(
@@ -725,7 +740,7 @@ class UpdateManager:
             "ahead_count": ahead_count,
             "worktree_clean": worktree_clean,
             "worktree_changes": worktree_changes[:20],
-            "remote_url": remote_url,
+            "remote_url": redact_remote_url(remote_url),
             "commits": commits,
             "started_at": None,
             "completed_at": None,

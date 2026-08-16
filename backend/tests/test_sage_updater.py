@@ -310,6 +310,30 @@ def test_remote_url_normalization_accepts_https_and_ssh_forms() -> None:
     ) == sage_updater.normalize_remote_url("https://github.com/Zheng-Yu7463/SageDataManager/")
 
 
+@pytest.mark.parametrize(
+    ("remote_url", "expected"),
+    [
+        (
+            "https://deploy-user:secret-token@github.com/Zheng-Yu7463/SageDataManager.git",
+            "https://github.com/Zheng-Yu7463/SageDataManager.git",
+        ),
+        (
+            "ssh://git@github.com:22/Zheng-Yu7463/SageDataManager.git?token=secret#fragment",
+            "ssh://github.com:22/Zheng-Yu7463/SageDataManager.git",
+        ),
+        (
+            "git@github.com:Zheng-Yu7463/SageDataManager.git",
+            "git@github.com:Zheng-Yu7463/SageDataManager.git",
+        ),
+    ],
+)
+def test_remote_url_redaction_removes_http_credentials(
+    remote_url: str,
+    expected: str,
+) -> None:
+    assert sage_updater.redact_remote_url(remote_url) == expected
+
+
 def test_postgres_environment_value_uses_running_container(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
