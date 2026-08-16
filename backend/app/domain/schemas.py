@@ -475,11 +475,14 @@ class AgentUploadFileStatus(BaseModel):
 
 class AgentUploadStatusResponse(BaseModel):
     upload_id: UUID
+    asset_id: UUID
+    archive_relative_path: str
     status: Literal["waiting", "ready", "completed", "cancelled"]
     uploaded_file_count: int
     total_size: int
     expires_at: datetime
     files: list[AgentUploadFileStatus] = Field(default_factory=list)
+    result: UploadFinalizeResponse | None = None
 
 
 class AgentUploadCancelResponse(BaseModel):

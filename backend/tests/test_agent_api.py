@@ -594,6 +594,11 @@ def test_agent_can_upload_and_finalize_a_file(tmp_path: Path, monkeypatch) -> No
         rejected_cancel = client.delete(task_data["cancel_url"], headers=task_headers)
         assert completed_status.status_code == 200
         assert completed_status.json()["status"] == "completed"
+        assert completed_status.json()["asset_id"] == task_data["asset_id"]
+        assert (
+            completed_status.json()["archive_relative_path"] == (task_data["archive_relative_path"])
+        )
+        assert completed_status.json()["result"] == finalized.json()
         assert rejected_cancel.status_code == 409
         replayed = client.post(
             task_data["finalize_url"],
@@ -1070,7 +1075,10 @@ def test_agent_can_recover_and_cancel_its_upload_task(tmp_path: Path, monkeypatc
         waiting = client.get(task["status_url"], headers=task_headers)
         assert waiting.status_code == 200
         assert waiting.json()["status"] == "waiting"
+        assert waiting.json()["asset_id"] == task["asset_id"]
+        assert waiting.json()["archive_relative_path"] == task["archive_relative_path"]
         assert waiting.json()["files"] == []
+        assert waiting.json()["result"] is None
 
         uploaded = client.put(
             task["file_upload_url_template"].replace("{relative_path}", "notes.txt"),
@@ -1081,6 +1089,8 @@ def test_agent_can_recover_and_cancel_its_upload_task(tmp_path: Path, monkeypatc
         ready = client.get(task["status_url"], headers=task_headers)
         assert ready.status_code == 200
         assert ready.json()["status"] == "ready"
+        assert ready.json()["asset_id"] == task["asset_id"]
+        assert ready.json()["archive_relative_path"] == task["archive_relative_path"]
         assert ready.json()["uploaded_file_count"] == 1
         assert ready.json()["total_size"] == len(b"temporary notes")
         assert ready.json()["files"] == [
@@ -1089,6 +1099,7 @@ def test_agent_can_recover_and_cancel_its_upload_task(tmp_path: Path, monkeypatc
                 "file_size": len(b"temporary notes"),
             }
         ]
+        assert ready.json()["result"] is None
 
         wrong_pat = client.get(
             task["status_url"],
@@ -1112,7 +1123,12 @@ def test_agent_can_recover_and_cancel_its_upload_task(tmp_path: Path, monkeypatc
             content=b"late",
         )
         assert status_after_cancel.json()["status"] == "cancelled"
+        assert status_after_cancel.json()["asset_id"] == task["asset_id"]
+        assert (
+            status_after_cancel.json()["archive_relative_path"] == (task["archive_relative_path"])
+        )
         assert status_after_cancel.json()["files"] == []
+        assert status_after_cancel.json()["result"] is None
         assert replayed_cancel.status_code == 200
         assert rejected_upload.status_code == 403
         upload_task = session.get(UploadTask, UUID(task["upload_id"]))

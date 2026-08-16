@@ -638,18 +638,26 @@ def agent_upload_status(
     access_token: PersonalAccessToken,
 ) -> AgentUploadStatusResponse:
     task = _agent_upload_task(session, upload_id, upload_token, actor, access_token)
+    archive_relative_path = (
+        PurePosixPath(task.asset.type.value) / task.asset.slug / task.target_subdirectory
+    ).as_posix()
     if task.status == "completed" and task.result:
         result = UploadFinalizeResponse.model_validate(task.result)
         return AgentUploadStatusResponse(
             upload_id=task.id,
+            asset_id=task.asset_id,
+            archive_relative_path=archive_relative_path,
             status="completed",
             uploaded_file_count=result.imported_file_count,
             total_size=result.total_size,
             expires_at=task.expires_at,
+            result=result,
         )
     if task.status == "cancelled":
         return AgentUploadStatusResponse(
             upload_id=task.id,
+            asset_id=task.asset_id,
+            archive_relative_path=archive_relative_path,
             status="cancelled",
             uploaded_file_count=0,
             total_size=0,
@@ -669,6 +677,8 @@ def agent_upload_status(
     if not staging_directory.exists():
         return AgentUploadStatusResponse(
             upload_id=task.id,
+            asset_id=task.asset_id,
+            archive_relative_path=archive_relative_path,
             status="waiting",
             uploaded_file_count=0,
             total_size=0,
@@ -691,6 +701,8 @@ def agent_upload_status(
         raise UploadContentError("上传文件正在变化，请稍后重试。") from error
     return AgentUploadStatusResponse(
         upload_id=task.id,
+        asset_id=task.asset_id,
+        archive_relative_path=archive_relative_path,
         status="ready" if uploaded_files else "waiting",
         uploaded_file_count=len(uploaded_files),
         total_size=sum(file.file_size for file in uploaded_files),

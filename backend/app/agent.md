@@ -210,8 +210,11 @@ changes after hashing, stop and rebuild the manifest.
    document for this value instead of assuming the default. A `413` rejects the whole file and
    leaves no partial staged file.
 7. Recover after an interruption with `GET` on `status_url`, sending the PAT and
-   `X-Sage-Upload-Token`. States are `waiting`, `ready`, `completed`, and `cancelled`. For an
-   active task, `files` lists every atomically accepted `relative_path` and `file_size`.
+   `X-Sage-Upload-Token`. Every status response repeats `asset_id` and `archive_relative_path` so
+   the target can be verified against the local manifest. States are `waiting`, `ready`,
+   `completed`, and `cancelled`. For an active task, `files` lists every atomically accepted
+   `relative_path` and `file_size`. For a completed task, `result` contains the same verified
+   finalization result as `POST finalize`; for all other states it is `null`.
 8. If a PUT response is lost after sending `X-Sage-Content-SHA256`, retry that exact PUT once. The
    server returns the original success response without overwriting only when the staged file matches
    the same path, declared length, and SHA-256. A `409` means the retry was not identical: inspect
