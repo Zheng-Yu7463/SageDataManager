@@ -772,15 +772,11 @@ def _cancel_agent_upload(
         session.flush()
         session.commit()
 
-    if staging_directory.exists():
-        try:
-            shutil.rmtree(staging_directory)
-        except OSError as error:
-            raise UploadContentError("上传任务已取消，但临时文件清理失败，请重试。") from error
-    if staging_root.exists():
-        with suppress(OSError):
-            if not any(staging_root.iterdir()):
-                staging_root.rmdir()
+    _remove_upload_staging(
+        storage_root,
+        upload_id,
+        cleanup_error="上传任务已取消，但临时文件清理失败，请重试。",
+    )
     return AgentUploadCancelResponse(upload_id=task.id, status="cancelled")
 
 

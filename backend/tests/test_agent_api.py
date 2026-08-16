@@ -1156,10 +1156,20 @@ def test_agent_can_recover_and_cancel_its_upload_task(tmp_path: Path, monkeypatc
         )
         assert wrong_pat.status_code == 403
 
+        synced_directories: list[Path] = []
+        original_fsync_directory = transfer_service._fsync_directory
+
+        def record_fsync_directory(directory: Path) -> None:
+            synced_directories.append(directory)
+            original_fsync_directory(directory)
+
+        monkeypatch.setattr(transfer_service, "_fsync_directory", record_fsync_directory)
         cancelled = client.delete(task["cancel_url"], headers=task_headers)
         assert cancelled.status_code == 200
         assert cancelled.json()["status"] == "cancelled"
         assert not (tmp_path / ".uploads").exists()
+        assert tmp_path / ".uploads" in synced_directories
+        assert tmp_path in synced_directories
 
         status_after_cancel = client.get(task["status_url"], headers=task_headers)
         replayed_cancel = client.delete(task["cancel_url"], headers=task_headers)
