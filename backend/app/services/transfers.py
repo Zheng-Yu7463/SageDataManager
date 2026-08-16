@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from mimetypes import guess_type
 from pathlib import Path, PurePosixPath
 from shlex import quote
+from typing import BinaryIO
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
@@ -474,13 +475,51 @@ def recover_agent_file_upload(
 
 
 @contextmanager
-def temporary_upload_path(parts_directory: Path) -> Iterator[Path]:
-    parts_directory.mkdir(parents=True, exist_ok=True)
-    temporary_file = parts_directory / str(uuid4())
+def temporary_upload_file(
+    parts_directory: Path,
+) -> Iterator[tuple[Path, BinaryIO]]:
+    parent_descriptor: int | None = None
+    parts_descriptor: int | None = None
+    temporary_descriptor: int | None = None
+    temporary_name = str(uuid4())
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
     try:
-        yield temporary_file
+        parts_directory.parent.mkdir(parents=True, exist_ok=True)
+        parent_descriptor = os.open(parts_directory.parent, directory_flags)
+        with suppress(FileExistsError):
+            os.mkdir(parts_directory.name, mode=0o700, dir_fd=parent_descriptor)
+        parts_descriptor = os.open(
+            parts_directory.name,
+            directory_flags,
+            dir_fd=parent_descriptor,
+        )
+        os.fchmod(parts_descriptor, 0o700)
+        temporary_descriptor = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+            dir_fd=parts_descriptor,
+        )
+        output = os.fdopen(temporary_descriptor, "wb", buffering=0)
+        temporary_descriptor = None
+    except OSError as error:
+        if temporary_descriptor is not None:
+            os.close(temporary_descriptor)
+        if parts_descriptor is not None:
+            os.close(parts_descriptor)
+        if parent_descriptor is not None:
+            os.close(parent_descriptor)
+        raise UploadContentError("上传分片临时区不可用，无法接收文件。") from error
+
+    temporary_file = parts_directory / temporary_name
+    try:
+        yield temporary_file, output
     finally:
-        temporary_file.unlink(missing_ok=True)
+        output.close()
+        with suppress(FileNotFoundError):
+            os.unlink(temporary_name, dir_fd=parts_descriptor)
+        os.close(parts_descriptor)
+        os.close(parent_descriptor)
         for directory in (parts_directory, parts_directory.parent):
             try:
                 directory.rmdir()

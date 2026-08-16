@@ -34,9 +34,23 @@ from app.services.transfers import (
     finalize_upload,
     generate_upload_command,
     staged_upload_destination,
+    temporary_upload_file,
     upload_status,
     upload_task_guard,
 )
+
+
+def test_agent_upload_parts_are_private_and_cleaned(tmp_path: Path) -> None:
+    parts_directory = tmp_path / ".uploads" / ".parts"
+
+    with temporary_upload_file(parts_directory) as (temporary_file, output):
+        output.write(b"private partial content")
+        assert stat.S_IMODE(parts_directory.stat().st_mode) == 0o700
+        assert stat.S_IMODE(temporary_file.stat().st_mode) == 0o600
+
+    assert not temporary_file.exists()
+    assert not parts_directory.exists()
+    assert not parts_directory.parent.exists()
 
 
 def test_agent_file_publish_fsyncs_created_directories_and_destination(

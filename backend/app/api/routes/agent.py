@@ -72,7 +72,7 @@ from app.services.transfers import (
     finalize_upload,
     recover_agent_file_upload,
     staged_upload_destination,
-    temporary_upload_path,
+    temporary_upload_file,
     upload_task_guard,
     validate_agent_upload,
     validate_agent_upload_ticket,
@@ -542,17 +542,16 @@ async def agent_upload_file(
             destination, parts_directory = staged_upload_destination(
                 settings.storage_root, upload_id, relative_path
             )
-            with temporary_upload_path(parts_directory) as temporary_file:
+            with temporary_upload_file(parts_directory) as (temporary_file, output):
                 received = 0
                 digest = hashlib.sha256()
-                with temporary_file.open("xb", buffering=0) as output:
-                    async for chunk in request.stream():
-                        received += len(chunk)
-                        if received > settings.agent_upload_max_bytes:
-                            raise UploadTooLargeError("上传文件超过服务器限制。")
-                        digest.update(chunk)
-                        await anyio.to_thread.run_sync(output.write, chunk)
-                    await anyio.to_thread.run_sync(os.fsync, output.fileno())
+                async for chunk in request.stream():
+                    received += len(chunk)
+                    if received > settings.agent_upload_max_bytes:
+                        raise UploadTooLargeError("上传文件超过服务器限制。")
+                    digest.update(chunk)
+                    await anyio.to_thread.run_sync(output.write, chunk)
+                await anyio.to_thread.run_sync(os.fsync, output.fileno())
                 if received == 0:
                     raise UploadContentError("不能上传空文件。")
                 checksum_sha256 = digest.hexdigest()

@@ -967,6 +967,46 @@ def test_agent_upload_rejects_path_escape_and_empty_files(tmp_path: Path, monkey
         session.close()
 
 
+def test_agent_upload_rejects_symlinked_parts_directory(
+    tmp_path: Path, monkeypatch
+) -> None:
+    session = make_session()
+    user, asset = create_user_and_asset(session)
+    monkeypatch.setattr(settings, "auth_session_secret", "agent-test-secret")
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    plaintext = create_token(session, user, ["files:upload"])
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        client = TestClient(app)
+        task = client.post(
+            "/api/agent/uploads",
+            headers=bearer(plaintext),
+            json={"asset_id": str(asset.id), "target_subdirectory": "original"},
+        ).json()
+        external = tmp_path / "outside-parts"
+        external.mkdir()
+        staging_root = tmp_path / ".uploads"
+        staging_root.mkdir()
+        (staging_root / ".parts").symlink_to(external, target_is_directory=True)
+
+        response = client.put(
+            f"/api/agent/uploads/{task['upload_id']}/files/paper.pdf",
+            headers={
+                **bearer(plaintext),
+                "X-Sage-Upload-Token": task["upload_token"],
+            },
+            content=b"must stay inside storage",
+        )
+
+        assert response.status_code == 409
+        assert response.headers["x-sage-error-code"] == "upload_invalid"
+        assert "分片临时区不可用" in response.json()["detail"]
+        assert list(external.iterdir()) == []
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
 def test_agent_upload_rejects_files_over_the_configured_limit(tmp_path: Path, monkeypatch) -> None:
     session = make_session()
     user, asset = create_user_and_asset(session)
