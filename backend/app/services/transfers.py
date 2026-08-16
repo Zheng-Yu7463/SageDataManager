@@ -34,6 +34,7 @@ from app.domain.schemas import (
 from app.services.activities import record_activity
 from app.services.security import create_upload_token, read_upload_token
 from app.services.storage import (
+    MAX_ARCHIVE_PATH_COMPONENT_LENGTH,
     MAX_ARCHIVE_RELATIVE_PATH_LENGTH,
     UPLOAD_LOCKS_DIRECTORY,
     UPLOAD_PARTS_DIRECTORY,
@@ -184,7 +185,7 @@ def _canonical_relative_upload_path(value: str, *, maximum_length: int) -> PureP
         len(value) > maximum_length
         or "\x00" in value
         or any(part in {"", ".", ".."} for part in path_parts)
-        or any(len(part) > 255 for part in path_parts)
+        or any(len(part) > MAX_ARCHIVE_PATH_COMPONENT_LENGTH for part in path_parts)
     ):
         return None
     return PurePosixPath(*path_parts)

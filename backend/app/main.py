@@ -7,6 +7,10 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from app.api.router import router
 from app.core.config import settings
 from app.domain.enums import AssetType
+from app.services.storage import (
+    MAX_ARCHIVE_PATH_COMPONENT_LENGTH,
+    MAX_ARCHIVE_RELATIVE_PATH_LENGTH,
+)
 from app.services.upload_directories import UPLOAD_DIRECTORY_OPTIONS
 
 app = FastAPI(
@@ -38,7 +42,7 @@ async def prevent_api_caching(request: Request, call_next):
 app.include_router(router, prefix=settings.api_prefix)
 
 AGENT_PROTOCOL_VERSION = "1.0"
-AGENT_DOCUMENT_VERSION = "2026-08-17.3"
+AGENT_DOCUMENT_VERSION = "2026-08-17.4"
 AGENT_INSTRUCTIONS = (
     Path(__file__)
     .with_name("agent.md")
@@ -98,7 +102,21 @@ def agent_discovery() -> JSONResponse:
                 "default_page_size": 10,
                 "maximum_page_size": 100,
                 "maximum_file_size_bytes": settings.agent_upload_max_bytes,
+                "maximum_upload_path_characters": MAX_ARCHIVE_RELATIVE_PATH_LENGTH,
+                "maximum_upload_path_component_characters": (MAX_ARCHIVE_PATH_COMPONENT_LENGTH),
                 "upload_path_encoding": "percent-encoded UTF-8 segments",
+            },
+            "uploads": {
+                "task_token_header": "X-Sage-Upload-Token",
+                "checksum_header": "X-Sage-Content-SHA256",
+                "status_values": ["waiting", "ready", "completed", "cancelled"],
+                "empty_files_allowed": False,
+                "file_put_idempotency": {
+                    "requires_checksum": True,
+                    "match_fields": ["relative_path", "checksum_sha256"],
+                    "content_length_must_match_when_present": True,
+                    "overwrites_existing_file": False,
+                },
             },
             "asset_types": [asset_type.value for asset_type in AssetType],
             "upload_directories": {

@@ -15,6 +15,9 @@ it differs from an example in this guide.
 3. Call `GET /api/agent/me` and verify the human account, credential name, granted scopes, and
    expiration before doing any work.
 4. Use `/api/agent` as the API base.
+5. Read the discovery document's `uploads`, `limits`, and `upload_directories` fields when
+   planning file work. They are the machine-readable contract for headers, retry conditions, and
+   path constraints; use this guide for the human safety policy.
 
 Send the personal access token (PAT) on every Agent request:
 

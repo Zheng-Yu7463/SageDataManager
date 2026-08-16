@@ -103,6 +103,7 @@ def test_agent_discovery_is_public_and_contains_no_secret() -> None:
     assert "Authority and confirmation boundaries" in instructions.text
     assert "Search and duplicate prevention" in instructions.text
     assert "End-to-end examples" in instructions.text
+    assert "machine-readable contract" in instructions.text
     assert "Never blindly overwrite concurrent work" in instructions.text
     assert "SAGE_TOKEN=" not in instructions.text
     discovery_data = discovery.json()
@@ -112,6 +113,20 @@ def test_agent_discovery_is_public_and_contains_no_secret() -> None:
     assert "file_read" in discovery_data["capabilities"]
     assert discovery_data["scopes"]["files:read"] == ["GET /files/{file_id}/content"]
     assert discovery_data["limits"]["maximum_file_size_bytes"] == 500_000_000
+    assert discovery_data["limits"]["maximum_upload_path_characters"] == 1000
+    assert discovery_data["limits"]["maximum_upload_path_component_characters"] == 255
+    assert discovery_data["uploads"] == {
+        "task_token_header": "X-Sage-Upload-Token",
+        "checksum_header": "X-Sage-Content-SHA256",
+        "status_values": ["waiting", "ready", "completed", "cancelled"],
+        "empty_files_allowed": False,
+        "file_put_idempotency": {
+            "requires_checksum": True,
+            "match_fields": ["relative_path", "checksum_sha256"],
+            "content_length_must_match_when_present": True,
+            "overwrites_existing_file": False,
+        },
+    }
     assert str(discovery_data["limits"]["maximum_file_size_bytes"]) in instructions.text
     assert discovery_data["asset_types"] == [asset_type.value for asset_type in AssetType]
     for asset_type, directories in discovery_data["upload_directories"].items():
