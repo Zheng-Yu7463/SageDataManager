@@ -53,7 +53,7 @@ docker compose up --build -d
 - API 文档：http://localhost:8080/api/docs
 - 健康检查：http://localhost:8080/api/health
 
-`.env` 中的 `SAGE_STORAGE_ROOT` 应设置为宿主机上的实际归档目录。首次体验可保留默认值，脚本会生成 `sample-archive/` 模拟文件。Compose 会将其挂载到后端的 `/data/sage-archive`；后端需要写权限才能完成隔离上传和原子入库。
+`.env` 中的 `SAGE_STORAGE_ROOT` 是宿主机路径，应设置为实际归档目录。首次体验可保留 `.env.example` 的 `./sample-archive`，脚本会在仓库中生成该模拟目录。Compose 会将宿主机目录挂载到后端的 `/data/sage-archive`；后端需要写权限才能完成隔离上传和原子入库。
 
 `POSTGRES_PASSWORD` 可以使用包含 `@`、`:`、`/`、`#`、`%` 等字符的随机值。Compose 会把数据库连接字段分别传给后端，再由 SQLAlchemy 安全构造连接 URL；不要手工对 `.env` 中的密码做 URL 编码。`SAGE_DATABASE_URL` 仅用于不经过 Compose、直接运行后端或 Alembic 的开发场景。
 
