@@ -373,16 +373,21 @@ export async function uploadInstanceLogo(file: File, expectedRevision: string) {
     throw new ApiError('Logo 文件必须小于 1 MB。', 413)
   }
   const sessionToken = getSessionToken()
-  const response = await fetch('/api/settings/branding/logo', {
-    method: 'PUT',
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': file.type,
-      'X-Sage-Branding-Revision': expectedRevision,
-      ...(sessionToken ? { 'X-Sage-Session': sessionToken } : {}),
-    },
-    body: file,
-  })
+  let response: Response
+  try {
+    response = await fetch('/api/settings/branding/logo', {
+      method: 'PUT',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': file.type,
+        'X-Sage-Branding-Revision': expectedRevision,
+        ...(sessionToken ? { 'X-Sage-Session': sessionToken } : {}),
+      },
+      body: file,
+    })
+  } catch {
+    throw new ApiError('无法连接 DataManager 服务。', 0)
+  }
   if (!response.ok) {
     await raiseApiError(response, Boolean(sessionToken))
   }

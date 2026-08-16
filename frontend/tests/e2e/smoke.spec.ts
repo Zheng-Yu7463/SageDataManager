@@ -946,12 +946,16 @@ test('品牌写操作共享同一个事务状态', async ({ page }) => {
   await expect(page.getByLabel('产品名称')).toBeEnabled()
 })
 
-test('Logo 选择后先预览，明确应用时才上传', async ({ page }) => {
+test('Logo 上传失败保留预览草稿并可重试', async ({ page }) => {
   const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
   let logoWrites = 0
   await page.route('**/api/settings/branding/logo', async (route) => {
     logoWrites += 1
     expect(route.request().headers()['x-sage-branding-revision']).toBe('revision-1')
+    if (logoWrites === 1) {
+      await route.abort('failed')
+      return
+    }
     await route.fulfill({
       contentType: 'application/json',
       body: JSON.stringify({
@@ -996,6 +1000,12 @@ test('Logo 选择后先预览，明确应用时才上传', async ({ page }) => {
   await page.getByRole('button', { name: '应用 Logo' }).click()
 
   await expect.poll(() => logoWrites).toBe(1)
+  await expect(page.getByRole('alert')).toContainText('无法连接 DataManager 服务。')
+  await expect(page.locator('.brand-preview img')).toHaveAttribute('src', /^blob:/)
+  await expect(page.getByRole('button', { name: '应用 Logo' })).toBeEnabled()
+
+  await page.getByRole('button', { name: '应用 Logo' }).click()
+  await expect.poll(() => logoWrites).toBe(2)
   await expect(page.getByText('Logo 已应用')).toBeVisible()
 })
 
