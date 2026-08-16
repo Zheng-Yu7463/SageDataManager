@@ -419,8 +419,10 @@ UPLOAD_ID="$(printf '%s' "$TASK_JSON" | jq -r '.upload_id')"
 UPLOAD_TOKEN="$(printf '%s' "$TASK_JSON" | jq -r '.upload_token')"
 ARCHIVE_PATH="$(printf '%s' "$TASK_JSON" | jq -r '.archive_relative_path')"
 printf '%s' "$TASK_JSON" | jq --exit-status \
+  --arg asset_id "$ASSET_ID" \
   --argjson file_size "$FILE_SIZE" \
-  '.expected_file_count == 1 and .expected_total_size == $file_size and
+  '.asset_id == $asset_id and
+   .expected_file_count == 1 and .expected_total_size == $file_size and
    (.upload_id | type == "string") and (.upload_token | type == "string")' >/dev/null
 
 UPLOAD_JSON="$(curl --fail-with-body --silent --show-error \
@@ -440,8 +442,11 @@ STATUS_JSON="$(curl --fail-with-body --silent --show-error \
   -H "Authorization: Bearer $SAGE_TOKEN" \
   -H "X-Sage-Upload-Token: $UPLOAD_TOKEN")"
 printf '%s' "$STATUS_JSON" | jq --exit-status \
+  --arg asset_id "$ASSET_ID" --arg archive_path "$ARCHIVE_PATH" \
   --arg checksum "$CHECKSUM" --argjson file_size "$FILE_SIZE" \
-  '.status == "ready" and .uploaded_file_count == 1 and .total_size == $file_size and
+  '.asset_id == $asset_id and .archive_relative_path == $archive_path and
+   .expected_file_count == 1 and .expected_total_size == $file_size and
+   .status == "ready" and .uploaded_file_count == 1 and .total_size == $file_size and
    .files == [{relative_path:"overview.pdf",file_size:$file_size,checksum_sha256:$checksum}]' \
   >/dev/null
 
