@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response,
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from starlette.datastructures import MutableHeaders
+from starlette.responses import MalformedRangeHeader, RangeNotSatisfiable
 from starlette.types import Send
 
 from app.api.dependencies import AdminDependency
@@ -212,6 +213,7 @@ def content(
     request: Request,
 ) -> Response:
     delivery = None
+    response: OpenFileResponse | None = None
     claims = read_file_access_token(ticket)
     if not claims:
         raise HTTPException(status_code=403, detail="文件访问链接无效或已过期。")
@@ -230,31 +232,53 @@ def content(
             actor=actor,
             audit_access=audit_access,
         )
+        response = OpenFileResponse(
+            delivery.take_descriptor(),
+            file_name=delivery.file_name,
+            stat_result=delivery.stat,
+            media_type=delivery.media_type,
+            content_disposition_type=delivery.content_disposition,
+            headers={
+                "Cache-Control": "private, no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+        response.validate_range_request(request)
         session.commit()
+    except MalformedRangeHeader as error:
+        if response:
+            response.close()
+        session.rollback()
+        raise HTTPException(status_code=400, detail=str(error)) from None
+    except RangeNotSatisfiable as error:
+        if response:
+            response.close()
+        session.rollback()
+        raise HTTPException(
+            status_code=416,
+            detail="请求的字节范围超出文件长度。",
+            headers={"Content-Range": f"bytes */{error.max_size}"},
+        ) from None
     except FileAccessGrantInvalidError:
         if delivery:
             delivery.close()
+        if response:
+            response.close()
         session.rollback()
         raise HTTPException(status_code=403, detail="文件访问链接无效或已过期。") from None
     except (FileNotFoundError, FilePreviewUnavailableError, FileUnavailableError) as error:
         if delivery:
             delivery.close()
+        if response:
+            response.close()
         session.rollback()
         _raise_access_error(error)
     except Exception:
         if delivery:
             delivery.close()
+        if response:
+            response.close()
         session.rollback()
         raise
 
-    return OpenFileResponse(
-        delivery.take_descriptor(),
-        file_name=delivery.file_name,
-        stat_result=delivery.stat,
-        media_type=delivery.media_type,
-        content_disposition_type=delivery.content_disposition,
-        headers={
-            "Cache-Control": "private, no-store",
-            "X-Content-Type-Options": "nosniff",
-        },
-    )
+    return response

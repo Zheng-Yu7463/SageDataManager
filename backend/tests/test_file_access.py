@@ -248,6 +248,14 @@ def test_file_content_endpoint_streams_original_pdf_bytes(
         untouched_grant = session.scalar(select(FileAccessGrant))
         assert untouched_grant is not None
         assert untouched_grant.first_accessed_at is None
+        rejected_first_access = client.get(
+            ticket_response.json()["content_url"],
+            headers={"Range": f"bytes={len(pdf_content)}-"},
+        )
+        assert rejected_first_access.status_code == 416
+        assert session.scalars(select(Activity)).all() == []
+        session.refresh(untouched_grant)
+        assert untouched_grant.first_accessed_at is None
         content_response = client.get(ticket_response.json()["content_url"])
 
         assert content_response.status_code == 200
