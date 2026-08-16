@@ -4,6 +4,7 @@ import shutil
 import stat
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
@@ -12,6 +13,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
+import app.services.transfers as transfer_service
 from app.core.config import settings
 from app.db.base import Base
 from app.db.session import get_session
@@ -38,6 +40,52 @@ from app.services.transfers import (
     upload_status,
     upload_task_guard,
 )
+
+
+def test_upload_task_guard_closes_every_descriptor_without_overriding_body_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    close_calls: list[int] = []
+    original_close = os.close
+
+    def close_then_fail(descriptor: int) -> None:
+        close_calls.append(descriptor)
+        original_close(descriptor)
+        raise OSError("simulated close failure")
+
+    monkeypatch.setattr(transfer_service.os, "close", close_then_fail)
+
+    with (
+        pytest.raises(RuntimeError, match="simulated body failure"),
+        upload_task_guard(tmp_path, uuid4()),
+    ):
+        raise RuntimeError("simulated body failure")
+
+    assert len(close_calls) == 3
+
+
+def test_staged_file_cleanup_continues_after_a_close_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    descriptors = [descriptor for _ in range(2) for descriptor in os.pipe()]
+    sources = [
+        SimpleNamespace(descriptor=descriptors[index], parent_descriptor=descriptors[index + 1])
+        for index in range(0, len(descriptors), 2)
+    ]
+    close_calls: list[int] = []
+    original_close = os.close
+
+    def close_then_fail(descriptor: int) -> None:
+        close_calls.append(descriptor)
+        original_close(descriptor)
+        if len(close_calls) == 1:
+            raise OSError("simulated close failure")
+
+    monkeypatch.setattr(transfer_service.os, "close", close_then_fail)
+
+    transfer_service._close_staged_files(sources)
+
+    assert close_calls == descriptors
 
 
 def test_agent_upload_parts_are_private_and_cleaned(tmp_path: Path) -> None:

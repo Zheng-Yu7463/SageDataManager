@@ -146,7 +146,8 @@ def upload_task_guard(storage_root: Path, upload_id: UUID) -> Iterator[None]:
             root_descriptor,
         ):
             if descriptor is not None:
-                os.close(descriptor)
+                with suppress(OSError):
+                    os.close(descriptor)
 
 
 UPLOAD_COMPLETION_MARKER = ".sage-upload-complete"
@@ -995,8 +996,10 @@ def _open_staged_files(staging_directory: Path, staged_files: list[Path]) -> lis
                         os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                         dir_fd=parent_descriptor,
                     )
-                    os.close(parent_descriptor)
+                    previous_descriptor = parent_descriptor
                     parent_descriptor = next_descriptor
+                    with suppress(OSError):
+                        os.close(previous_descriptor)
                 descriptor = os.open(
                     relative_path.name,
                     os.O_RDONLY | os.O_NOFOLLOW,
@@ -1024,9 +1027,11 @@ def _open_staged_files(staging_directory: Path, staged_files: list[Path]) -> lis
                 ) from error
             finally:
                 if descriptor is not None:
-                    os.close(descriptor)
+                    with suppress(OSError):
+                        os.close(descriptor)
                 if parent_descriptor >= 0:
-                    os.close(parent_descriptor)
+                    with suppress(OSError):
+                        os.close(parent_descriptor)
     except Exception:
         _close_staged_files(opened)
         raise
@@ -1035,8 +1040,9 @@ def _open_staged_files(staging_directory: Path, staged_files: list[Path]) -> lis
 
 def _close_staged_files(files: list[OpenStagedFile]) -> None:
     for source in files:
-        os.close(source.descriptor)
-        os.close(source.parent_descriptor)
+        for descriptor in (source.descriptor, source.parent_descriptor):
+            with suppress(OSError):
+                os.close(descriptor)
 
 
 def _unsafe_destination_parent(destination: Path, storage_root: Path) -> bool:
@@ -1235,7 +1241,8 @@ def _copy_without_overwrite(
         raise
     finally:
         if target_descriptor is not None:
-            os.close(target_descriptor)
+            with suppress(OSError):
+                os.close(target_descriptor)
     return checksum_sha256
 
 
@@ -1380,8 +1387,10 @@ def _finalize_upload(
                         os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
                         dir_fd=parent_descriptor,
                     )
-                    os.close(parent_descriptor)
+                    previous_descriptor = parent_descriptor
                     parent_descriptor = next_descriptor
+                    with suppress(OSError):
+                        os.close(previous_descriptor)
                 rollback_descriptor = os.dup(parent_descriptor)
                 try:
                     checksum_sha256 = _copy_without_overwrite(
@@ -1391,7 +1400,8 @@ def _finalize_upload(
                         relative_path,
                     )
                 except Exception:
-                    os.close(rollback_descriptor)
+                    with suppress(OSError):
+                        os.close(rollback_descriptor)
                     raise
                 published_files.append(
                     PublishedFile(
@@ -1401,7 +1411,8 @@ def _finalize_upload(
                     )
                 )
             finally:
-                os.close(parent_descriptor)
+                with suppress(OSError):
+                    os.close(parent_descriptor)
 
         checksum_paths: dict[str, str] = {}
         duplicate_paths: list[str] = []
@@ -1489,7 +1500,8 @@ def _finalize_upload(
     finally:
         _close_staged_files(opened_files)
         for published in published_files:
-            os.close(published.parent_descriptor)
+            with suppress(OSError):
+                os.close(published.parent_descriptor)
 
     _cleanup_completed_upload_staging(storage_root, upload_id)
     return result
