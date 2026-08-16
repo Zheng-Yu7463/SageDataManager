@@ -164,6 +164,7 @@ def test_agent_discovery_is_public_and_contains_no_secret() -> None:
             "upload_not_ready",
             "upload_status_unavailable",
             "upload_storage_unavailable",
+            "upload_task_too_large",
             "upload_target_invalid",
             "upload_token_missing",
             "upload_too_large",
@@ -1261,6 +1262,70 @@ def test_agent_upload_rejects_files_over_the_configured_limit(tmp_path: Path, mo
         assert response.status_code == 413
         assert response.headers["x-sage-error-code"] == "upload_too_large"
         assert not (tmp_path / ".uploads").exists()
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
+def test_legacy_agent_upload_still_enforces_instance_task_limits(
+    tmp_path: Path, monkeypatch
+) -> None:
+    session = make_session()
+    user, asset = create_user_and_asset(session)
+    monkeypatch.setattr(settings, "auth_session_secret", "agent-test-secret")
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    monkeypatch.setattr(settings, "agent_upload_max_files_per_task", 1)
+    monkeypatch.setattr(settings, "agent_upload_max_total_bytes", 10)
+    plaintext = create_token(session, user, ["files:upload"])
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        client = TestClient(app)
+        first_task = client.post(
+            "/api/agent/uploads",
+            headers=bearer(plaintext),
+            json={"asset_id": str(asset.id), "target_subdirectory": "original"},
+        ).json()
+        first_upload_id = first_task["upload_id"]
+        first_headers = {
+            **bearer(plaintext),
+            "X-Sage-Upload-Token": first_task["upload_token"],
+        }
+        assert client.put(
+            f"/api/agent/uploads/{first_upload_id}/files/first.bin",
+            headers=first_headers,
+            content=b"1234",
+        ).status_code == 200
+        extra_file = client.put(
+            f"/api/agent/uploads/{first_upload_id}/files/second.bin",
+            headers=first_headers,
+            content=b"x",
+        )
+        assert extra_file.status_code == 413
+        assert extra_file.headers["x-sage-error-code"] == "upload_task_too_large"
+
+        monkeypatch.setattr(settings, "agent_upload_max_files_per_task", 2)
+        monkeypatch.setattr(settings, "agent_upload_max_total_bytes", 4)
+        second_task = client.post(
+            "/api/agent/uploads",
+            headers=bearer(plaintext),
+            json={"asset_id": str(asset.id), "target_subdirectory": "original"},
+        ).json()
+        second_upload_id = second_task["upload_id"]
+        oversized_task = client.put(
+            f"/api/agent/uploads/{second_upload_id}/files/oversized.bin",
+            headers={
+                **bearer(plaintext),
+                "X-Sage-Upload-Token": second_task["upload_token"],
+            },
+            content=b"12345",
+        )
+        assert oversized_task.status_code == 413
+        assert (
+            oversized_task.headers["x-sage-error-code"] == "upload_task_too_large"
+        )
+        assert not (
+            tmp_path / ".uploads" / second_upload_id / "oversized.bin"
+        ).exists()
     finally:
         app.dependency_overrides.clear()
         session.close()

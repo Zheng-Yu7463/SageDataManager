@@ -60,7 +60,7 @@ async def prevent_api_caching(request: Request, call_next):
 app.include_router(router, prefix=settings.api_prefix)
 
 AGENT_PROTOCOL_VERSION = "1.0"
-AGENT_DOCUMENT_VERSION = "2026-08-17.16"
+AGENT_DOCUMENT_VERSION = "2026-08-17.17"
 AGENT_INSTRUCTIONS = (
     Path(__file__)
     .with_name("agent.md")
@@ -187,6 +187,7 @@ def agent_discovery() -> JSONResponse:
                     "upload_not_ready",
                     "upload_status_unavailable",
                     "upload_storage_unavailable",
+                    "upload_task_too_large",
                     "upload_target_invalid",
                     "upload_token_missing",
                     "upload_too_large",

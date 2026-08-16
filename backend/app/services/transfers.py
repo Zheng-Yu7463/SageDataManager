@@ -81,6 +81,10 @@ class UploadManifestError(UploadContentError):
     pass
 
 
+class UploadTaskTooLargeError(UploadContentError):
+    pass
+
+
 class UploadStorageError(UploadContentError):
     pass
 
@@ -468,12 +472,20 @@ def staged_upload_destination(
 def agent_upload_remaining_capacity(
     expected_file_count: int | None,
     expected_total_size: int | None,
+    maximum_files_per_task: int,
+    maximum_total_size: int,
     storage_root: Path,
     upload_id: UUID,
     declared_size: int | None,
-) -> int | None:
-    if expected_file_count is None or expected_total_size is None:
-        return None
+) -> tuple[int, bool]:
+    manifest_bounded = (
+        expected_file_count is not None and expected_total_size is not None
+    )
+    file_limit = (
+        expected_file_count if manifest_bounded else maximum_files_per_task
+    )
+    size_limit = expected_total_size if manifest_bounded else maximum_total_size
+    assert file_limit is not None and size_limit is not None
     try:
         root = storage_root.resolve(strict=True)
     except (FileNotFoundError, NotADirectoryError) as error:
@@ -501,14 +513,20 @@ def agent_upload_remaining_capacity(
     else:
         staged_files = []
         current_total_size = 0
-    if len(staged_files) >= expected_file_count:
-        raise UploadManifestError("已接收文件数达到任务声明上限，拒绝额外文件。")
-    remaining_size = expected_total_size - current_total_size
+    if len(staged_files) >= file_limit:
+        if manifest_bounded:
+            raise UploadManifestError("已接收文件数达到任务声明上限，拒绝额外文件。")
+        raise UploadTaskTooLargeError("已接收文件数达到实例任务上限，拒绝额外文件。")
+    remaining_size = size_limit - current_total_size
     if remaining_size <= 0:
-        raise UploadManifestError("已接收总字节达到任务声明上限，拒绝额外文件。")
+        if manifest_bounded:
+            raise UploadManifestError("已接收总字节达到任务声明上限，拒绝额外文件。")
+        raise UploadTaskTooLargeError("已接收总字节达到实例任务上限，拒绝额外文件。")
     if declared_size is not None and declared_size > remaining_size:
-        raise UploadManifestError("文件会使任务总字节超过创建时声明的清单。")
-    return remaining_size
+        if manifest_bounded:
+            raise UploadManifestError("文件会使任务总字节超过创建时声明的清单。")
+        raise UploadTaskTooLargeError("文件会使任务总字节超过实例任务上限。")
+    return remaining_size, manifest_bounded
 
 
 def recover_agent_file_upload(

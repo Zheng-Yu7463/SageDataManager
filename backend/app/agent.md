@@ -215,7 +215,8 @@ changes after hashing, stop and rebuild the manifest.
 6. The current per-file limit is {{MAXIMUM_FILE_SIZE_BYTES}} bytes; one task may declare at most
    {{MAXIMUM_UPLOAD_FILES_PER_TASK}} files and {{MAXIMUM_UPLOAD_TOTAL_BYTES}} total bytes. Read the
    discovery document instead of assuming these values. A `413` rejects an oversized file or task
-   declaration and leaves no partial staged file.
+   declaration and leaves no partial staged file. These instance task limits still apply when a
+   compatibility client omits the manifest summary.
 7. Recover after an interruption with `GET` on `status_url` plus `include_checksums=true`,
    sending the PAT and `X-Sage-Upload-Token`. Every status response repeats `asset_id`,
    `archive_relative_path`, `expected_file_count`, and `expected_total_size` so both the target and
@@ -289,6 +290,7 @@ operation table below permits it.
 | `invalid_content_length`, `invalid_checksum` | Correct the malformed request header before retrying. |
 | `upload_too_large` | Stop; split or otherwise change the payload only with user authorization. |
 | `upload_manifest_too_large` | Stop; the declared task exceeds the instance file-count or total-byte limit. |
+| `upload_task_too_large` | Stop; accepted files reached the instance task limit. Cancel and split only with user authorization. |
 | `upload_manifest_mismatch` | Stop; reconcile the declared count and bytes with accepted files, then cancel and recreate the task if the declaration was wrong. |
 | `upload_busy` | Honor `Retry-After`, inspect status, and make one safe retry. |
 | `upload_not_ready` | Inspect status and reconcile the accepted files with the local manifest. |
@@ -303,7 +305,7 @@ operation table below permits it.
 | `403` | Stop; verify scope and task/PAT ownership. Do not broaden scope automatically. |
 | `404` | Re-read/search; the resource may be absent or archived. |
 | `409` | Inspect `X-Sage-Error-Code` when present, then use the detail and current state to resolve the conflict before retrying. |
-| `413` | Do not retry the same payload; the file exceeds the limit. |
+| `413` | Do not retry the same payload; the file or upload task exceeds an instance limit. |
 | `416` | Re-run HEAD and verify whether the local file is complete, stale, or must be restarted. |
 | `422` | Correct fields and types using OpenAPI before retrying. |
 | `429` | Honor `Retry-After`, otherwise use the bounded schedule below. |

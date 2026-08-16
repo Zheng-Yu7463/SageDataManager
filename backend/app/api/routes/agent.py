@@ -65,6 +65,7 @@ from app.services.transfers import (
     UploadManifestError,
     UploadNotReadyError,
     UploadStorageError,
+    UploadTaskTooLargeError,
     UploadTicketError,
     UploadTooLargeError,
     agent_upload_remaining_capacity,
@@ -594,10 +595,12 @@ async def agent_upload_file(
             destination, parts_directory = staged_upload_destination(
                 settings.storage_root, upload_id, relative_path
             )
-            remaining_task_bytes = await anyio.to_thread.run_sync(
+            remaining_task_bytes, manifest_bounded = await anyio.to_thread.run_sync(
                 agent_upload_remaining_capacity,
                 expected_file_count,
                 expected_total_size,
+                settings.agent_upload_max_files_per_task,
+                settings.agent_upload_max_total_bytes,
                 settings.storage_root,
                 upload_id,
                 declared_size,
@@ -609,11 +612,14 @@ async def agent_upload_file(
                     received += len(chunk)
                     if received > settings.agent_upload_max_bytes:
                         raise UploadTooLargeError("上传文件超过服务器限制。")
-                    if (
-                        remaining_task_bytes is not None
-                        and received > remaining_task_bytes
-                    ):
-                        raise UploadManifestError("文件会使任务总字节超过创建时声明的清单。")
+                    if received > remaining_task_bytes:
+                        if manifest_bounded:
+                            raise UploadManifestError(
+                                "文件会使任务总字节超过创建时声明的清单。"
+                            )
+                        raise UploadTaskTooLargeError(
+                            "文件会使任务总字节超过实例任务上限。"
+                        )
                     digest.update(chunk)
                     await anyio.to_thread.run_sync(output.write, chunk)
                 await anyio.to_thread.run_sync(os.fsync, output.fileno())
@@ -643,6 +649,9 @@ async def agent_upload_file(
     except UploadManifestError as error:
         session.rollback()
         raise _agent_error(409, "upload_manifest_mismatch", str(error)) from None
+    except UploadTaskTooLargeError as error:
+        session.rollback()
+        raise _agent_error(413, "upload_task_too_large", str(error)) from None
     except UploadTooLargeError as error:
         session.rollback()
         raise _agent_error(413, "upload_too_large", str(error)) from None
