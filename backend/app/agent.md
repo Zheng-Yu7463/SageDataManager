@@ -15,7 +15,7 @@ it differs from an example in this guide.
 3. Call `GET /api/agent/me` and verify the human account, credential name, granted scopes, and
    expiration before doing any work.
 4. Use `/api/agent` as the API base.
-5. Read the discovery document's `uploads`, `limits`, and `upload_directories` fields when
+5. Read the discovery document's `errors`, `uploads`, `limits`, and `upload_directories` fields when
    planning file work. They are the machine-readable contract for headers, retry conditions, and
    path constraints; use this guide for the human safety policy.
 
@@ -244,10 +244,27 @@ task, and content already indexed elsewhere. Ask the user how to resolve those c
 
 ## 9. Retry and error policy
 
-FastAPI errors normally use `{"detail":"message"}`. Preserve the status and sanitized detail in
-diagnostics. Upload endpoints also return a stable `X-Sage-Error-Code` header. Branch on that code,
-not localized `detail` text. `upload_busy` also includes `Retry-After`; wait at least that many
-seconds, inspect task status, and retry only when the operation table below permits it.
+Agent authentication and domain errors use `{"detail":"message"}` and return a stable
+`X-Sage-Error-Code` header. Read `errors.codes` from discovery and branch on the code, not
+localized `detail` text; preserve the HTTP status, code, and sanitized detail in diagnostics.
+FastAPI request-validation errors (`422`) can occur before route logic and may omit this header.
+
+| Agent error code | Required action |
+| --- | --- |
+| `agent_auth_required` | Supply the PAT through the Bearer authorization header. |
+| `agent_auth_invalid` | Stop; the PAT is invalid, expired, revoked, or belongs to a disabled account. |
+| `agent_auth_unavailable` | Stop and report that the server credential configuration is unavailable. |
+| `agent_scope_missing` | Stop; report the required scope without broadening the credential automatically. |
+| `asset_not_found`, `file_not_found` | Re-read or search; the record may be absent or archived. |
+| `asset_slug_conflict`, `asset_metadata_conflict` | Search and compare identities; do not create a renamed duplicate or overwrite metadata. |
+| `asset_revision_conflict` | Read the latest asset, merge deliberately, and retry at most once. |
+| `file_preview_unavailable` | Retry in download mode only when reading the full file is appropriate. |
+| `file_unavailable` | Stop and report that the indexed file needs server-side storage reconciliation. |
+| `citation_incomplete` | Stop; do not synthesize the missing citation fields. |
+
+Upload operations add the upload-specific codes below. `upload_busy` also includes
+`Retry-After`; wait at least that many seconds, inspect task status, and retry only when the
+operation table below permits it.
 
 | Upload error code | Required action |
 | --- | --- |

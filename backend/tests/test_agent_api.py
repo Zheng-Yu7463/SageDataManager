@@ -104,12 +104,30 @@ def test_agent_discovery_is_public_and_contains_no_secret() -> None:
     assert "Search and duplicate prevention" in instructions.text
     assert "End-to-end examples" in instructions.text
     assert "machine-readable contract" in instructions.text
+    assert "agent_scope_missing" in instructions.text
     assert "Never blindly overwrite concurrent work" in instructions.text
     assert "SAGE_TOKEN=" not in instructions.text
     discovery_data = discovery.json()
     assert discovery_data["openapi"] == "/api/openapi.json"
     assert discovery_data["schema_version"] == AGENT_PROTOCOL_VERSION
     assert discovery_data["documentation_version"] == AGENT_DOCUMENT_VERSION
+    assert discovery_data["errors"] == {
+        "code_header": "X-Sage-Error-Code",
+        "codes": [
+            "agent_auth_required",
+            "agent_auth_invalid",
+            "agent_auth_unavailable",
+            "agent_scope_missing",
+            "asset_not_found",
+            "asset_slug_conflict",
+            "asset_metadata_conflict",
+            "asset_revision_conflict",
+            "file_not_found",
+            "file_preview_unavailable",
+            "file_unavailable",
+            "citation_incomplete",
+        ],
+    }
     assert "file_read" in discovery_data["capabilities"]
     assert discovery_data["scopes"]["files:read"] == ["GET /files/{file_id}/content"]
     assert discovery_data["limits"]["maximum_file_size_bytes"] == 500_000_000
@@ -344,6 +362,67 @@ def test_agent_endpoints_enforce_individual_scopes(tmp_path: Path, monkeypatch) 
         )
         assert denied.status_code == 403
         assert denied.json()["detail"] == "访问令牌缺少权限：files:upload"
+        assert denied.headers["x-sage-error-code"] == "agent_scope_missing"
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
+def test_agent_domain_errors_expose_stable_codes(tmp_path: Path, monkeypatch) -> None:
+    session = make_session()
+    user, asset = create_user_and_asset(session)
+    monkeypatch.setattr(settings, "auth_session_secret", "agent-test-secret")
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    plaintext = create_token(
+        session,
+        user,
+        [
+            "assets:read",
+            "files:read",
+            "metadata:write",
+            "files:upload",
+            "archive:finalize",
+            "citations:export",
+        ],
+    )
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        client = TestClient(app)
+        missing_auth = client.get("/api/agent/assets")
+        missing_asset = client.get(
+            f"/api/agent/assets/{uuid4()}",
+            headers=bearer(plaintext),
+        )
+        missing_file = client.get(
+            f"/api/agent/files/{uuid4()}/content",
+            headers=bearer(plaintext),
+        )
+        incomplete_citation = client.get(
+            f"/api/agent/assets/{asset.id}/citation/bibtex",
+            headers=bearer(plaintext),
+        )
+        duplicate_slug = client.post(
+            "/api/agent/assets",
+            headers=bearer(plaintext),
+            json={
+                "type": "project",
+                "slug": asset.slug,
+                "title": "Conflicting slug",
+                "status": "active",
+                "visibility": "lab",
+            },
+        )
+
+        assert missing_auth.status_code == 401
+        assert missing_auth.headers["x-sage-error-code"] == "agent_auth_required"
+        assert missing_asset.status_code == 404
+        assert missing_asset.headers["x-sage-error-code"] == "asset_not_found"
+        assert missing_file.status_code == 404
+        assert missing_file.headers["x-sage-error-code"] == "file_not_found"
+        assert incomplete_citation.status_code == 409
+        assert incomplete_citation.headers["x-sage-error-code"] == "citation_incomplete"
+        assert duplicate_slug.status_code == 409
+        assert duplicate_slug.headers["x-sage-error-code"] == "asset_slug_conflict"
     finally:
         app.dependency_overrides.clear()
         session.close()
@@ -465,6 +544,7 @@ def test_agent_can_read_and_update_existing_metadata_with_audit_identity(monkeyp
             json={"summary": "Stale overwrite"},
         )
         assert stale.status_code == 409
+        assert stale.headers["x-sage-error-code"] == "asset_revision_conflict"
         assert session.get(Asset, asset.id).summary == ("Updated by an authorized metadata agent.")
         activities = session.scalars(
             select(Activity).where(Activity.action == "updated_metadata")
@@ -514,6 +594,7 @@ def test_expired_token_is_rejected(monkeypatch) -> None:
     try:
         response = TestClient(app).get("/api/agent/assets", headers=bearer(plaintext))
         assert response.status_code == 401
+        assert response.headers["x-sage-error-code"] == "agent_auth_invalid"
     finally:
         app.dependency_overrides.clear()
         session.close()
@@ -1072,6 +1153,7 @@ def test_agent_can_range_read_an_indexed_file_with_pat_audit(tmp_path: Path, mon
         )
 
         assert denied.status_code == 403
+        assert denied.headers["x-sage-error-code"] == "agent_scope_missing"
         assert response.status_code == 206
         assert response.content == b"2345"
         assert response.headers["content-range"] == "bytes 2-5/10"

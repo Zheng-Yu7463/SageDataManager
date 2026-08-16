@@ -4,6 +4,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
 
+from app.api.dependencies import AGENT_ERROR_CODE_HEADER
 from app.api.router import router
 from app.core.config import settings
 from app.domain.enums import AssetType
@@ -42,7 +43,7 @@ async def prevent_api_caching(request: Request, call_next):
 app.include_router(router, prefix=settings.api_prefix)
 
 AGENT_PROTOCOL_VERSION = "1.0"
-AGENT_DOCUMENT_VERSION = "2026-08-17.6"
+AGENT_DOCUMENT_VERSION = "2026-08-17.7"
 AGENT_INSTRUCTIONS = (
     Path(__file__)
     .with_name("agent.md")
@@ -98,6 +99,23 @@ def agent_discovery() -> JSONResponse:
                 "archive:finalize": ["POST /uploads/{upload_id}/finalize"],
                 "citations:export": ["GET /assets/{asset_id}/citation/bibtex"],
             },
+            "errors": {
+                "code_header": AGENT_ERROR_CODE_HEADER,
+                "codes": [
+                    "agent_auth_required",
+                    "agent_auth_invalid",
+                    "agent_auth_unavailable",
+                    "agent_scope_missing",
+                    "asset_not_found",
+                    "asset_slug_conflict",
+                    "asset_metadata_conflict",
+                    "asset_revision_conflict",
+                    "file_not_found",
+                    "file_preview_unavailable",
+                    "file_unavailable",
+                    "citation_incomplete",
+                ],
+            },
             "limits": {
                 "default_page_size": 10,
                 "maximum_page_size": 100,
@@ -109,7 +127,7 @@ def agent_discovery() -> JSONResponse:
             "uploads": {
                 "task_token_header": "X-Sage-Upload-Token",
                 "checksum_header": "X-Sage-Content-SHA256",
-                "error_code_header": "X-Sage-Error-Code",
+                "error_code_header": AGENT_ERROR_CODE_HEADER,
                 "retry_after_header": "Retry-After",
                 "error_codes": [
                     "invalid_checksum",

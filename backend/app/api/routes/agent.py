@@ -11,7 +11,12 @@ import anyio
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import AgentPrincipal, require_agent, require_agent_scope
+from app.api.dependencies import (
+    AGENT_ERROR_CODE_HEADER,
+    AgentPrincipal,
+    require_agent,
+    require_agent_scope,
+)
 from app.api.routes.files import OpenFileResponse
 from app.core.config import settings
 from app.db.session import get_session
@@ -75,7 +80,6 @@ from app.services.transfers import (
 
 router = APIRouter(prefix="/agent", tags=["agent"])
 SessionDependency = Annotated[Session, Depends(get_session)]
-AGENT_ERROR_CODE_HEADER = "X-Sage-Error-Code"
 
 
 def _agent_error(
@@ -203,10 +207,12 @@ def agent_create_asset(
         return result
     except AssetSlugConflictError:
         session.rollback()
-        raise HTTPException(status_code=409, detail="资产标识已存在，请使用另一个 slug。") from None
+        raise _agent_error(
+            409, "asset_slug_conflict", "资产标识已存在，请使用另一个 slug。"
+        ) from None
     except AssetMetadataError as error:
         session.rollback()
-        raise HTTPException(status_code=409, detail=error.message) from None
+        raise _agent_error(409, "asset_metadata_conflict", error.message) from None
     except Exception:
         session.rollback()
         raise
@@ -220,7 +226,7 @@ def agent_asset(
 ) -> AssetDetail:
     result = get_asset(session, asset_id)
     if not result:
-        raise HTTPException(status_code=404, detail="资产不存在或已归档。")
+        raise _agent_error(404, "asset_not_found", "资产不存在或已归档。")
     return result
 
 
@@ -257,25 +263,24 @@ def agent_file_content(
         if delivery:
             delivery.close()
         session.rollback()
-        raise HTTPException(
-            status_code=404,
-            detail="文件不存在或所属资产已归档。",
+        raise _agent_error(
+            404, "file_not_found", "文件不存在或所属资产已归档。"
         ) from None
     except FilePreviewUnavailableError:
         if delivery:
             delivery.close()
         session.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail="此文件类型暂不支持预览，请使用 download 模式。",
+        raise _agent_error(
+            409,
+            "file_preview_unavailable",
+            "此文件类型暂不支持预览，请使用 download 模式。",
         ) from None
     except FileUnavailableError:
         if delivery:
             delivery.close()
         session.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail="文件当前不可用，请先重新扫描归档。",
+        raise _agent_error(
+            409, "file_unavailable", "文件当前不可用，请先重新扫描归档。"
         ) from None
     except Exception:
         if delivery:
@@ -322,16 +327,17 @@ def agent_update_asset(
         return result
     except AssetConflictError:
         session.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail="资产已被其他操作更新，请重新读取详情后再提交。",
+        raise _agent_error(
+            409,
+            "asset_revision_conflict",
+            "资产已被其他操作更新，请重新读取详情后再提交。",
         ) from None
     except AssetNotFoundError:
         session.rollback()
-        raise HTTPException(status_code=404, detail="资产不存在或已归档。") from None
+        raise _agent_error(404, "asset_not_found", "资产不存在或已归档。") from None
     except AssetMetadataError as error:
         session.rollback()
-        raise HTTPException(status_code=409, detail=error.message) from None
+        raise _agent_error(409, "asset_metadata_conflict", error.message) from None
     except Exception:
         session.rollback()
         raise
@@ -349,11 +355,11 @@ def agent_publication_citation(
 ) -> PublicationCitationResponse:
     asset = get_asset(session, asset_id)
     if not asset:
-        raise HTTPException(status_code=404, detail="资产不存在或已归档。")
+        raise _agent_error(404, "asset_not_found", "资产不存在或已归档。")
     try:
         return build_publication_citation(asset)
     except PublicationCitationError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from None
+        raise _agent_error(409, "citation_incomplete", str(error)) from None
 
 
 @router.post(

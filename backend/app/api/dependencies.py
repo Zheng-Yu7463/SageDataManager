@@ -17,6 +17,7 @@ from app.services.security import read_session_claims
 
 SessionDependency = Annotated[Session, Depends(get_session)]
 agent_bearer = HTTPBearer(auto_error=False)
+AGENT_ERROR_CODE_HEADER = "X-Sage-Error-Code"
 
 
 def require_admin(
@@ -58,14 +59,26 @@ def require_agent(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(agent_bearer)],
 ) -> AgentPrincipal:
     if not credentials or credentials.scheme.lower() != "bearer":
-        raise HTTPException(status_code=401, detail="请使用 Bearer 访问令牌。")
+        raise HTTPException(
+            status_code=401,
+            detail="请使用 Bearer 访问令牌。",
+            headers={AGENT_ERROR_CODE_HEADER: "agent_auth_required"},
+        )
     try:
         token = authenticate_access_token(session, credentials.credentials)
     except AccessTokenConfigurationError as error:
         session.rollback()
-        raise HTTPException(status_code=503, detail=str(error)) from None
+        raise HTTPException(
+            status_code=503,
+            detail=str(error),
+            headers={AGENT_ERROR_CODE_HEADER: "agent_auth_unavailable"},
+        ) from None
     if not token:
-        raise HTTPException(status_code=401, detail="访问令牌无效、已过期或已撤销。")
+        raise HTTPException(
+            status_code=401,
+            detail="访问令牌无效、已过期或已撤销。",
+            headers={AGENT_ERROR_CODE_HEADER: "agent_auth_invalid"},
+        )
     return AgentPrincipal(user=token.user, token=token)
 
 
@@ -75,7 +88,11 @@ def require_agent_scope(scope: str):
         principal: Annotated[AgentPrincipal, Depends(require_agent)],
     ) -> AgentPrincipal:
         if scope not in principal.token.scopes:
-            raise HTTPException(status_code=403, detail=f"访问令牌缺少权限：{scope}")
+            raise HTTPException(
+                status_code=403,
+                detail=f"访问令牌缺少权限：{scope}",
+                headers={AGENT_ERROR_CODE_HEADER: "agent_scope_missing"},
+            )
         record_access_token_use(session, principal.token)
         return principal
 
