@@ -24,7 +24,7 @@ from app.domain.models import (
     User,
 )
 from app.domain.schemas import AccessTokenCreateRequest
-from app.main import app
+from app.main import AGENT_DOCUMENT_VERSION, AGENT_PROTOCOL_VERSION, app
 from app.services.access_tokens import AccessTokenConfigurationError, create_access_token
 from app.services.security import create_session_token
 
@@ -92,17 +92,49 @@ def test_agent_discovery_is_public_and_contains_no_secret() -> None:
     assert instructions.headers["content-type"].startswith("text/markdown")
     assert instructions.headers["cache-control"] == "no-cache"
     assert discovery.headers["cache-control"] == "no-cache"
+    assert f"Protocol version: {AGENT_PROTOCOL_VERSION}" in instructions.text
+    assert f"Document version: {AGENT_DOCUMENT_VERSION}" in instructions.text
+    assert "{{PROTOCOL_VERSION}}" not in instructions.text
+    assert "{{DOCUMENT_VERSION}}" not in instructions.text
+    assert "{{MAXIMUM_FILE_SIZE_BYTES}}" not in instructions.text
     assert "Authorization: Bearer" in instructions.text
     assert "sdm_pat_<public-id>_<secret>" in instructions.text
+    assert "Authority and confirmation boundaries" in instructions.text
+    assert "Search and duplicate prevention" in instructions.text
+    assert "End-to-end examples" in instructions.text
+    assert "Never blindly overwrite concurrent work" in instructions.text
+    assert "SAGE_TOKEN=" not in instructions.text
     discovery_data = discovery.json()
     assert discovery_data["openapi"] == "/api/openapi.json"
-    assert discovery_data["schema_version"] == "1.0"
+    assert discovery_data["schema_version"] == AGENT_PROTOCOL_VERSION
+    assert discovery_data["documentation_version"] == AGENT_DOCUMENT_VERSION
     assert "file_read" in discovery_data["capabilities"]
     assert discovery_data["scopes"]["files:read"] == ["GET /files/{file_id}/content"]
     assert discovery_data["limits"]["maximum_file_size_bytes"] == 500_000_000
+    assert str(discovery_data["limits"]["maximum_file_size_bytes"]) in instructions.text
+    assert discovery_data["asset_types"] == [asset_type.value for asset_type in AssetType]
+    for asset_type, directories in discovery_data["upload_directories"].items():
+        assert asset_type in instructions.text
+        assert all(directory in instructions.text for directory in directories)
     assert "X-Sage-Asset-Revision" in instructions.text
     assert "archive:finalize" in instructions.text
     openapi = client.get("/api/openapi.json").json()
+    documented_operations = {
+        ("get", "/api/agent/me"),
+        ("get", "/api/agent/assets"),
+        ("post", "/api/agent/assets"),
+        ("get", "/api/agent/assets/{asset_id}"),
+        ("patch", "/api/agent/assets/{asset_id}"),
+        ("get", "/api/agent/files/{file_id}/content"),
+        ("get", "/api/agent/assets/{asset_id}/citation/bibtex"),
+        ("post", "/api/agent/uploads"),
+        ("get", "/api/agent/uploads/{upload_id}"),
+        ("delete", "/api/agent/uploads/{upload_id}"),
+        ("put", "/api/agent/uploads/{upload_id}/files/{relative_path}"),
+        ("post", "/api/agent/uploads/{upload_id}/finalize"),
+    }
+    for method, path in documented_operations:
+        assert method in openapi["paths"][path]
     get_assets = openapi["paths"]["/api/agent/assets"]["get"]
     assert get_assets["security"] == [{"HTTPBearer": []}]
     file_content = openapi["paths"]["/api/agent/files/{file_id}/content"]["get"]

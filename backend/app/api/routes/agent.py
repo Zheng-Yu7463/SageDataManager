@@ -441,7 +441,7 @@ def agent_cancel_upload(
     summary="Upload one file into an active task",
     description=(
         "URL-encode relative_path, send X-Sage-Upload-Token, and optionally send "
-        "X-Sage-Content-SHA256. The maximum file size is 500 MB."
+        "X-Sage-Content-SHA256. The instance's configured file-size limit applies."
     ),
     responses={
         400: {"description": "Invalid request header"},
