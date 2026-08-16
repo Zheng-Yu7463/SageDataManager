@@ -244,10 +244,11 @@ task, and content already indexed elsewhere. Ask the user how to resolve those c
 
 ## 9. Retry and error policy
 
-Agent authentication and domain errors use `{"detail":"message"}` and return a stable
+Agent authentication, request-validation, and domain errors use `{"detail":"message"}` and return a stable
 `X-Sage-Error-Code` header. Read `errors.codes` from discovery and branch on the code, not
 localized `detail` text; preserve the HTTP status, code, and sanitized detail in diagnostics.
-FastAPI request-validation errors (`422`) can occur before route logic and may omit this header.
+Every Agent request-validation response (`422`) uses `request_invalid`, including errors raised
+before route logic.
 
 | Agent error code | Required action |
 | --- | --- |
@@ -261,6 +262,7 @@ FastAPI request-validation errors (`422`) can occur before route logic and may o
 | `file_preview_unavailable` | Retry in download mode only when reading the full file is appropriate. |
 | `file_unavailable` | Stop and report that the indexed file needs server-side storage reconciliation. |
 | `citation_incomplete` | Stop; do not synthesize the missing citation fields. |
+| `request_invalid` | Correct missing headers, fields, types, or parameter bounds using OpenAPI before retrying. |
 
 Upload operations add the upload-specific codes below. `upload_busy` also includes
 `Retry-After`; wait at least that many seconds, inspect task status, and retry only when the

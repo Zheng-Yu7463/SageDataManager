@@ -126,6 +126,7 @@ def test_agent_discovery_is_public_and_contains_no_secret() -> None:
             "file_preview_unavailable",
             "file_unavailable",
             "citation_incomplete",
+            "request_invalid",
         ],
     }
     assert "file_read" in discovery_data["capabilities"]
@@ -1087,6 +1088,7 @@ def test_agent_metadata_update_requires_revision_header(monkeypatch) -> None:
         )
 
         assert response.status_code == 422
+        assert response.headers["x-sage-error-code"] == "request_invalid"
         session.refresh(asset)
         assert asset.summary == "Agent API integration fixture"
     finally:
