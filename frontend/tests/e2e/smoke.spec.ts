@@ -1041,6 +1041,66 @@ test('系统版本读取失败可局部重试', async ({ page }) => {
   expect(statusRequests).toBe(2)
 })
 
+test('系统更新状态失效时冻结陈旧的更新目标', async ({ page }) => {
+  await mockEmptyDashboard(page)
+  await mockEmptySettingsCollections(page)
+  await signInWithMockAccount(page)
+  await page.unroute('**/api/settings/system-update')
+
+  let statusAvailable = true
+  const latestCommit = 'b'.repeat(40)
+  await page.route('**/api/settings/system-update', async (route) => {
+    if (!statusAvailable) {
+      await route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: '更新代理暂时不可用' }),
+      })
+      return
+    }
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(systemUpdateStatus({
+        enabled: true,
+        state: 'available',
+        message: '发现 1 个可用提交。',
+        current_commit: 'a'.repeat(40),
+        latest_commit: latestCommit,
+        update_available: true,
+        behind_count: 1,
+        worktree_clean: true,
+        checked_at: '2026-08-17T01:00:00Z',
+      })),
+    })
+  })
+  await page.route('**/api/settings/system-update/check', async (route) => {
+    await route.fulfill({
+      status: 503,
+      contentType: 'application/json',
+      body: JSON.stringify({ detail: '更新代理暂时不可用' }),
+    })
+  })
+
+  await page.goto('/settings')
+  const updatePanel = page.locator('.system-update-panel')
+  const updateButton = updatePanel.getByRole('button', { name: '立即更新' })
+  await expect(updateButton).toBeEnabled()
+
+  statusAvailable = false
+  await updatePanel.getByRole('button', { name: '检查更新' }).click()
+
+  const staleError = updatePanel.locator('.system-update-error')
+  await expect(staleError).toContainText('更新代理暂时不可用')
+  await expect(updateButton).toBeDisabled()
+  await expect(updateButton).toHaveAttribute('title', '更新状态不可用，请重试后再更新')
+
+  statusAvailable = true
+  await staleError.getByRole('button', { name: '重试' }).click()
+
+  await expect(staleError).toBeHidden()
+  await expect(updateButton).toBeEnabled()
+})
+
 test('检查更新在后台运行并由页面轮询结果', async ({ page }) => {
   await mockEmptyDashboard(page)
   await mockEmptySettingsCollections(page)

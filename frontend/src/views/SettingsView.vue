@@ -159,6 +159,15 @@ const systemUpdateBusy = computed(() => {
     || state === 'restarting'
     || state === 'verifying'
 })
+const systemUpdateUnavailable = computed(() => (
+  systemUpdateLoading.value
+  || systemUpdateBusy.value
+  || Boolean(systemUpdateError.value)
+  || !systemUpdate.value?.enabled
+  || !systemUpdate.value.update_available
+  || !systemUpdate.value.checked_at
+  || !systemUpdate.value.latest_commit
+))
 const currentCommitShort = computed(() => systemUpdate.value?.current_commit?.slice(0, 8) || '—')
 const latestCommitShort = computed(() => systemUpdate.value?.latest_commit?.slice(0, 8) || '—')
 const systemUpdateProgress = computed(() => {
@@ -777,7 +786,7 @@ async function checkForSystemUpdate() {
 }
 
 function openUpdateDialog() {
-  if (!systemUpdate.value?.update_available || !systemUpdate.value.checked_at || !isInstanceOwner.value) return
+  if (systemUpdateUnavailable.value || !isInstanceOwner.value) return
   updatePassword.value = ''
   updateSubmitError.value = ''
   updateDialogOpen.value = true
@@ -792,6 +801,10 @@ function closeUpdateDialog() {
 
 async function submitSystemUpdate() {
   if (!updatePassword.value || updateSubmitting.value) return
+  if (systemUpdateUnavailable.value) {
+    updateSubmitError.value = '更新状态已失效，请关闭窗口并重新检查更新'
+    return
+  }
   stopUpdatePolling()
   systemUpdateController?.abort()
   systemUpdateController = undefined
@@ -1018,7 +1031,7 @@ onBeforeUnmount(() => {
         <div><h2 id="system-update-title">系统与更新</h2><p>从固定的 origin/main 拉取代码，备份数据库后重新构建应用容器。</p></div>
         <div class="system-update-actions">
           <button class="button button--outline" type="button" :disabled="systemUpdateLoading || systemUpdateBusy || !systemUpdate?.enabled" @click="checkForSystemUpdate"><RefreshCw :size="15" :class="{ 'spin-icon': systemUpdateLoading || systemUpdate?.state === 'checking' }" />{{ systemUpdate?.state === 'checking' ? '正在检查' : '检查更新' }}</button>
-          <button v-if="isInstanceOwner && systemUpdate?.update_available" class="button button--primary" type="button" :disabled="systemUpdateBusy || !systemUpdate.checked_at" :title="systemUpdate.checked_at ? '' : '请先检查更新以锁定目标 Commit'" @click="openUpdateDialog"><GitMerge :size="15" />立即更新</button>
+          <button v-if="isInstanceOwner && systemUpdate?.update_available" class="button button--primary" type="button" :disabled="systemUpdateUnavailable" :title="systemUpdateError ? '更新状态不可用，请重试后再更新' : systemUpdate.checked_at ? '' : '请先检查更新以锁定目标 Commit'" @click="openUpdateDialog"><GitMerge :size="15" />立即更新</button>
         </div>
       </header>
       <div v-if="systemUpdateLoading && !systemUpdate" class="settings-inline-loading" role="status"><span class="tiny-spinner"></span>正在读取系统版本…</div>
@@ -1033,7 +1046,7 @@ onBeforeUnmount(() => {
           <span :style="{ width: `${systemUpdateProgress}%` }"></span>
         </div>
         <p class="system-update-message">{{ systemUpdate.message }}</p>
-        <p v-if="systemUpdateError || systemUpdate.error" class="settings-error system-update-error" role="alert">{{ systemUpdateError || systemUpdate.error }}</p>
+        <p v-if="systemUpdateError || systemUpdate.error" class="settings-error system-update-error" role="alert">{{ systemUpdateError || systemUpdate.error }} <button v-if="systemUpdateError" type="button" :disabled="systemUpdateLoading" @click="loadSystemUpdate()">重试</button></p>
         <div v-if="!systemUpdate.enabled" class="system-update-unavailable">
           <CircleAlert :size="17" />
           <p><strong>需要先在服务器安装更新代理</strong><code>sudo bash deploy/install-updater.sh</code></p>
@@ -1076,7 +1089,7 @@ onBeforeUnmount(() => {
         </div>
         <label>确认当前账号密码<input v-model="updatePassword" required autofocus type="password" autocomplete="current-password" maxlength="256" placeholder="输入密码后开始更新" /></label>
         <p v-if="updateSubmitError" class="settings-error" role="alert">{{ updateSubmitError }}</p>
-        <footer><button class="button button--outline" type="button" :disabled="updateSubmitting" @click="closeUpdateDialog">取消</button><button class="button button--danger" type="submit" :disabled="updateSubmitting || !updatePassword"><GitMerge :size="16" />{{ updateSubmitting ? '正在启动' : '备份并更新' }}</button></footer>
+        <footer><button class="button button--outline" type="button" :disabled="updateSubmitting" @click="closeUpdateDialog">取消</button><button class="button button--danger" type="submit" :disabled="updateSubmitting || !updatePassword || systemUpdateUnavailable"><GitMerge :size="16" />{{ updateSubmitting ? '正在启动' : '备份并更新' }}</button></footer>
       </form>
     </div>
 
@@ -1265,7 +1278,7 @@ onBeforeUnmount(() => {
 .system-update-message { margin: 15px 0 0; color: #65736a; font-size: 11px; line-height: 1.6; }
 .system-update-error { margin-top: 10px; }
 .system-update-load-error { padding: 18px 20px; }
-.system-update-load-error button { padding: 0; color: inherit; text-decoration: underline; background: transparent; border: 0; cursor: pointer; }
+.system-update-error button, .system-update-load-error button { padding: 0; color: inherit; text-decoration: underline; background: transparent; border: 0; cursor: pointer; }
 .system-update-unavailable { display: flex; margin-top: 14px; padding: 12px; align-items: flex-start; color: #7d5a39; background: #fff8ef; border: 1px solid #eddbc6; border-radius: 6px; gap: 9px; }
 .system-update-unavailable p { display: grid; margin: 0; gap: 5px; }
 .system-update-unavailable strong { font-size: 11px; }
