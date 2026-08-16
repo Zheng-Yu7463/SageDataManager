@@ -713,6 +713,52 @@ test('设置分区导航支持快速定位并适配窄屏', async ({ page }) => 
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth)).toBe(390)
 })
 
+test('品牌设置读取失败后冻结旧值并可局部重试', async ({ page }) => {
+  let brandingRequests = 0
+  let rejectNextBrandingRequest = false
+  const brandingPayload = {
+    product_name: 'SAGE',
+    product_subtitle: 'RESEARCH ARCHIVE',
+    organization_name: 'SAGE Lab',
+    slogan: '科学 · 数据 · 成长 · 卓越',
+    slogan_secondary: 'Science · Archive · Growth · Excellence',
+    primary_color: '#2E7351',
+    logo_url: null,
+    revision: 'revision-recovered',
+  }
+  await page.route('**/api/settings/branding', async (route) => {
+    brandingRequests += 1
+    if (rejectNextBrandingRequest) {
+      rejectNextBrandingRequest = false
+      await route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: '品牌设置暂时不可用' }),
+      })
+      return
+    }
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(brandingPayload) })
+  })
+  await mockEmptyDashboard(page)
+  await mockEmptySettingsCollections(page)
+  await signInWithMockAccount(page)
+  rejectNextBrandingRequest = true
+  await navigateTo(page, '系统设置')
+
+  const brandingPanel = page.locator('#settings-branding')
+  const loadError = brandingPanel.getByRole('alert')
+  await expect(loadError).toContainText('品牌设置暂时不可用')
+  await expect(brandingPanel.getByLabel('产品名称')).toBeDisabled()
+  await expect(brandingPanel.getByRole('button', { name: '保存文字与主色' })).toBeDisabled()
+
+  await loadError.getByRole('button', { name: '重试' }).click()
+
+  await expect.poll(() => brandingRequests).toBeGreaterThanOrEqual(3)
+  await expect(brandingPanel.getByLabel('产品名称')).toHaveValue('SAGE')
+  await expect(brandingPanel.getByLabel('产品名称')).toBeEnabled()
+  await expect(loadError).toBeHidden()
+})
+
 test('设置读取挂起时可中止并重新加载', async ({ page }) => {
   let brandingRequests = 0
   let releaseHangingRequest!: () => void
