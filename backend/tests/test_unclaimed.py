@@ -282,10 +282,7 @@ def test_scan_skips_relative_paths_longer_than_the_database_column(
     assert session.scalars(select(UnclaimedFile)).all() == []
 
 
-def test_claim_maps_file_disappearance_during_metadata_read_to_domain_error(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_claim_rejects_source_changed_since_scan(tmp_path: Path) -> None:
     storage_root = tmp_path / "archive"
     source = storage_root / "incoming" / "temporary.csv"
     source.parent.mkdir(parents=True)
@@ -296,18 +293,32 @@ def test_claim_maps_file_disappearance_during_metadata_read_to_domain_error(
     session.flush()
     unclaimed = session.scalar(select(UnclaimedFile))
     assert unclaimed is not None
-    original_stat = Path.stat
-    source_stat_calls = 0
 
-    def disappear_on_metadata_read(path: Path, *args, **kwargs):
-        nonlocal source_stat_calls
-        if path == source:
-            source_stat_calls += 1
-            if source_stat_calls == 2:
-                raise FileNotFoundError
-        return original_stat(path, *args, **kwargs)
+    source.write_text("different content after scan\n")
 
-    monkeypatch.setattr(Path, "stat", disappear_on_metadata_read)
+    with pytest.raises(ClaimSourceFileError):
+        claim_unclaimed_file(session, storage_root, unclaimed.id, asset.id)
+
+    assert session.scalars(select(FileRecord)).all() == []
+    assert unclaimed.claimed_asset_id is None
+
+
+def test_claim_rejects_source_replaced_with_symlink_since_scan(tmp_path: Path) -> None:
+    storage_root = tmp_path / "archive"
+    source = storage_root / "incoming" / "temporary.csv"
+    replacement = storage_root / "incoming" / "replacement.csv"
+    source.parent.mkdir(parents=True)
+    source.write_text("value\n1\n")
+    session = make_session()
+    asset = create_asset(session)
+    sync_unclaimed_files(session, storage_root)
+    session.flush()
+    unclaimed = session.scalar(select(UnclaimedFile))
+    assert unclaimed is not None
+
+    replacement.write_text("replacement\n")
+    source.unlink()
+    source.symlink_to(replacement.name)
 
     with pytest.raises(ClaimSourceFileError):
         claim_unclaimed_file(session, storage_root, unclaimed.id, asset.id)

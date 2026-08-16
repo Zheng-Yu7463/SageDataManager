@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import os
+import stat
 from collections.abc import Iterable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from mimetypes import guess_type
-from pathlib import Path
+from os import stat_result
+from pathlib import Path, PurePosixPath
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -46,7 +50,6 @@ class FilePathConflictError(Exception):
 
 FILE_PATH_UNIQUE_CONSTRAINT = "uq_asset_files_relative_path"
 
-
 @dataclass(frozen=True)
 class UnclaimedFileSnapshot:
     relative_path: str
@@ -71,6 +74,117 @@ def locked_claim_asset_statement(asset_id: UUID):
 
 def locked_unclaimed_files_statement():
     return select(UnclaimedFile).with_for_update()
+
+
+
+@dataclass
+class OpenedUnclaimedSource:
+    relative_path: PurePosixPath
+    descriptor: int
+    parent_descriptor: int
+    metadata: stat_result
+
+    def close(self) -> None:
+        descriptors = (self.descriptor, self.parent_descriptor)
+        self.descriptor = -1
+        self.parent_descriptor = -1
+        for descriptor in descriptors:
+            if descriptor >= 0:
+                with suppress(OSError):
+                    os.close(descriptor)
+
+
+def _open_unclaimed_source(storage_root: Path, relative_path: str) -> OpenedUnclaimedSource:
+    relative = PurePosixPath(relative_path)
+    if (
+        relative.is_absolute()
+        or not relative.parts
+        or relative.as_posix() != relative_path
+        or any(part in {".", ".."} for part in relative.parts)
+        or is_internal_storage_path(relative)
+    ):
+        raise ClaimSourceFileError
+
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    file_flags = os.O_RDONLY | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        directory_flags |= os.O_CLOEXEC
+        file_flags |= os.O_CLOEXEC
+    parent_descriptor = -1
+    descriptor = -1
+    try:
+        root = storage_root.resolve(strict=True)
+        parent_descriptor = os.open(root, directory_flags)
+        for directory_name in relative.parts[:-1]:
+            next_descriptor = os.open(
+                directory_name,
+                directory_flags,
+                dir_fd=parent_descriptor,
+            )
+            previous_descriptor = parent_descriptor
+            parent_descriptor = next_descriptor
+            os.close(previous_descriptor)
+        descriptor = os.open(
+            relative.name,
+            file_flags,
+            dir_fd=parent_descriptor,
+        )
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError
+        source = OpenedUnclaimedSource(
+            relative_path=relative,
+            descriptor=descriptor,
+            parent_descriptor=parent_descriptor,
+            metadata=metadata,
+        )
+        descriptor = -1
+        parent_descriptor = -1
+        return source
+    except (OSError, ValueError):
+        raise ClaimSourceFileError from None
+    finally:
+        for opened_descriptor in (descriptor, parent_descriptor):
+            if opened_descriptor >= 0:
+                with suppress(OSError):
+                    os.close(opened_descriptor)
+
+
+def _matches_unclaimed_snapshot(record: UnclaimedFile, metadata: stat_result) -> bool:
+    if record.modified_at is None or record.file_size != metadata.st_size:
+        return False
+    expected_modified_at = record.modified_at
+    if expected_modified_at.tzinfo is None:
+        expected_modified_at = expected_modified_at.replace(tzinfo=UTC)
+    return expected_modified_at.astimezone(UTC) == datetime.fromtimestamp(
+        metadata.st_mtime, UTC
+    )
+
+
+def _ensure_unclaimed_source_unchanged(source: OpenedUnclaimedSource) -> None:
+    try:
+        current = os.fstat(source.descriptor)
+        linked = os.stat(
+            source.relative_path.name,
+            dir_fd=source.parent_descriptor,
+            follow_symlinks=False,
+        )
+    except OSError:
+        raise ClaimSourceFileError from None
+    opened_identity = (source.metadata.st_dev, source.metadata.st_ino)
+    stable_fields = (
+        source.metadata.st_size,
+        source.metadata.st_mtime_ns,
+        source.metadata.st_ctime_ns,
+    )
+    if (
+        not stat.S_ISREG(linked.st_mode)
+        or opened_identity != (current.st_dev, current.st_ino)
+        or opened_identity != (linked.st_dev, linked.st_ino)
+        or stable_fields
+        != (current.st_size, current.st_mtime_ns, current.st_ctime_ns)
+    ):
+        raise ClaimSourceFileError
 
 
 def sync_unclaimed_file_snapshots(
@@ -156,51 +270,48 @@ def claim_unclaimed_file(
     if not asset:
         raise AssetNotFoundError
 
+    source = _open_unclaimed_source(storage_root, record.relative_path)
     try:
-        root = storage_root.resolve(strict=True)
-        relative = Path(record.relative_path)
-        if relative.is_absolute():
-            raise ValueError
-        resolved = (root / relative).resolve(strict=True)
-        resolved.relative_to(root)
-        if not resolved.is_file():
-            raise ValueError
-        metadata = resolved.stat()
-    except (FileNotFoundError, OSError, ValueError):
-        raise ClaimSourceFileError from None
-
-    file_record = session.scalar(
-        select(FileRecord).where(FileRecord.relative_path == record.relative_path)
-    )
-    if file_record and file_record.asset_id != asset.id:
-        raise FilePathConflictError
-    if not file_record:
-        file_record = FileRecord(asset_id=asset.id, relative_path=record.relative_path)
-        session.add(file_record)
-    file_record.file_name = resolved.name
-    file_record.file_kind = file_kind(resolved)
-    file_record.mime_type = guess_type(resolved.name)[0]
-    file_record.file_size = metadata.st_size
-    file_record.health_status = HealthStatus.HEALTHY
-    file_record.modified_at = datetime.fromtimestamp(metadata.st_mtime, UTC)
-    record.claimed_asset_id = asset.id
-    record.claimed_at = datetime.now(UTC)
-    if actor:
-        record_activity(
-            session,
-            asset=asset,
-            actor=actor,
-            action=ActivityAction.CLAIMED_FILE,
-            description=f"认领了文件 {record.file_name}",
+        if not _matches_unclaimed_snapshot(record, source.metadata):
+            raise ClaimSourceFileError
+        file_record = session.scalar(
+            select(FileRecord).where(FileRecord.relative_path == record.relative_path)
         )
+        if file_record and file_record.asset_id != asset.id:
+            raise FilePathConflictError
+        if not file_record:
+            file_record = FileRecord(asset_id=asset.id, relative_path=record.relative_path)
+            session.add(file_record)
+        file_record.file_name = source.relative_path.name
+        file_record.file_kind = file_kind(Path(source.relative_path.name))
+        file_record.mime_type = guess_type(source.relative_path.name)[0]
+        file_record.file_size = source.metadata.st_size
+        file_record.health_status = HealthStatus.HEALTHY
+        file_record.modified_at = datetime.fromtimestamp(source.metadata.st_mtime, UTC)
+        record.claimed_asset_id = asset.id
+        record.claimed_at = datetime.now(UTC)
+        if actor:
+            record_activity(
+                session,
+                asset=asset,
+                actor=actor,
+                action=ActivityAction.CLAIMED_FILE,
+                description=f"认领了文件 {record.file_name}",
+            )
 
-    try:
-        session.flush()
-    except IntegrityError as error:
-        if violates_constraint(error, FILE_PATH_UNIQUE_CONSTRAINT):
-            raise FilePathConflictError from error
-        raise
-    return FileClaimResult(asset_id=asset.id, file=FileSummary.model_validate(file_record))
+        _ensure_unclaimed_source_unchanged(source)
+        try:
+            session.flush()
+        except IntegrityError as error:
+            if violates_constraint(error, FILE_PATH_UNIQUE_CONSTRAINT):
+                raise FilePathConflictError from error
+            raise
+        _ensure_unclaimed_source_unchanged(source)
+        return FileClaimResult(
+            asset_id=asset.id, file=FileSummary.model_validate(file_record)
+        )
+    finally:
+        source.close()
 
 
 def list_unclaimed_files(
