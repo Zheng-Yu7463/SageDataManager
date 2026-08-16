@@ -69,6 +69,7 @@ from app.services.transfers import (
     temporary_upload_path,
     upload_task_guard,
     validate_agent_upload,
+    validate_agent_upload_ticket,
 )
 
 router = APIRouter(prefix="/agent", tags=["agent"])
@@ -417,6 +418,13 @@ def agent_cancel_upload(
     if not x_sage_upload_token:
         raise HTTPException(status_code=401, detail="缺少 X-Sage-Upload-Token。")
     try:
+        validate_agent_upload_ticket(
+            session,
+            upload_id,
+            x_sage_upload_token,
+            principal.user,
+            principal.token,
+        )
         result = cancel_agent_upload(
             session,
             settings.storage_root,
@@ -562,6 +570,13 @@ def agent_finalize_upload(
     principal: Annotated[AgentPrincipal, scoped("archive:finalize")],
 ) -> UploadFinalizeResponse:
     try:
+        validate_agent_upload_ticket(
+            session,
+            upload_id,
+            payload.upload_token,
+            principal.user,
+            principal.token,
+        )
         return finalize_upload(
             session,
             settings.storage_root,

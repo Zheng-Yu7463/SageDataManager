@@ -1,7 +1,7 @@
 import hashlib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -27,6 +27,7 @@ from app.domain.schemas import AccessTokenCreateRequest
 from app.main import AGENT_DOCUMENT_VERSION, AGENT_PROTOCOL_VERSION, app
 from app.services.access_tokens import AccessTokenConfigurationError, create_access_token
 from app.services.security import create_session_token
+from app.services.storage import UPLOAD_LOCKS_DIRECTORY
 
 
 def make_session() -> Session:
@@ -607,6 +608,36 @@ def test_agent_can_upload_and_finalize_a_file(tmp_path: Path, monkeypatch) -> No
         assert activities[-2].credential_name == "literature-sync"
         assert activities[-1].credential_name == "literature-sync"
         assert sum(activity.action == "completed_upload" for activity in activities) == 1
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
+def test_invalid_agent_upload_task_does_not_create_a_lock_file(tmp_path: Path, monkeypatch) -> None:
+    session = make_session()
+    user, _ = create_user_and_asset(session)
+    monkeypatch.setattr(settings, "auth_session_secret", "agent-test-secret")
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    plaintext = create_token(session, user, ["files:upload", "archive:finalize"])
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        client = TestClient(app)
+        upload_id = uuid4()
+        task_headers = {
+            **bearer(plaintext),
+            "X-Sage-Upload-Token": "invalid-upload-token",
+        }
+
+        cancelled = client.delete(f"/api/agent/uploads/{upload_id}", headers=task_headers)
+        finalized = client.post(
+            f"/api/agent/uploads/{upload_id}/finalize",
+            headers=bearer(plaintext),
+            json={"upload_token": "invalid-upload-token"},
+        )
+
+        assert cancelled.status_code == 403
+        assert finalized.status_code == 403
+        assert not (tmp_path / UPLOAD_LOCKS_DIRECTORY).exists()
     finally:
         app.dependency_overrides.clear()
         session.close()

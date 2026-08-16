@@ -136,6 +136,13 @@ def finalize_staged_upload(
     current_user: AdminDependency,
 ) -> UploadFinalizeResponse:
     try:
+        upload_status(
+            session,
+            settings.storage_root,
+            upload_id,
+            payload.upload_token,
+            actor=current_user,
+        )
         result = finalize_upload(
             session,
             settings.storage_root,

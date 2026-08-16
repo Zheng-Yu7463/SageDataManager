@@ -352,6 +352,16 @@ def _agent_upload_task(
     return task
 
 
+def validate_agent_upload_ticket(
+    session: Session,
+    upload_id: UUID,
+    upload_token: str,
+    actor: User,
+    access_token: PersonalAccessToken,
+) -> UploadTask:
+    return _agent_upload_task(session, upload_id, upload_token, actor, access_token)
+
+
 def validate_agent_upload(
     session: Session,
     upload_id: UUID,
@@ -359,13 +369,7 @@ def validate_agent_upload(
     actor: User,
     access_token: PersonalAccessToken,
 ) -> UploadTask:
-    task = _agent_upload_task(
-        session,
-        upload_id,
-        upload_token,
-        actor,
-        access_token,
-    )
+    task = validate_agent_upload_ticket(session, upload_id, upload_token, actor, access_token)
     if task.status != "active":
         raise UploadTicketError("上传任务已结束，请重新创建上传任务。")
     return task
@@ -887,6 +891,30 @@ def _cleanup_completed_upload_staging(storage_root: Path, upload_id: UUID) -> No
     )
 
 
+def _remove_upload_lock(storage_root: Path, upload_id: UUID) -> None:
+    cleanup_error = "过期上传任务锁文件清理失败。"
+    try:
+        root = storage_root.resolve(strict=True)
+    except (FileNotFoundError, NotADirectoryError) as error:
+        raise UploadContentError(cleanup_error) from error
+    lock_directory = root / UPLOAD_LOCKS_DIRECTORY
+    if not lock_directory.exists():
+        return
+    if lock_directory.is_symlink() or not lock_directory.is_dir():
+        raise UploadContentError(cleanup_error)
+    lock_file = lock_directory / f"{upload_id}.lock"
+    if lock_file.is_symlink() or (lock_file.exists() and not lock_file.is_file()):
+        raise UploadContentError(cleanup_error)
+    try:
+        lock_file.unlink(missing_ok=True)
+        _fsync_directory(lock_directory)
+        if not any(lock_directory.iterdir()):
+            lock_directory.rmdir()
+            _fsync_directory(root)
+    except OSError as error:
+        raise UploadContentError(cleanup_error) from error
+
+
 def cleanup_expired_upload_tasks(
     session: Session,
     storage_root: Path,
@@ -902,6 +930,7 @@ def cleanup_expired_upload_tasks(
     ).all()
     cleaned = 0
     for upload_id in candidate_ids:
+        task_removed = False
         try:
             with upload_task_guard(storage_root, upload_id):
                 task = session.get(UploadTask, upload_id, with_for_update=True)
@@ -922,8 +951,12 @@ def cleanup_expired_upload_tasks(
                 session.delete(task)
                 session.commit()
                 cleaned += 1
+                task_removed = True
         except UploadContentError:
             session.rollback()
+        if task_removed:
+            with suppress(UploadContentError):
+                _remove_upload_lock(storage_root, upload_id)
     return cleaned
 
 

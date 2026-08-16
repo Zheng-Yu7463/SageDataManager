@@ -7,15 +7,20 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 from app.core.config import settings
 from app.db.base import Base
+from app.db.session import get_session
 from app.domain.enums import AssetType, HealthStatus, Visibility
 from app.domain.models import Activity, Asset, FileRecord, UploadTask, User
 from app.domain.schemas import UploadCommandRequest
+from app.main import app
 from app.services.archive import scan_storage
+from app.services.security import create_session_token
 from app.services.storage import UPLOAD_LOCKS_DIRECTORY, storage_index_guard
 from app.services.transfers import (
     UPLOAD_COMPLETION_MARKER,
@@ -30,6 +35,7 @@ from app.services.transfers import (
     generate_upload_command,
     staged_upload_destination,
     upload_status,
+    upload_task_guard,
 )
 
 
@@ -416,6 +422,36 @@ def test_finalize_upload_replay_retries_staging_cleanup_failure(
     assert not staging.exists()
 
 
+def test_archive_invalid_upload_ticket_does_not_create_a_lock_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    Base.metadata.create_all(engine)
+    session = sessionmaker(bind=engine)()
+    asset = create_asset(session)
+    session.commit()
+    monkeypatch.setattr(settings, "auth_session_secret", "archive-test-secret")
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        upload_id = uuid4()
+        response = TestClient(app).post(
+            f"/api/archive/uploads/{upload_id}/finalize",
+            headers={"X-Sage-Session": create_session_token(asset.owner.username or "")},
+            json={"upload_token": "invalid-upload-token"},
+        )
+
+        assert response.status_code == 403
+        assert not (tmp_path / UPLOAD_LOCKS_DIRECTORY).exists()
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
 def test_cleanup_expired_upload_tasks_preserves_active_tasks(tmp_path: Path) -> None:
     session = make_session()
     asset = create_asset(session)
@@ -434,6 +470,14 @@ def test_cleanup_expired_upload_tasks_preserves_active_tasks(tmp_path: Path) -> 
     active_file.parent.mkdir(parents=True)
     expired_file.write_text("expired")
     active_file.write_text("active")
+    with upload_task_guard(tmp_path, expired.upload_id):
+        pass
+    with upload_task_guard(tmp_path, active.upload_id):
+        pass
+    expired_lock = tmp_path / UPLOAD_LOCKS_DIRECTORY / f"{expired.upload_id}.lock"
+    active_lock = tmp_path / UPLOAD_LOCKS_DIRECTORY / f"{active.upload_id}.lock"
+    assert expired_lock.is_file()
+    assert active_lock.is_file()
 
     cleaned = cleanup_expired_upload_tasks(session, tmp_path)
 
@@ -442,6 +486,8 @@ def test_cleanup_expired_upload_tasks_preserves_active_tasks(tmp_path: Path) -> 
     assert session.get(UploadTask, active.upload_id) is not None
     assert not expired_file.exists()
     assert active_file.read_text() == "active"
+    assert not expired_lock.exists()
+    assert active_lock.is_file()
 
 
 def test_upload_status_reports_waiting_ready_and_completed(tmp_path: Path) -> None:
