@@ -287,7 +287,8 @@ operation table below permits it.
 | `upload_busy` | Honor `Retry-After`, inspect status, and make one safe retry. |
 | `upload_not_ready` | Inspect status and reconcile the accepted files with the local manifest. |
 | `upload_conflict` | Stop and resolve the path or duplicate-content conflict with the user. |
-| `upload_invalid`, `upload_status_unavailable`, `upload_cancel_failed` | Stop and diagnose the reported storage, path, checksum, or task-state failure. |
+| `upload_invalid`, `upload_status_unavailable`, `upload_cancel_failed` | Stop and diagnose the reported path, checksum, or task-state failure. |
+| `upload_storage_unavailable` | Stop; report a server-side disk space, permission, or durability failure to the administrator. |
 
 | Status | Required action |
 | --- | --- |
@@ -300,6 +301,7 @@ operation table below permits it.
 | `416` | Re-run HEAD and verify whether the local file is complete, stale, or must be restarted. |
 | `422` | Correct fields and types using OpenAPI before retrying. |
 | `429` | Honor `Retry-After`, otherwise use the bounded schedule below. |
+| `507` | Stop uploading and report that server storage cannot durably accept more content. |
 | `5xx` | Retry only when the operation is safe according to the table below. |
 
 For transient read failures, use at most three retries after approximately 1, 2, and 4 seconds,

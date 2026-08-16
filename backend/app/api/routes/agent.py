@@ -63,6 +63,7 @@ from app.services.transfers import (
     UploadConflictError,
     UploadContentError,
     UploadNotReadyError,
+    UploadStorageError,
     UploadTicketError,
     UploadTooLargeError,
     agent_upload_status,
@@ -516,6 +517,7 @@ def agent_cancel_upload(
         403: {"description": "Upload token or access token mismatch"},
         409: {"description": "Invalid path, checksum mismatch, or file conflict"},
         413: {"description": "File exceeds the configured size limit"},
+        507: {"description": "Storage cannot durably accept the file"},
     },
 )
 async def agent_upload_file(
@@ -612,9 +614,23 @@ async def agent_upload_file(
     except UploadConflictError as error:
         session.rollback()
         raise _agent_error(409, "upload_conflict", str(error)) from None
+    except UploadStorageError:
+        session.rollback()
+        raise _agent_error(
+            507,
+            "upload_storage_unavailable",
+            "存储服务无法安全写入文件，请联系管理员检查磁盘空间和权限。",
+        ) from None
     except (UploadContentError, ValueError) as error:
         session.rollback()
         raise _agent_error(409, "upload_invalid", str(error)) from None
+    except OSError:
+        session.rollback()
+        raise _agent_error(
+            507,
+            "upload_storage_unavailable",
+            "存储服务无法安全写入文件，请联系管理员检查磁盘空间和权限。",
+        ) from None
     except Exception:
         session.rollback()
         raise

@@ -156,6 +156,7 @@ def test_agent_discovery_is_public_and_contains_no_secret() -> None:
             "upload_invalid",
             "upload_not_ready",
             "upload_status_unavailable",
+            "upload_storage_unavailable",
             "upload_target_invalid",
             "upload_token_missing",
             "upload_too_large",
@@ -1115,6 +1116,48 @@ def test_agent_upload_rejects_files_over_the_configured_limit(tmp_path: Path, mo
         assert response.status_code == 413
         assert response.headers["x-sage-error-code"] == "upload_too_large"
         assert not (tmp_path / ".uploads").exists()
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
+def test_agent_upload_reports_storage_sync_failure_and_cleans_partial_file(
+    tmp_path: Path, monkeypatch
+) -> None:
+    session = make_session()
+    user, asset = create_user_and_asset(session)
+    monkeypatch.setattr(settings, "auth_session_secret", "agent-test-secret")
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    plaintext = create_token(session, user, ["files:upload"])
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        client = TestClient(app)
+        task = client.post(
+            "/api/agent/uploads",
+            headers=bearer(plaintext),
+            json={"asset_id": str(asset.id), "target_subdirectory": "original"},
+        ).json()
+
+        def reject_sync(descriptor: int) -> None:
+            raise OSError("simulated full disk")
+
+        monkeypatch.setattr("app.api.routes.agent.os.fsync", reject_sync)
+        task_headers = {
+            **bearer(plaintext),
+            "X-Sage-Upload-Token": task["upload_token"],
+        }
+        response = client.put(
+            f"/api/agent/uploads/{task['upload_id']}/files/paper.pdf",
+            headers=task_headers,
+            content=b"content that cannot be synced",
+        )
+
+        assert response.status_code == 507
+        assert response.headers["x-sage-error-code"] == "upload_storage_unavailable"
+        assert not (tmp_path / ".uploads").exists()
+        status_response = client.get(task["status_url"], headers=task_headers)
+        assert status_response.status_code == 200
+        assert status_response.json()["status"] == "waiting"
     finally:
         app.dependency_overrides.clear()
         session.close()

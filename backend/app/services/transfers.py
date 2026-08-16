@@ -77,6 +77,10 @@ class UploadTooLargeError(UploadContentError):
     pass
 
 
+class UploadStorageError(UploadContentError):
+    pass
+
+
 class UploadConflictError(UploadError):
     def __init__(self, paths: list[str]) -> None:
         self.paths = paths
@@ -123,7 +127,7 @@ def upload_task_guard(storage_root: Path, upload_id: UUID) -> Iterator[None]:
     except UploadError:
         raise
     except OSError as error:
-        raise UploadContentError("上传任务锁不可用，请检查存储根权限。") from error
+        raise UploadStorageError("上传存储操作失败，请检查磁盘空间和目录权限。") from error
     finally:
         if locked and lock_descriptor is not None:
             with suppress(OSError):
