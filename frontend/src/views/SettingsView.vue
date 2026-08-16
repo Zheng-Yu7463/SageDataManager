@@ -784,6 +784,7 @@ async function checkForSystemUpdate() {
     if (reason instanceof DOMException && reason.name === 'AbortError') return
     const message = reason instanceof Error ? reason.message : '检查更新失败'
     await loadSystemUpdate(true)
+    if (systemUpdateActionController !== controller) return
     const operationAlreadyRunning = reason instanceof ApiError
       && reason.code === 'update_operation_running'
     if (systemUpdateBusy.value || operationAlreadyRunning) {

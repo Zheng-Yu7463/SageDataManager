@@ -1233,6 +1233,78 @@ test('全局刷新中止陈旧的检查更新响应', async ({ page }) => {
   await expect(updatePanel.getByText('刷新读取到新的可用版本。')).toBeVisible()
 })
 
+test('全局刷新中止检查失败后的陈旧状态恢复', async ({ page }) => {
+  await mockEmptyDashboard(page)
+  await mockEmptySettingsCollections(page)
+  await signInWithMockAccount(page)
+  await page.unroute('**/api/settings/system-update')
+
+  let releaseRecovery!: () => void
+  let releaseRefresh!: () => void
+  const recoveryGate = new Promise<void>((resolve) => { releaseRecovery = resolve })
+  const refreshGate = new Promise<void>((resolve) => { releaseRefresh = resolve })
+  let statusRequests = 0
+  const initialStatus = systemUpdateStatus({
+    enabled: true,
+    state: 'idle',
+    message: '当前已经是最新版本。',
+    current_commit: 'a'.repeat(40),
+    latest_commit: 'a'.repeat(40),
+    update_available: false,
+    worktree_clean: true,
+  })
+  const refreshedStatus = systemUpdateStatus({
+    enabled: true,
+    state: 'available',
+    message: '刷新读取到新的可用版本。',
+    current_commit: 'a'.repeat(40),
+    latest_commit: 'd'.repeat(40),
+    update_available: true,
+    behind_count: 1,
+    worktree_clean: true,
+  })
+  await page.route('**/api/settings/system-update', async (route) => {
+    statusRequests += 1
+    if (statusRequests === 1) {
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify(initialStatus) })
+      return
+    }
+    if (statusRequests === 2) {
+      await recoveryGate
+      await route.fulfill({
+        contentType: 'application/json',
+        body: JSON.stringify(initialStatus),
+      }).catch(() => undefined)
+      return
+    }
+    await refreshGate
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(refreshedStatus),
+    })
+  })
+  await page.route('**/api/settings/system-update/check', async (route) => {
+    await route.fulfill({
+      status: 503,
+      contentType: 'application/json',
+      body: JSON.stringify({ detail: '这是已经过期的检查错误。' }),
+    })
+  })
+
+  await page.goto('/settings')
+  const updatePanel = page.locator('.system-update-panel')
+  await updatePanel.getByRole('button', { name: '检查更新' }).click()
+  await expect.poll(() => statusRequests).toBe(2)
+
+  await page.getByRole('button', { name: '刷新' }).click()
+  await expect.poll(() => statusRequests).toBe(3)
+  await expect(updatePanel).not.toContainText('这是已经过期的检查错误。')
+
+  releaseRefresh()
+  await expect(updatePanel.getByText('刷新读取到新的可用版本。')).toBeVisible()
+  releaseRecovery()
+})
+
 test('系统更新轮询失败后退避并自动恢复', async ({ page }) => {
   await mockEmptyDashboard(page)
   await mockEmptySettingsCollections(page)
