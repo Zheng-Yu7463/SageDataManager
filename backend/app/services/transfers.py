@@ -507,28 +507,41 @@ def temporary_upload_file(
         output = os.fdopen(temporary_descriptor, "wb", buffering=0)
         temporary_descriptor = None
     except OSError as error:
-        if temporary_descriptor is not None:
-            os.close(temporary_descriptor)
-        if parts_descriptor is not None:
-            os.close(parts_descriptor)
-        if parent_descriptor is not None:
-            os.close(parent_descriptor)
+        for descriptor in (temporary_descriptor, parts_descriptor, parent_descriptor):
+            if descriptor is not None:
+                with suppress(OSError):
+                    os.close(descriptor)
         raise UploadContentError("上传分片临时区不可用，无法接收文件。") from error
 
     temporary_file = parts_directory / temporary_name
+    body_failed = True
     try:
         yield temporary_file, output
+        body_failed = False
     finally:
-        output.close()
-        with suppress(FileNotFoundError):
+        cleanup_error: OSError | None = None
+        try:
+            output.close()
+        except OSError as error:
+            cleanup_error = error
+        try:
             os.unlink(temporary_name, dir_fd=parts_descriptor)
-        os.close(parts_descriptor)
-        os.close(parent_descriptor)
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            cleanup_error = cleanup_error or error
+        for descriptor in (parts_descriptor, parent_descriptor):
+            try:
+                os.close(descriptor)
+            except OSError as error:
+                cleanup_error = cleanup_error or error
         for directory in (parts_directory, parts_directory.parent):
             try:
                 directory.rmdir()
             except OSError:
                 break
+        if cleanup_error is not None and not body_failed:
+            raise cleanup_error
 
 
 def complete_agent_file_upload(

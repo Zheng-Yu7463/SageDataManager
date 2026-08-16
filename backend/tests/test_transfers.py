@@ -53,6 +53,68 @@ def test_agent_upload_parts_are_private_and_cleaned(tmp_path: Path) -> None:
     assert not parts_directory.parent.exists()
 
 
+def test_agent_upload_cleanup_closes_directories_when_output_close_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parts_directory = tmp_path / ".uploads" / ".parts"
+    closed_directories: list[int] = []
+    original_os_close = os.close
+
+    def record_directory_close(descriptor: int) -> None:
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            closed_directories.append(descriptor)
+        original_os_close(descriptor)
+
+    monkeypatch.setattr("app.services.transfers.os.close", record_directory_close)
+
+    with (
+        pytest.raises(OSError, match="simulated close failure"),
+        temporary_upload_file(parts_directory) as (temporary_file, output),
+    ):
+        output.write(b"content")
+        original_output_close = output.close
+
+        def fail_output_close() -> None:
+            original_output_close()
+            raise OSError("simulated close failure")
+
+        monkeypatch.setattr(output, "close", fail_output_close)
+
+    assert len(closed_directories) == 2
+    assert not temporary_file.exists()
+    assert not parts_directory.exists()
+    assert not parts_directory.parent.exists()
+
+
+def test_agent_upload_cleanup_preserves_body_error_when_unlink_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    parts_directory = tmp_path / ".uploads" / ".parts"
+    closed_directories: list[int] = []
+    original_os_close = os.close
+
+    def record_directory_close(descriptor: int) -> None:
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            closed_directories.append(descriptor)
+        original_os_close(descriptor)
+
+    def fail_unlink(name: str, *, dir_fd: int | None = None) -> None:
+        raise OSError("simulated unlink failure")
+
+    monkeypatch.setattr("app.services.transfers.os.close", record_directory_close)
+
+    with (
+        pytest.raises(RuntimeError, match="simulated body failure"),
+        temporary_upload_file(parts_directory) as (temporary_file, output),
+    ):
+        output.write(b"content")
+        monkeypatch.setattr("app.services.transfers.os.unlink", fail_unlink)
+        raise RuntimeError("simulated body failure")
+
+    assert len(closed_directories) == 2
+    assert temporary_file.exists()
+
+
 def test_agent_file_publish_fsyncs_created_directories_and_destination(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
