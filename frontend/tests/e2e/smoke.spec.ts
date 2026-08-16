@@ -1177,6 +1177,88 @@ test('并发更新管理员时各行保持独立状态', async ({ page }) => {
   await expect(betaRow.getByRole('button', { name: '启用管理员：BETA 管理员' })).toBeEnabled()
 })
 
+test('管理员邀请链接生成保持单飞', async ({ page }) => {
+  await page.route('**/api/dashboard', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        counts: { paper: 0, dataset: 0, literature: 0, project: 0, model: 0 },
+        total_storage_bytes: 0,
+        healthy_files: 0,
+        missing_files: 0,
+        recent_assets: [],
+        recent_activities: [],
+        popular_tags: [],
+      }),
+    })
+  })
+  const managedAccounts = ['alpha', 'beta'].map((username, index) => ({
+    id: `${index + 1}6767676-6767-6767-6767-676767676767`,
+    username,
+    name: `${username.toUpperCase()} 管理员`,
+    email: `${username}@sage.test`,
+    role: 'admin',
+    upload_username: username,
+    is_active: true,
+    is_instance_owner: false,
+    is_registered: true,
+  }))
+  await page.route('**/api/auth/admin-accounts', async (route) => {
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify([
+      {
+        id: '90909090-9090-9090-9090-909090909090',
+        username: 'testadmin',
+        name: '测试管理员',
+        email: 'test-admin@sage.test',
+        role: 'admin',
+        upload_username: 'testadmin',
+        is_active: true,
+        is_instance_owner: true,
+        is_registered: true,
+      },
+      ...managedAccounts,
+    ]) })
+  })
+  await page.route('**/api/auth/access-tokens', async (route) => {
+    await route.fulfill({ contentType: 'application/json', body: '[]' })
+  })
+
+  const invitationRequests: string[] = []
+  let releaseInvitation!: () => void
+  const invitationPending = new Promise<void>((resolve) => { releaseInvitation = resolve })
+  await page.route('**/api/auth/admin-accounts/*/recovery-invitation', async (route) => {
+    const username = new URL(route.request().url()).pathname.split('/').at(-2)!
+    invitationRequests.push(username)
+    await invitationPending
+    const account = managedAccounts.find((item) => item.username === username)!
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        account,
+        registration_path: `/register/recovery-${username}`,
+        expires_at: '2099-01-01T00:00:00Z',
+        purpose: 'recovery',
+      }),
+    })
+  })
+
+  await signInWithMockAccount(page)
+  await page.goto('/settings')
+
+  const alphaInvitation = page.getByRole('button', { name: '生成密码恢复链接：ALPHA 管理员' })
+  await alphaInvitation.click()
+  await expect.poll(() => invitationRequests).toEqual(['alpha'])
+  await expect(page.getByRole('button', { name: '正在生成邀请链接：ALPHA 管理员' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '请等待当前邀请链接生成完成：BETA 管理员' })).toBeDisabled()
+  await expect(page.getByRole('button', { name: '新增管理员' })).toBeDisabled()
+
+  releaseInvitation()
+  const dialog = page.getByRole('dialog', { name: '密码恢复链接已创建' })
+  await expect(dialog).toBeVisible()
+  await expect(dialog).toContainText('请将链接私下发送给 alpha')
+  expect(invitationRequests).toEqual(['alpha'])
+})
+
 test('AI 访问令牌保护一次性明文并归档失效记录', async ({ page }) => {
   await page.route('**/api/dashboard', async (route) => {
     await route.fulfill({

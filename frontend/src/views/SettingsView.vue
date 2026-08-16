@@ -15,6 +15,7 @@ const accessTokens = ref<AccessTokenSummary[]>([])
 const accountsLoading = ref(true)
 const tokensLoading = ref(true)
 const updatingUsernames = ref(new Set<string>())
+const issuingInvitationUsername = ref<string | null>(null)
 const accountActionErrors = ref<Record<string, string>>({})
 const accountsError = ref('')
 const tokenLoadError = ref('')
@@ -452,7 +453,7 @@ function backupScheduleLabel(intervalSeconds: number) {
 }
 
 function openCreate() {
-  if (accountsLoading.value) return
+  if (accountsLoading.value || issuingInvitationUsername.value) return
   form.value = { username: '' }
   createError.value = ''
   accountInvitation.value = null
@@ -505,11 +506,13 @@ async function issueAccountInvitation(account: AccountSummary) {
   if (
     accountsLoading.value
     || updatingUsernames.value.has(account.username)
+    || issuingInvitationUsername.value !== null
     || !canManageAccount(account)
   ) return
   accountsController?.abort()
   accountsController = undefined
   accountsLoading.value = false
+  issuingInvitationUsername.value = account.username
   updatingUsernames.value = new Set(updatingUsernames.value).add(account.username)
   accountActionErrors.value = { ...accountActionErrors.value, [account.username]: '' }
   try {
@@ -525,7 +528,26 @@ async function issueAccountInvitation(account: AccountSummary) {
     const next = new Set(updatingUsernames.value)
     next.delete(account.username)
     updatingUsernames.value = next
+    if (issuingInvitationUsername.value === account.username) {
+      issuingInvitationUsername.value = null
+    }
   }
+}
+
+function accountInvitationActionLabel(account: AccountSummary) {
+  const identity = account.name || account.username
+  if (issuingInvitationUsername.value === account.username) return `正在生成邀请链接：${identity}`
+  if (issuingInvitationUsername.value) return `请等待当前邀请链接生成完成：${identity}`
+  const action = account.is_registered ? '生成密码恢复链接' : '重新生成注册链接'
+  return `${action}：${identity}`
+}
+
+function accountInvitationActionTitle(account: AccountSummary) {
+  if (issuingInvitationUsername.value === account.username) return '正在生成邀请链接'
+  if (issuingInvitationUsername.value) return '请等待当前邀请链接生成完成'
+  if (!canManageAccount(account)) return '只有实例所有者可以管理实例所有者账号'
+  if (!account.is_active) return '停用账号不能生成邀请链接'
+  return account.is_registered ? '生成密码恢复链接' : '重新生成注册链接'
 }
 
 async function copyAccountInvitation() {
@@ -795,7 +817,7 @@ onBeforeUnmount(() => {
         <h1>系统设置</h1>
         <p>配置当前 DataManager 实例的品牌、访问权限与系统版本。</p>
       </div>
-      <div class="settings-actions"><button class="button button--outline" :disabled="settingsMutationInProgress" @click="refreshSettings"><RefreshCw :size="16" />刷新</button><button class="button button--primary" :disabled="accountsLoading || creating" @click="openCreate"><Plus :size="16" />新增管理员</button></div>
+      <div class="settings-actions"><button class="button button--outline" :disabled="settingsMutationInProgress" @click="refreshSettings"><RefreshCw :size="16" />刷新</button><button class="button button--primary" :disabled="accountsLoading || creating || issuingInvitationUsername !== null" @click="openCreate"><Plus :size="16" />新增管理员</button></div>
     </header>
 
     <nav class="settings-section-nav" aria-label="设置分区">
@@ -937,7 +959,7 @@ onBeforeUnmount(() => {
             <span class="account-role">{{ account.is_instance_owner ? '实例所有者' : account.role }}</span>
             <span class="account-status" :class="{ 'account-status--pending': !account.is_registered, 'account-status--inactive': !account.is_active }">{{ !account.is_registered ? '待注册' : account.is_active ? '已启用' : '已停用' }}</span>
             <button class="button button--outline account-toggle" :disabled="updatingUsernames.has(account.username) || account.username === currentUsername || !account.is_registered || !canManageAccount(account)" :aria-label="`${updatingUsernames.has(account.username) ? '正在处理' : account.is_active ? '停用管理员' : '启用管理员'}：${account.name || account.username}`" :title="!canManageAccount(account) ? '只有实例所有者可以管理实例所有者账号' : !account.is_registered ? '待注册账号不能切换状态' : account.username === currentUsername ? '当前登录账号不可自行停用' : ''" @click="toggleAccount(account)"><UserRoundX v-if="account.is_active" :size="15" /><Check v-else :size="15" />{{ updatingUsernames.has(account.username) ? '处理中' : account.is_active ? '停用' : '启用' }}</button>
-            <button class="account-invitation-button" type="button" :disabled="updatingUsernames.has(account.username) || !account.is_active || !canManageAccount(account)" :aria-label="`${account.is_registered ? '生成密码恢复链接' : '重新生成注册链接'}：${account.name || account.username}`" :title="!canManageAccount(account) ? '只有实例所有者可以管理实例所有者账号' : account.is_registered ? '生成密码恢复链接' : '重新生成注册链接'" @click="issueAccountInvitation(account)"><Link2 :size="16" /></button>
+            <button class="account-invitation-button" type="button" :disabled="issuingInvitationUsername !== null || updatingUsernames.has(account.username) || !account.is_active || !canManageAccount(account)" :aria-label="accountInvitationActionLabel(account)" :title="accountInvitationActionTitle(account)" @click="issueAccountInvitation(account)"><RefreshCw v-if="issuingInvitationUsername === account.username" :size="16" class="spin-icon" /><Link2 v-else :size="16" /></button>
             <p v-if="accountActionErrors[account.username]" class="account-row-error" role="alert">{{ accountActionErrors[account.username] }}</p>
           </div>
         </div>
