@@ -410,8 +410,8 @@ export function getSystemUpdateStatus(signal?: AbortSignal) {
   return request<SystemUpdateStatus>('/api/settings/system-update', signal)
 }
 
-export function checkSystemUpdate() {
-  return request<SystemUpdateStatus>('/api/settings/system-update/check', undefined, 'POST')
+export function checkSystemUpdate(signal?: AbortSignal) {
+  return request<SystemUpdateStatus>('/api/settings/system-update/check', signal, 'POST')
 }
 
 export function applySystemUpdate(password: string, targetCommit: string) {

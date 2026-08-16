@@ -1170,6 +1170,69 @@ test('检查更新在后台运行并由页面轮询结果', async ({ page }) => 
   expect(checkRequests).toBe(1)
 })
 
+test('全局刷新中止陈旧的检查更新响应', async ({ page }) => {
+  await mockEmptyDashboard(page)
+  await mockEmptySettingsCollections(page)
+  await signInWithMockAccount(page)
+  await page.unroute('**/api/settings/system-update')
+
+  let releaseCheck!: () => void
+  const checkGate = new Promise<void>((resolve) => { releaseCheck = resolve })
+  let checkRequests = 0
+  let checkFinished = false
+  let updateState = systemUpdateStatus({
+    enabled: true,
+    state: 'idle',
+    message: '当前已经是最新版本。',
+    current_commit: 'a'.repeat(40),
+    latest_commit: 'a'.repeat(40),
+    update_available: false,
+    worktree_clean: true,
+  })
+  await page.route('**/api/settings/system-update', async (route) => {
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(updateState) })
+  })
+  await page.route('**/api/settings/system-update/check', async (route) => {
+    checkRequests += 1
+    await checkGate
+    await route.fulfill({
+      status: 202,
+      contentType: 'application/json',
+      body: JSON.stringify(systemUpdateStatus({
+        state: 'checking',
+        message: '这是已经过期的检查响应。',
+        current_commit: 'a'.repeat(40),
+        latest_commit: 'a'.repeat(40),
+        update_available: false,
+      })),
+    }).catch(() => undefined)
+    checkFinished = true
+  })
+
+  await page.goto('/settings')
+  const updatePanel = page.locator('.system-update-panel')
+  await updatePanel.getByRole('button', { name: '检查更新' }).click()
+  await expect.poll(() => checkRequests).toBe(1)
+
+  updateState = systemUpdateStatus({
+    state: 'available',
+    message: '刷新读取到新的可用版本。',
+    current_commit: 'a'.repeat(40),
+    latest_commit: 'c'.repeat(40),
+    update_available: true,
+    behind_count: 2,
+    worktree_clean: true,
+  })
+  await page.getByRole('button', { name: '刷新' }).click()
+
+  await expect(updatePanel.getByText('刷新读取到新的可用版本。')).toBeVisible()
+  await expect(updatePanel.getByText('cccccccc')).toBeVisible()
+  releaseCheck()
+  await expect.poll(() => checkFinished).toBe(true)
+  await expect(updatePanel.getByText('这是已经过期的检查响应。')).toBeHidden()
+  await expect(updatePanel.getByText('刷新读取到新的可用版本。')).toBeVisible()
+})
+
 test('系统更新轮询失败后退避并自动恢复', async ({ page }) => {
   await mockEmptyDashboard(page)
   await mockEmptySettingsCollections(page)

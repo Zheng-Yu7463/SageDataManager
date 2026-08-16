@@ -105,6 +105,7 @@ let updatePollTimer: ReturnType<typeof setTimeout> | null = null
 let updatePollFailureCount = 0
 let settingsDisposed = false
 let systemUpdateController: AbortController | undefined
+let systemUpdateActionController: AbortController | undefined
 let accountsController: AbortController | undefined
 let tokensController: AbortController | undefined
 let brandingController: AbortController | undefined
@@ -358,6 +359,8 @@ async function load() {
 async function refreshSettings() {
   if (brandingHasUnsavedChanges.value && !window.confirm('刷新会丢弃尚未保存的品牌更改，是否继续？')) return
   if (settingsMutationInProgress.value) return
+  systemUpdateActionController?.abort()
+  systemUpdateActionController = undefined
   brandingMessage.value = ''
   await load()
 }
@@ -764,14 +767,21 @@ function startUpdatePolling() {
 async function checkForSystemUpdate() {
   if (systemUpdateBusy.value || systemUpdateLoading.value) return
   stopUpdatePolling()
+  systemUpdateActionController?.abort()
+  const controller = new AbortController()
+  systemUpdateActionController = controller
   systemUpdateController?.abort()
   systemUpdateController = undefined
   systemUpdateLoading.value = true
   systemUpdateError.value = ''
   try {
-    systemUpdate.value = await checkSystemUpdate()
+    const result = await checkSystemUpdate(controller.signal)
+    if (systemUpdateActionController !== controller) return
+    systemUpdate.value = result
     if (systemUpdateBusy.value) startUpdatePolling()
   } catch (reason) {
+    if (systemUpdateActionController !== controller) return
+    if (reason instanceof DOMException && reason.name === 'AbortError') return
     const message = reason instanceof Error ? reason.message : '检查更新失败'
     await loadSystemUpdate(true)
     const operationAlreadyRunning = reason instanceof ApiError
@@ -783,7 +793,10 @@ async function checkForSystemUpdate() {
       systemUpdateError.value = message
     }
   } finally {
-    systemUpdateLoading.value = false
+    if (systemUpdateActionController === controller) {
+      systemUpdateActionController = undefined
+      systemUpdateLoading.value = false
+    }
   }
 }
 
@@ -861,6 +874,8 @@ onBeforeUnmount(() => {
   tokensController = undefined
   brandingController?.abort()
   brandingController = undefined
+  systemUpdateActionController?.abort()
+  systemUpdateActionController = undefined
   stopUpdatePolling()
   systemUpdateController?.abort()
   systemUpdateController = undefined
