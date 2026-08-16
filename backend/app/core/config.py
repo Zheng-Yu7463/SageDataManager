@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     file_access_ttl_seconds: int = Field(default=120, gt=0)
     upload_ticket_ttl_seconds: int = Field(default=86_400, gt=0)
     agent_upload_max_bytes: int = Field(default=500_000_000, gt=0, le=500_000_000)
+    agent_upload_max_files_per_task: int = Field(default=10_000, gt=0, le=100_000)
+    agent_upload_max_total_bytes: int = Field(
+        default=50_000_000_000, gt=0, le=1_000_000_000_000
+    )
     agent_token_last_used_interval_seconds: int = Field(default=300, ge=0)
     upload_destination_root: str = "/home/zhengyu/SageDataManager/sample-archive"
     update_agent_socket: Path = Path("/run/sage-updater/updater.sock")

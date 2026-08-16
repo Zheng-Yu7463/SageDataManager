@@ -132,8 +132,11 @@ def test_agent_discovery_is_public_and_contains_no_secret() -> None:
         ],
     }
     assert "file_read" in discovery_data["capabilities"]
+    assert "upload_manifest_summary" in discovery_data["capabilities"]
     assert discovery_data["scopes"]["files:read"] == ["GET /files/{file_id}/content"]
     assert discovery_data["limits"]["maximum_file_size_bytes"] == 500_000_000
+    assert discovery_data["limits"]["maximum_upload_files_per_task"] == 10_000
+    assert discovery_data["limits"]["maximum_upload_total_bytes"] == 50_000_000_000
     assert discovery_data["limits"]["maximum_publication_author_characters"] == 200
     assert discovery_data["limits"]["maximum_asset_details_bytes"] == 256_000
     assert discovery_data["limits"]["maximum_upload_path_characters"] == 1000
@@ -146,6 +149,8 @@ def test_agent_discovery_is_public_and_contains_no_secret() -> None:
         "error_code_header": "X-Sage-Error-Code",
         "retry_after_header": "Retry-After",
         "status_checksum_query_parameter": "include_checksums",
+        "manifest_summary_fields": ["expected_file_count", "expected_total_size"],
+        "manifest_summary_required_for_new_clients": True,
         "error_codes": [
             "invalid_checksum",
             "invalid_content_length",
@@ -154,6 +159,8 @@ def test_agent_discovery_is_public_and_contains_no_secret() -> None:
             "upload_conflict",
             "upload_credentials_invalid",
             "upload_invalid",
+            "upload_manifest_mismatch",
+            "upload_manifest_too_large",
             "upload_not_ready",
             "upload_status_unavailable",
             "upload_storage_unavailable",
@@ -171,6 +178,8 @@ def test_agent_discovery_is_public_and_contains_no_secret() -> None:
         },
     }
     assert str(discovery_data["limits"]["maximum_file_size_bytes"]) in instructions.text
+    assert str(discovery_data["limits"]["maximum_upload_files_per_task"]) in instructions.text
+    assert str(discovery_data["limits"]["maximum_upload_total_bytes"]) in instructions.text
     assert discovery_data["asset_types"] == [asset_type.value for asset_type in AssetType]
     for asset_type, directories in discovery_data["upload_directories"].items():
         assert asset_type in instructions.text
@@ -691,10 +700,19 @@ def test_agent_can_upload_and_finalize_a_file(tmp_path: Path, monkeypatch) -> No
         task = client.post(
             "/api/agent/uploads",
             headers=bearer(plaintext),
-            json={"asset_id": str(asset.id), "target_subdirectory": "original/official"},
+            json={
+                "asset_id": str(asset.id),
+                "target_subdirectory": "original/official",
+                "expected_file_count": 1,
+                "expected_total_size": len(b"%PDF-1.7\nagent fixture\n%%EOF"),
+            },
         )
         assert task.status_code == 201
         task_data = task.json()
+        assert task_data["expected_file_count"] == 1
+        assert task_data["expected_total_size"] == len(
+            b"%PDF-1.7\nagent fixture\n%%EOF"
+        )
 
         not_ready = client.post(
             task_data["finalize_url"],
@@ -776,6 +794,8 @@ def test_agent_can_upload_and_finalize_a_file(tmp_path: Path, monkeypatch) -> No
         assert completed_status.status_code == 200
         assert completed_status.json()["status"] == "completed"
         assert completed_status.json()["asset_id"] == task_data["asset_id"]
+        assert completed_status.json()["expected_file_count"] == 1
+        assert completed_status.json()["expected_total_size"] == len(content)
         assert (
             completed_status.json()["archive_relative_path"] == (task_data["archive_relative_path"])
         )
@@ -809,6 +829,131 @@ def test_agent_can_upload_and_finalize_a_file(tmp_path: Path, monkeypatch) -> No
         assert activities[-2].credential_name == "literature-sync"
         assert activities[-1].credential_name == "literature-sync"
         assert sum(activity.action == "completed_upload" for activity in activities) == 1
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
+def test_agent_upload_enforces_declared_manifest(tmp_path: Path, monkeypatch) -> None:
+    session = make_session()
+    user, asset = create_user_and_asset(session)
+    monkeypatch.setattr(settings, "auth_session_secret", "agent-test-secret")
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    plaintext = create_token(
+        session, user, ["files:upload", "archive:finalize"], name="bounded-uploader"
+    )
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        client = TestClient(app)
+        partial_manifest = client.post(
+            "/api/agent/uploads",
+            headers=bearer(plaintext),
+            json={
+                "asset_id": str(asset.id),
+                "target_subdirectory": "original",
+                "expected_file_count": 2,
+            },
+        )
+        assert partial_manifest.status_code == 422
+        assert partial_manifest.headers["x-sage-error-code"] == "request_invalid"
+
+        task_response = client.post(
+            "/api/agent/uploads",
+            headers=bearer(plaintext),
+            json={
+                "asset_id": str(asset.id),
+                "target_subdirectory": "original",
+                "expected_file_count": 2,
+                "expected_total_size": 5,
+            },
+        )
+        assert task_response.status_code == 201
+        task = task_response.json()
+        assert task["expected_file_count"] == 2
+        assert task["expected_total_size"] == 5
+        task_headers = {
+            **bearer(plaintext),
+            "X-Sage-Upload-Token": task["upload_token"],
+        }
+
+        first = client.put(
+            f"/api/agent/uploads/{task['upload_id']}/files/first.bin",
+            headers=task_headers,
+            content=b"abc",
+        )
+        assert first.status_code == 200
+        waiting = client.get(task["status_url"], headers=task_headers)
+        assert waiting.status_code == 200
+        assert waiting.json()["status"] == "waiting"
+        assert waiting.json()["uploaded_file_count"] == 1
+        assert waiting.json()["total_size"] == 3
+        assert waiting.json()["expected_file_count"] == 2
+        assert waiting.json()["expected_total_size"] == 5
+
+        early_finalize = client.post(
+            task["finalize_url"],
+            headers=bearer(plaintext),
+            json={"upload_token": task["upload_token"]},
+        )
+        assert early_finalize.status_code == 409
+        assert early_finalize.headers["x-sage-error-code"] == "upload_manifest_mismatch"
+
+        overflow = client.put(
+            f"/api/agent/uploads/{task['upload_id']}/files/second.bin",
+            headers=task_headers,
+            content=b"def",
+        )
+        assert overflow.status_code == 409
+        assert overflow.headers["x-sage-error-code"] == "upload_manifest_mismatch"
+        assert not (
+            tmp_path / ".uploads" / str(task["upload_id"]) / "second.bin"
+        ).exists()
+
+        second = client.put(
+            f"/api/agent/uploads/{task['upload_id']}/files/second.bin",
+            headers=task_headers,
+            content=b"de",
+        )
+        assert second.status_code == 200
+        ready = client.get(task["status_url"], headers=task_headers)
+        assert ready.status_code == 200
+        assert ready.json()["status"] == "ready"
+        assert ready.json()["uploaded_file_count"] == 2
+        assert ready.json()["total_size"] == 5
+
+        extra = client.put(
+            f"/api/agent/uploads/{task['upload_id']}/files/third.bin",
+            headers=task_headers,
+            content=b"x",
+        )
+        assert extra.status_code == 409
+        assert extra.headers["x-sage-error-code"] == "upload_manifest_mismatch"
+
+        finalized = client.post(
+            task["finalize_url"],
+            headers=bearer(plaintext),
+            json={"upload_token": task["upload_token"]},
+        )
+        assert finalized.status_code == 200
+        assert finalized.json()["imported_file_count"] == 2
+        assert finalized.json()["total_size"] == 5
+
+        monkeypatch.setattr(settings, "agent_upload_max_files_per_task", 1)
+        oversized_manifest = client.post(
+            "/api/agent/uploads",
+            headers=bearer(plaintext),
+            json={
+                "asset_id": str(asset.id),
+                "target_subdirectory": "original",
+                "expected_file_count": 2,
+                "expected_total_size": 2,
+            },
+        )
+        assert oversized_manifest.status_code == 413
+        assert (
+            oversized_manifest.headers["x-sage-error-code"]
+            == "upload_manifest_too_large"
+        )
     finally:
         app.dependency_overrides.clear()
         session.close()

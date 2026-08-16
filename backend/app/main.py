@@ -60,7 +60,7 @@ async def prevent_api_caching(request: Request, call_next):
 app.include_router(router, prefix=settings.api_prefix)
 
 AGENT_PROTOCOL_VERSION = "1.0"
-AGENT_DOCUMENT_VERSION = "2026-08-17.15"
+AGENT_DOCUMENT_VERSION = "2026-08-17.16"
 AGENT_INSTRUCTIONS = (
     Path(__file__)
     .with_name("agent.md")
@@ -68,6 +68,14 @@ AGENT_INSTRUCTIONS = (
     .replace("{{PROTOCOL_VERSION}}", AGENT_PROTOCOL_VERSION)
     .replace("{{DOCUMENT_VERSION}}", AGENT_DOCUMENT_VERSION)
     .replace("{{MAXIMUM_FILE_SIZE_BYTES}}", str(settings.agent_upload_max_bytes))
+    .replace(
+        "{{MAXIMUM_UPLOAD_FILES_PER_TASK}}",
+        str(settings.agent_upload_max_files_per_task),
+    )
+    .replace(
+        "{{MAXIMUM_UPLOAD_TOTAL_BYTES}}",
+        str(settings.agent_upload_max_total_bytes),
+    )
     .replace(
         "{{MAXIMUM_PUBLICATION_AUTHOR_CHARACTERS}}",
         str(MAX_PUBLICATION_AUTHOR_LENGTH),
@@ -105,6 +113,7 @@ def agent_discovery() -> JSONResponse:
                 "file_read",
                 "direct_upload",
                 "upload_recovery",
+                "upload_manifest_summary",
                 "archive_finalize",
                 "citation_export",
             ],
@@ -145,6 +154,8 @@ def agent_discovery() -> JSONResponse:
                 "default_page_size": 10,
                 "maximum_page_size": 100,
                 "maximum_file_size_bytes": settings.agent_upload_max_bytes,
+                "maximum_upload_files_per_task": settings.agent_upload_max_files_per_task,
+                "maximum_upload_total_bytes": settings.agent_upload_max_total_bytes,
                 "maximum_publication_author_characters": (
                     MAX_PUBLICATION_AUTHOR_LENGTH
                 ),
@@ -161,6 +172,8 @@ def agent_discovery() -> JSONResponse:
                 "error_code_header": AGENT_ERROR_CODE_HEADER,
                 "retry_after_header": "Retry-After",
                 "status_checksum_query_parameter": "include_checksums",
+                "manifest_summary_fields": ["expected_file_count", "expected_total_size"],
+                "manifest_summary_required_for_new_clients": True,
                 "error_codes": [
                     "invalid_checksum",
                     "invalid_content_length",
@@ -169,6 +182,8 @@ def agent_discovery() -> JSONResponse:
                     "upload_conflict",
                     "upload_credentials_invalid",
                     "upload_invalid",
+                    "upload_manifest_mismatch",
+                    "upload_manifest_too_large",
                     "upload_not_ready",
                     "upload_status_unavailable",
                     "upload_storage_unavailable",

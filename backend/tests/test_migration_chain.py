@@ -58,6 +58,9 @@ def test_empty_sqlite_database_upgrades_to_head(tmp_path: Path) -> None:
         asset_unique_constraints = inspector.get_unique_constraints("assets")
         tag_unique_constraints = inspector.get_unique_constraints("tags")
         unclaimed_unique_constraints = inspector.get_unique_constraints("unclaimed_files")
+        upload_task_columns = {
+            column["name"] for column in inspector.get_columns("upload_tasks")
+        }
         upload_task_checks = inspector.get_check_constraints("upload_tasks")
         upload_task_foreign_keys = inspector.get_foreign_keys("upload_tasks")
         user_columns = {column["name"] for column in inspector.get_columns("users")}
@@ -68,7 +71,7 @@ def test_empty_sqlite_database_upgrades_to_head(tmp_path: Path) -> None:
         invitation_checks = inspector.get_check_constraints("account_invitations")
         invitation_foreign_keys = inspector.get_foreign_keys("account_invitations")
 
-    assert revision == "20260816_0023"
+    assert revision == "20260817_0024"
     assert {"operation_id", "operation_role"} <= activity_columns
     assert any(
         key["constrained_columns"] == ["claimed_asset_id"] and key["referred_table"] == "assets"
@@ -109,6 +112,11 @@ def test_empty_sqlite_database_upgrades_to_head(tmp_path: Path) -> None:
     assert any(
         constraint["column_names"] == ["relative_path"]
         for constraint in unclaimed_unique_constraints
+    )
+    assert {"expected_file_count", "expected_total_size"} <= upload_task_columns
+    assert any(
+        constraint["name"] == "ck_upload_tasks_expected_manifest"
+        for constraint in upload_task_checks
     )
     assert any(constraint["name"] == "ck_upload_tasks_status" for constraint in upload_task_checks)
     assert {key["referred_table"] for key in upload_task_foreign_keys} == {
@@ -259,6 +267,6 @@ def test_publication_identity_migration_can_retry_after_duplicate_preflight(
 
     with engine.connect() as connection:
         assert connection.scalar(sa.text("SELECT version_num FROM alembic_version")) == (
-            "20260816_0023"
+            "20260817_0024"
         )
         assert sa.inspect(connection).has_table("publication_identity_keys")

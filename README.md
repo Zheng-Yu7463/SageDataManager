@@ -234,6 +234,7 @@ AI 客户端先读取公开的 `/agent.md`，再按其中的流程调用 `/api/a
 
 服务端默认最多每 300 秒持久化一次令牌的最近使用时间，避免高频 Agent 请求反复写同一行；可通过 `SAGE_AGENT_TOKEN_LAST_USED_INTERVAL_SECONDS` 调整，设为 `0` 时每次请求都会更新。
 反向代理默认只接受不超过 2 MB 的 API 请求体，仅 `PUT /api/agent/uploads/{upload_id}/files/{relative_path}` 文件流式上传路径放宽到 500 MB；后端仍会独立执行单文件大小与校验和检查。
+Agent 新任务应提交真实的 `expected_file_count` 和 `expected_total_size`；服务端在逐文件上传和正式入库时都会核对，旧版在途任务仍兼容。实例默认每个任务最多声明 10,000 个文件、50 GB 总字节，可分别通过 `SAGE_AGENT_UPLOAD_MAX_FILES_PER_TASK` 和 `SAGE_AGENT_UPLOAD_MAX_TOTAL_BYTES` 调整。
 
 
 ### 批量导入元数据

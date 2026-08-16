@@ -77,6 +77,10 @@ class UploadTooLargeError(UploadContentError):
     pass
 
 
+class UploadManifestError(UploadContentError):
+    pass
+
+
 class UploadStorageError(UploadContentError):
     pass
 
@@ -170,6 +174,8 @@ def _new_upload_task(
     subdirectory: PurePosixPath,
     expires_at: datetime,
     transfer_mode: str,
+    expected_file_count: int | None = None,
+    expected_total_size: int | None = None,
 ) -> UploadTask:
     task = UploadTask(
         id=upload_id,
@@ -177,6 +183,8 @@ def _new_upload_task(
         user_id=actor.id,
         access_token_id=access_token.id if access_token else None,
         target_subdirectory=subdirectory.as_posix(),
+        expected_file_count=expected_file_count,
+        expected_total_size=expected_total_size,
         transfer_mode=transfer_mode,
         status="active",
         expires_at=expires_at,
@@ -294,13 +302,26 @@ def create_agent_upload(
     session: Session,
     asset_id: UUID,
     target_subdirectory: str,
+    expected_file_count: int | None,
+    expected_total_size: int | None,
     *,
     actor: User,
     access_token: PersonalAccessToken,
+    maximum_file_size: int,
+    maximum_files_per_task: int,
+    maximum_total_size: int,
 ) -> AgentUploadCreateResponse:
     asset = session.get(Asset, asset_id)
     if not asset or asset.archived_at:
         raise UploadCommandError("目标资产不存在或已归档。")
+    if expected_file_count is not None and expected_total_size is not None:
+        if (
+            expected_file_count > maximum_files_per_task
+            or expected_total_size > maximum_total_size
+        ):
+            raise UploadTooLargeError("上传清单超过实例允许的任务级文件数或总字节限制。")
+        if expected_total_size > expected_file_count * maximum_file_size:
+            raise UploadManifestError("预计总字节无法在当前单文件大小限制内完成。")
     subdirectory = _validated_subdirectory(asset, target_subdirectory)
     upload_id = uuid4()
     archive_relative_path = (PurePosixPath(asset.type.value) / asset.slug / subdirectory).as_posix()
@@ -316,6 +337,8 @@ def create_agent_upload(
         subdirectory=subdirectory,
         expires_at=expires_at,
         transfer_mode="agent",
+        expected_file_count=expected_file_count,
+        expected_total_size=expected_total_size,
     )
     record_activity(
         session,
@@ -333,6 +356,8 @@ def create_agent_upload(
         archive_relative_path=archive_relative_path,
         upload_token=upload_token,
         expires_at=expires_at,
+        expected_file_count=expected_file_count,
+        expected_total_size=expected_total_size,
         file_upload_url_template=f"/api/agent/uploads/{upload_id}/files/{{relative_path}}",
         status_url=f"/api/agent/uploads/{upload_id}",
         finalize_url=f"/api/agent/uploads/{upload_id}/finalize",
@@ -438,6 +463,52 @@ def staged_upload_destination(
     if destination.exists() or destination.is_symlink():
         raise UploadConflictError([upload_path.as_posix()])
     return destination, parts_directory
+
+
+def agent_upload_remaining_capacity(
+    expected_file_count: int | None,
+    expected_total_size: int | None,
+    storage_root: Path,
+    upload_id: UUID,
+    declared_size: int | None,
+) -> int | None:
+    if expected_file_count is None or expected_total_size is None:
+        return None
+    try:
+        root = storage_root.resolve(strict=True)
+    except (FileNotFoundError, NotADirectoryError) as error:
+        raise UploadContentError("存储根不可用，无法接收文件。") from error
+    if not root.is_dir():
+        raise UploadContentError("存储根不可用，无法接收文件。")
+    staging_root = root / UPLOAD_STAGING_DIRECTORY
+    if staging_root.is_symlink():
+        raise UploadContentError("上传临时区不是有效目录，无法接收文件。")
+    staging_directory = staging_root / str(upload_id)
+    if staging_directory.exists():
+        try:
+            staged_files = _staged_files(
+                staging_directory, completion_marker_required=False
+            )
+        except UploadNotReadyError:
+            staged_files = []
+        opened_files = _open_staged_files(staging_directory, staged_files)
+        try:
+            current_total_size = sum(
+                source.metadata.st_size for source in opened_files
+            )
+        finally:
+            _close_staged_files(opened_files)
+    else:
+        staged_files = []
+        current_total_size = 0
+    if len(staged_files) >= expected_file_count:
+        raise UploadManifestError("已接收文件数达到任务声明上限，拒绝额外文件。")
+    remaining_size = expected_total_size - current_total_size
+    if remaining_size <= 0:
+        raise UploadManifestError("已接收总字节达到任务声明上限，拒绝额外文件。")
+    if declared_size is not None and declared_size > remaining_size:
+        raise UploadManifestError("文件会使任务总字节超过创建时声明的清单。")
+    return remaining_size
 
 
 def recover_agent_file_upload(
@@ -717,6 +788,8 @@ def agent_upload_status(
             upload_id=task.id,
             asset_id=task.asset_id,
             archive_relative_path=archive_relative_path,
+            expected_file_count=task.expected_file_count,
+            expected_total_size=task.expected_total_size,
             status="completed",
             uploaded_file_count=result.imported_file_count,
             total_size=result.total_size,
@@ -728,6 +801,8 @@ def agent_upload_status(
             upload_id=task.id,
             asset_id=task.asset_id,
             archive_relative_path=archive_relative_path,
+            expected_file_count=task.expected_file_count,
+            expected_total_size=task.expected_total_size,
             status="cancelled",
             uploaded_file_count=0,
             total_size=0,
@@ -749,6 +824,8 @@ def agent_upload_status(
             upload_id=task.id,
             asset_id=task.asset_id,
             archive_relative_path=archive_relative_path,
+            expected_file_count=task.expected_file_count,
+            expected_total_size=task.expected_total_size,
             status="waiting",
             uploaded_file_count=0,
             total_size=0,
@@ -792,13 +869,24 @@ def agent_upload_status(
         raise UploadContentError("上传文件正在变化，请稍后重试。") from error
     finally:
         _close_staged_files(opened_files)
+    uploaded_total_size = sum(file.file_size for file in uploaded_files)
+    manifest_complete = (
+        task.expected_file_count is None
+        or task.expected_total_size is None
+        or (
+            len(uploaded_files) == task.expected_file_count
+            and uploaded_total_size == task.expected_total_size
+        )
+    )
     return AgentUploadStatusResponse(
         upload_id=task.id,
         asset_id=task.asset_id,
         archive_relative_path=archive_relative_path,
-        status="ready" if uploaded_files else "waiting",
+        expected_file_count=task.expected_file_count,
+        expected_total_size=task.expected_total_size,
+        status="ready" if uploaded_files and manifest_complete else "waiting",
         uploaded_file_count=len(uploaded_files),
-        total_size=sum(file.file_size for file in uploaded_files),
+        total_size=uploaded_total_size,
         expires_at=task.expires_at,
         files=uploaded_files,
     )
@@ -1206,6 +1294,22 @@ def _finalize_upload(
         completion_marker_required=task.transfer_mode == "scp",
     )
     opened_files = _open_staged_files(staging_directory, staged_files)
+    if (
+        task.transfer_mode == "agent"
+        and task.expected_file_count is not None
+        and task.expected_total_size is not None
+    ):
+        staged_total_size = sum(source.metadata.st_size for source in opened_files)
+        if (
+            len(opened_files) != task.expected_file_count
+            or staged_total_size != task.expected_total_size
+        ):
+            _close_staged_files(opened_files)
+            raise UploadManifestError(
+                "已接收文件与任务声明不一致："
+                f"需要 {task.expected_file_count} 个文件、{task.expected_total_size} 字节，"
+                f"当前为 {len(opened_files)} 个文件、{staged_total_size} 字节。"
+            )
     archive_directory = root.joinpath(asset.type.value, asset.slug, *subdirectory.parts)
     destinations = [
         archive_directory.joinpath(*source.relative_path.parts) for source in opened_files

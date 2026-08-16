@@ -196,6 +196,12 @@ class UploadTask(Base):
             "(transfer_mode = 'scp' AND access_token_id IS NULL)",
             name="ck_upload_tasks_credential",
         ),
+        CheckConstraint(
+            "(expected_file_count IS NULL AND expected_total_size IS NULL) OR "
+            "(expected_file_count IS NOT NULL AND expected_total_size IS NOT NULL AND "
+            "expected_file_count > 0 AND expected_total_size >= expected_file_count)",
+            name="ck_upload_tasks_expected_manifest",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True)
@@ -209,6 +215,8 @@ class UploadTask(Base):
         ForeignKey("personal_access_tokens.id", ondelete="CASCADE"), index=True
     )
     target_subdirectory: Mapped[str] = mapped_column(String(400), nullable=False)
+    expected_file_count: Mapped[int | None] = mapped_column(Integer)
+    expected_total_size: Mapped[int | None] = mapped_column(BigInteger)
     transfer_mode: Mapped[str] = mapped_column(String(20), nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
     result: Mapped[dict[str, Any] | None] = mapped_column(JSON)

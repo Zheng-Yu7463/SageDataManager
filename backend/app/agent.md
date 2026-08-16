@@ -199,8 +199,10 @@ changes after hashing, stop and rebuild the manifest.
 2. Choose `target_subdirectory`. Its first component must be allowed for the asset type. Additional
    components must form a canonical relative path with no empty, `.`, or `..` components and no
    repeated or trailing `/`.
-3. Create a task with `POST /api/agent/uploads` and retain `upload_id`, `upload_token`, `expires_at`,
-   URL fields, and `archive_relative_path` in process memory.
+3. Sum the local manifest and create a task with `POST /api/agent/uploads`, sending
+   `expected_file_count` and `expected_total_size` with the target. Verify the response echoes both
+   values, then retain `upload_id`, `upload_token`, `expires_at`, URL fields, and
+   `archive_relative_path` in process memory.
 4. Upload each file with `PUT` to `file_upload_url_template`. Percent-encode each UTF-8 path segment
    while preserving `/` separators. Use only canonical relative paths. Empty files, empty path
    components (including repeated or trailing `/`), absolute paths, `.` or `..` components,
@@ -210,13 +212,14 @@ changes after hashing, stop and rebuild the manifest.
    `X-Sage-Content-SHA256`. Compare the response's `file_size` and `checksum_sha256` with the local
    manifest before continuing. A repeated PUT is idempotent only when the same path already contains
    a regular file with the same SHA-256 and the same declared length, when `Content-Length` is present.
-6. The current `maximum_file_size_bytes` is {{MAXIMUM_FILE_SIZE_BYTES}}. Read the discovery
-   document for this value instead of assuming the default. A `413` rejects the whole file and
-   leaves no partial staged file.
+6. The current per-file limit is {{MAXIMUM_FILE_SIZE_BYTES}} bytes; one task may declare at most
+   {{MAXIMUM_UPLOAD_FILES_PER_TASK}} files and {{MAXIMUM_UPLOAD_TOTAL_BYTES}} total bytes. Read the
+   discovery document instead of assuming these values. A `413` rejects an oversized file or task
+   declaration and leaves no partial staged file.
 7. Recover after an interruption with `GET` on `status_url` plus `include_checksums=true`,
-   sending the PAT and
-   `X-Sage-Upload-Token`. Every status response repeats `asset_id` and `archive_relative_path` so
-   the target can be verified against the local manifest. States are `waiting`, `ready`,
+   sending the PAT and `X-Sage-Upload-Token`. Every status response repeats `asset_id`,
+   `archive_relative_path`, `expected_file_count`, and `expected_total_size` so both the target and
+   the declared bounds can be verified against the local manifest. States are `waiting`, `ready`,
    `completed`, and `cancelled`. For an active task, `files` lists every atomically accepted
    `relative_path`, `file_size`, and `checksum_sha256`; compare all three with the local manifest.
    Normal status checks may omit `include_checksums` to avoid hashing large files and then return
@@ -227,8 +230,9 @@ changes after hashing, stop and rebuild the manifest.
    the same path, declared length, and SHA-256. A `409` means the retry was not identical: inspect
    status, stop, and report the conflict. Without the original checksum, do not retry the path.
 9. Before finalization, verify that every upload response succeeded or was recovered through a
-   checksum-enabled status response, and that the status file list, count, and total size match the local manifest. Do not finalize an
-   incomplete or ambiguous task.
+   checksum-enabled status response, and that the status file list, declared values, accepted count,
+   and total size all match the local manifest. `ready` is returned only when a bounded task matches
+   both declared totals. Do not finalize an incomplete or ambiguous task.
 10. Finalize with `POST` to `finalize_url` and JSON `{"upload_token":"<upload-token>"}`. Verify
     `imported_file_count`, `total_size`, `relative_paths`, and `checksums` in the response. Finalize
     is idempotent when repeated with the same upload ID, PAT, and upload token.
@@ -284,6 +288,8 @@ operation table below permits it.
 | `upload_target_invalid` | Re-check the asset and allowed archive directory; ask if intent is ambiguous. |
 | `invalid_content_length`, `invalid_checksum` | Correct the malformed request header before retrying. |
 | `upload_too_large` | Stop; split or otherwise change the payload only with user authorization. |
+| `upload_manifest_too_large` | Stop; the declared task exceeds the instance file-count or total-byte limit. |
+| `upload_manifest_mismatch` | Stop; reconcile the declared count and bytes with accepted files, then cancel and recreate the task if the declaration was wrong. |
 | `upload_busy` | Honor `Retry-After`, inspect status, and make one safe retry. |
 | `upload_not_ready` | Inspect status and reconcile the accepted files with the local manifest. |
 | `upload_conflict` | Stop and resolve the path or duplicate-content conflict with the user. |
@@ -383,8 +389,11 @@ curl --fail-with-body --silent --show-error \
 Create, upload, inspect, and finalize one file:
 
 ```sh
+FILE_SIZE="$(wc -c < "$FILE_PATH" | tr -d " ")"
 TASK_JSON="$(jq -n --arg asset_id "$ASSET_ID" \
-  '{asset_id:$asset_id,target_subdirectory:"original"}' | \
+  --argjson expected_file_count 1 \
+  --argjson expected_total_size "$FILE_SIZE" \
+  '{asset_id:$asset_id,target_subdirectory:"original",expected_file_count:$expected_file_count,expected_total_size:$expected_total_size}' | \
 curl --fail-with-body --silent --show-error \
   "$BASE_URL/api/agent/uploads" \
   -H "Authorization: Bearer $SAGE_TOKEN" \

@@ -515,6 +515,8 @@ class AgentUploadStatusResponse(BaseModel):
     status: Literal["waiting", "ready", "completed", "cancelled"]
     uploaded_file_count: int
     total_size: int
+    expected_file_count: int | None = None
+    expected_total_size: int | None = None
     expires_at: datetime
     files: list[AgentUploadFileStatus] = Field(default_factory=list)
     result: UploadFinalizeResponse | None = None
@@ -583,6 +585,20 @@ class AgentIdentityResponse(BaseModel):
 class AgentUploadCreateRequest(BaseModel):
     asset_id: UUID
     target_subdirectory: str = Field(min_length=1, max_length=400)
+    expected_file_count: int | None = Field(default=None, ge=1)
+    expected_total_size: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def validate_manifest_summary(self) -> "AgentUploadCreateRequest":
+        if (self.expected_file_count is None) != (self.expected_total_size is None):
+            raise ValueError("expected_file_count 与 expected_total_size 必须同时提供。")
+        if (
+            self.expected_file_count is not None
+            and self.expected_total_size is not None
+            and self.expected_total_size < self.expected_file_count
+        ):
+            raise ValueError("非空文件的预计总字节不能小于预计文件数。")
+        return self
 
 
 class AgentUploadCreateResponse(BaseModel):
@@ -592,6 +608,8 @@ class AgentUploadCreateResponse(BaseModel):
     archive_relative_path: str
     upload_token: str
     expires_at: datetime
+    expected_file_count: int | None = None
+    expected_total_size: int | None = None
     file_upload_url_template: str
     status_url: str
     finalize_url: str

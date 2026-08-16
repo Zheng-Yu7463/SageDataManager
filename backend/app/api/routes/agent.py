@@ -62,10 +62,12 @@ from app.services.transfers import (
     UploadCommandError,
     UploadConflictError,
     UploadContentError,
+    UploadManifestError,
     UploadNotReadyError,
     UploadStorageError,
     UploadTicketError,
     UploadTooLargeError,
+    agent_upload_remaining_capacity,
     agent_upload_status,
     cancel_agent_upload,
     cleanup_expired_upload_tasks,
@@ -102,15 +104,16 @@ def validate_streaming_upload(
     upload_id: UUID,
     upload_token: str,
     principal: AgentPrincipal,
-) -> None:
+) -> tuple[int | None, int | None]:
     try:
-        validate_agent_upload(
+        task = validate_agent_upload(
             session,
             upload_id,
             upload_token,
             principal.user,
             principal.token,
         )
+        return task.expected_file_count, task.expected_total_size
     finally:
         session.rollback()
 
@@ -395,7 +398,10 @@ def agent_publication_citation(
     "/uploads",
     status_code=status.HTTP_201_CREATED,
     summary="Create an isolated direct-upload task",
-    responses={409: {"description": "Asset or target directory is invalid"}},
+    responses={
+        409: {"description": "Asset, target directory, or manifest is invalid"},
+        413: {"description": "Declared manifest exceeds the instance limits"},
+    },
 )
 def agent_create_upload(
     payload: AgentUploadCreateRequest,
@@ -408,11 +414,22 @@ def agent_create_upload(
             session,
             payload.asset_id,
             payload.target_subdirectory,
+            payload.expected_file_count,
+            payload.expected_total_size,
             actor=principal.user,
             access_token=principal.token,
+            maximum_file_size=settings.agent_upload_max_bytes,
+            maximum_files_per_task=settings.agent_upload_max_files_per_task,
+            maximum_total_size=settings.agent_upload_max_total_bytes,
         )
         session.commit()
         return result
+    except UploadTooLargeError as error:
+        session.rollback()
+        raise _agent_error(413, "upload_manifest_too_large", str(error)) from None
+    except UploadManifestError as error:
+        session.rollback()
+        raise _agent_error(409, "upload_manifest_mismatch", str(error)) from None
     except UploadCommandError as error:
         session.rollback()
         raise _agent_error(409, "upload_target_invalid", str(error)) from None
@@ -557,7 +574,7 @@ async def agent_upload_file(
             principal,
         )
         with upload_task_guard(settings.storage_root, upload_id):
-            await anyio.to_thread.run_sync(
+            expected_file_count, expected_total_size = await anyio.to_thread.run_sync(
                 validate_streaming_upload,
                 session,
                 upload_id,
@@ -577,6 +594,14 @@ async def agent_upload_file(
             destination, parts_directory = staged_upload_destination(
                 settings.storage_root, upload_id, relative_path
             )
+            remaining_task_bytes = await anyio.to_thread.run_sync(
+                agent_upload_remaining_capacity,
+                expected_file_count,
+                expected_total_size,
+                settings.storage_root,
+                upload_id,
+                declared_size,
+            )
             with temporary_upload_file(parts_directory) as (temporary_file, output):
                 received = 0
                 digest = hashlib.sha256()
@@ -584,11 +609,18 @@ async def agent_upload_file(
                     received += len(chunk)
                     if received > settings.agent_upload_max_bytes:
                         raise UploadTooLargeError("上传文件超过服务器限制。")
+                    if (
+                        remaining_task_bytes is not None
+                        and received > remaining_task_bytes
+                    ):
+                        raise UploadManifestError("文件会使任务总字节超过创建时声明的清单。")
                     digest.update(chunk)
                     await anyio.to_thread.run_sync(output.write, chunk)
                 await anyio.to_thread.run_sync(os.fsync, output.fileno())
                 if received == 0:
                     raise UploadContentError("不能上传空文件。")
+                if declared_size is not None and received != declared_size:
+                    raise UploadContentError("实际接收字节数与 Content-Length 不一致。")
                 checksum_sha256 = digest.hexdigest()
                 if expected_checksum and not hmac.compare_digest(
                     expected_checksum, checksum_sha256
@@ -608,6 +640,9 @@ async def agent_upload_file(
     except UploadBusyError as error:
         session.rollback()
         raise _agent_error(409, "upload_busy", str(error), retry_after=1) from None
+    except UploadManifestError as error:
+        session.rollback()
+        raise _agent_error(409, "upload_manifest_mismatch", str(error)) from None
     except UploadTooLargeError as error:
         session.rollback()
         raise _agent_error(413, "upload_too_large", str(error)) from None
@@ -673,6 +708,9 @@ def agent_finalize_upload(
     except UploadBusyError as error:
         session.rollback()
         raise _agent_error(409, "upload_busy", str(error), retry_after=1) from None
+    except UploadManifestError as error:
+        session.rollback()
+        raise _agent_error(409, "upload_manifest_mismatch", str(error)) from None
     except UploadNotReadyError as error:
         session.rollback()
         raise _agent_error(409, "upload_not_ready", str(error)) from None
