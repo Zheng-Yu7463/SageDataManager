@@ -165,7 +165,7 @@ class OpenStagedFile:
 @dataclass
 class PublishedFile:
     path: Path
-    parent_descriptor: int
+    metadata: os.stat_result
     checksum_sha256: str
 
 
@@ -859,7 +859,7 @@ def agent_upload_status(
                     while chunk := os.read(source.descriptor, 1024 * 1024):
                         digest.update(chunk)
                     current_metadata = os.fstat(source.descriptor)
-                    if not _staged_metadata_matches(source.metadata, current_metadata):
+                    if not _file_metadata_matches(source.metadata, current_metadata):
                         raise UploadContentError(
                             "上传文件在校验期间发生变化，请稍后重试。"
                         )
@@ -1046,11 +1046,11 @@ def _staged_snapshot_matches(
 ) -> bool:
     return (
         source.relative_path == snapshot.relative_path
-        and _staged_metadata_matches(snapshot.metadata, source.metadata)
+        and _file_metadata_matches(snapshot.metadata, source.metadata)
     )
 
 
-def _staged_metadata_matches(
+def _file_metadata_matches(
     expected: os.stat_result, current: os.stat_result
 ) -> bool:
     return (
@@ -1065,6 +1065,80 @@ def _close_staged_files(files: list[OpenStagedFile]) -> None:
         for descriptor in (source.descriptor, source.parent_descriptor):
             with suppress(OSError):
                 os.close(descriptor)
+
+
+def _open_parent_directory(storage_root: Path, path: Path) -> int:
+    relative_path = path.relative_to(storage_root)
+    descriptor = os.open(
+        storage_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    )
+    try:
+        for directory_name in relative_path.parts[:-1]:
+            next_descriptor = os.open(
+                directory_name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=descriptor,
+            )
+            previous_descriptor = descriptor
+            descriptor = next_descriptor
+            with suppress(OSError):
+                os.close(previous_descriptor)
+        result = descriptor
+        descriptor = -1
+        return result
+    finally:
+        if descriptor >= 0:
+            with suppress(OSError):
+                os.close(descriptor)
+
+
+def _published_file_metadata(
+    storage_root: Path, published: PublishedFile
+) -> os.stat_result:
+    parent_descriptor: int | None = None
+    try:
+        parent_descriptor = _open_parent_directory(storage_root, published.path)
+        current = os.stat(
+            published.path.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+    except OSError as error:
+        raise UploadContentError(
+            "已发布文件在归档索引建立前发生变化，已中止入库。"
+        ) from error
+    finally:
+        if parent_descriptor is not None:
+            with suppress(OSError):
+                os.close(parent_descriptor)
+    if not stat.S_ISREG(current.st_mode) or not _file_metadata_matches(
+        published.metadata, current
+    ):
+        raise UploadContentError(
+            "已发布文件在归档索引建立前发生变化，已中止入库。"
+        )
+    return current
+
+
+def _rollback_published_file(storage_root: Path, published: PublishedFile) -> None:
+    parent_descriptor: int | None = None
+    try:
+        parent_descriptor = _open_parent_directory(storage_root, published.path)
+        current = os.stat(
+            published.path.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        if not _file_metadata_matches(published.metadata, current):
+            return
+        os.unlink(published.path.name, dir_fd=parent_descriptor)
+        os.fsync(parent_descriptor)
+    except OSError:
+        return
+    finally:
+        if parent_descriptor is not None:
+            with suppress(OSError):
+                os.close(parent_descriptor)
 
 
 def _unsafe_destination_parent(destination: Path, storage_root: Path) -> bool:
@@ -1201,9 +1275,10 @@ def _copy_without_overwrite(
     destination_parent_descriptor: int,
     destination: Path,
     relative_path: str,
-) -> str:
+) -> tuple[str, os.stat_result]:
     target_descriptor: int | None = None
     checksum_sha256 = ""
+    target_metadata: os.stat_result | None = None
     try:
         target_descriptor = os.open(
             destination.name,
@@ -1226,6 +1301,7 @@ def _copy_without_overwrite(
             output_file.flush()
             os.fsync(output_file.fileno())
             checksum_sha256 = digest.hexdigest()
+            target_metadata = os.fstat(output_file.fileno())
         try:
             current_metadata = os.fstat(source.descriptor)
             path_metadata = os.stat(
@@ -1265,7 +1341,9 @@ def _copy_without_overwrite(
         if target_descriptor is not None:
             with suppress(OSError):
                 os.close(target_descriptor)
-    return checksum_sha256
+    if target_metadata is None:
+        raise UploadContentError("目标文件写入结果不可用，已中止入库。")
+    return checksum_sha256, target_metadata
 
 
 def finalize_upload(
@@ -1422,22 +1500,16 @@ def _finalize_upload(
                         parent_descriptor = next_descriptor
                         with suppress(OSError):
                             os.close(previous_descriptor)
-                    rollback_descriptor = os.dup(parent_descriptor)
-                    try:
-                        checksum_sha256 = _copy_without_overwrite(
-                            source,
-                            parent_descriptor,
-                            destination,
-                            relative_path,
-                        )
-                    except Exception:
-                        with suppress(OSError):
-                            os.close(rollback_descriptor)
-                        raise
+                    checksum_sha256, published_metadata = _copy_without_overwrite(
+                        source,
+                        parent_descriptor,
+                        destination,
+                        relative_path,
+                    )
                     published_files.append(
                         PublishedFile(
                             path=destination,
-                            parent_descriptor=rollback_descriptor,
+                            metadata=published_metadata,
                             checksum_sha256=checksum_sha256,
                         )
                     )
@@ -1473,11 +1545,7 @@ def _finalize_upload(
             raise UploadContentError(f"检测到内容相同的重复文件：\n{visible}")
 
         for published, relative_path in zip(published_files, relative_paths, strict=True):
-            metadata = os.stat(
-                published.path.name,
-                dir_fd=published.parent_descriptor,
-                follow_symlinks=False,
-            )
+            metadata = _published_file_metadata(root, published)
             total_size += metadata.st_size
             session.add(
                 FileRecord(
@@ -1521,19 +1589,11 @@ def _finalize_upload(
     except Exception:
         try:
             for published in reversed(published_files):
-                with suppress(FileNotFoundError):
-                    os.unlink(published.path.name, dir_fd=published.parent_descriptor)
-                with suppress(OSError):
-                    os.fsync(published.parent_descriptor)
+                _rollback_published_file(root, published)
             _remove_empty_archive_directories(created_archive_directories, root)
         finally:
             # PostgreSQL transaction locks must cover filesystem compensation too.
             session.rollback()
         raise
-    finally:
-        for published in published_files:
-            with suppress(OSError):
-                os.close(published.parent_descriptor)
-
     _cleanup_completed_upload_staging(storage_root, upload_id)
     return result

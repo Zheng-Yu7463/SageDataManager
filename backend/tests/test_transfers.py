@@ -1,5 +1,6 @@
 import hashlib
 import os
+import resource
 import shutil
 import stat
 from datetime import UTC, datetime, timedelta
@@ -1059,6 +1060,110 @@ def test_finalize_upload_rolls_back_moved_files_when_indexing_fails(
     assert staged.exists()
     assert not (tmp_path / "dataset").exists()
     assert compensation_events[:2] == ["unlink", "rollback"]
+    monkeypatch.setattr(session, "flush", original_flush)
+    assert session.scalar(select(func.count()).select_from(FileRecord)) == 0
+
+
+def test_finalize_upload_does_not_retain_destination_directory_descriptors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = make_session()
+    asset = create_asset(session)
+    prepared = prepare_upload(session, asset, recursive=True)
+    staging = staging_directory(tmp_path, prepared.upload_id)
+    (staging / "nested").mkdir(parents=True)
+    (staging / "first.csv").write_text("first")
+    (staging / "nested" / "second.csv").write_text("second")
+    mark_upload_complete(tmp_path, prepared.upload_id)
+    original_dup = os.dup
+    duplicated_directories = 0
+
+    def track_dup(descriptor: int) -> int:
+        nonlocal duplicated_directories
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            duplicated_directories += 1
+        return original_dup(descriptor)
+
+    monkeypatch.setattr("app.services.transfers.os.dup", track_dup)
+
+    result = finalize_upload(
+        session,
+        tmp_path,
+        prepared.upload_id,
+        prepared.upload_token,
+        actor=asset.owner,
+    )
+
+    assert result.imported_file_count == 2
+    assert duplicated_directories == 0
+
+
+def test_finalize_upload_handles_more_files_than_the_descriptor_limit(
+    tmp_path: Path,
+) -> None:
+    session = make_session()
+    asset = create_asset(session)
+    prepared = prepare_upload(session, asset, recursive=True)
+    staging = staging_directory(tmp_path, prepared.upload_id)
+    staging.mkdir(parents=True)
+    for index in range(120):
+        (staging / f"{index:03}.txt").write_text(f"file {index}")
+    mark_upload_complete(tmp_path, prepared.upload_id)
+    original_limit = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if original_limit[0] < 96:
+        pytest.skip("进程文件描述符上限不足以运行此回归测试")
+
+    resource.setrlimit(resource.RLIMIT_NOFILE, (96, original_limit[1]))
+    try:
+        result = finalize_upload(
+            session,
+            tmp_path,
+            prepared.upload_id,
+            prepared.upload_token,
+            actor=asset.owner,
+        )
+    finally:
+        resource.setrlimit(resource.RLIMIT_NOFILE, original_limit)
+
+    assert result.imported_file_count == 120
+
+
+def test_finalize_upload_rollback_preserves_replaced_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = make_session()
+    asset = create_asset(session)
+    prepared = prepare_upload(session, asset)
+    staged = staging_directory(tmp_path, prepared.upload_id) / "samples.csv"
+    staged.parent.mkdir(parents=True)
+    staged.write_text("uploaded")
+    mark_upload_complete(tmp_path, prepared.upload_id)
+    published = tmp_path / "dataset" / asset.slug / "raw" / "2026-08" / "samples.csv"
+    original_flush = session.flush
+    replaced = False
+
+    def replace_then_fail(*args, **kwargs):
+        nonlocal replaced
+        if published.exists() and not replaced:
+            replaced = True
+            published.unlink()
+            published.write_text("external replacement")
+            raise RuntimeError("database unavailable")
+        return original_flush(*args, **kwargs)
+
+    monkeypatch.setattr(session, "flush", replace_then_fail)
+
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        finalize_upload(
+            session,
+            tmp_path,
+            prepared.upload_id,
+            prepared.upload_token,
+            actor=asset.owner,
+        )
+
+    assert staged.read_text() == "uploaded"
+    assert published.read_text() == "external replacement"
     monkeypatch.setattr(session, "flush", original_flush)
     assert session.scalar(select(func.count()).select_from(FileRecord)) == 0
 
