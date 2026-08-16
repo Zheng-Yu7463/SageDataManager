@@ -945,6 +945,65 @@ test('检查更新在后台运行并由页面轮询结果', async ({ page }) => 
   expect(checkRequests).toBe(1)
 })
 
+test('系统更新轮询失败后退避并自动恢复', async ({ page }) => {
+  await mockEmptyDashboard(page)
+  await mockEmptySettingsCollections(page)
+  await signInWithMockAccount(page)
+  await page.unroute('**/api/settings/system-update')
+
+  let statusRequests = 0
+  let allowRecovery = false
+  const busyStatus = systemUpdateStatus({
+    enabled: true,
+    state: 'checking',
+    phase: 'fetch',
+    message: '正在连接 GitHub 获取 origin/main…',
+    current_commit: 'a'.repeat(40),
+    latest_commit: 'a'.repeat(40),
+    worktree_clean: true,
+  })
+  await page.route('**/api/settings/system-update', async (route) => {
+    statusRequests += 1
+    if (statusRequests === 1) {
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify(busyStatus) })
+      return
+    }
+    if (!allowRecovery) {
+      await route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: '更新代理暂时不可用' }),
+      })
+      return
+    }
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(systemUpdateStatus({
+        ...busyStatus,
+        state: 'idle',
+        phase: null,
+        message: '当前已经是最新版本。',
+      })),
+    })
+  })
+
+  await page.goto('/settings')
+  const updatePanel = page.locator('.system-update-panel')
+  await expect(updatePanel.getByText('正在连接 GitHub 获取 origin/main…')).toBeVisible()
+  await expect.poll(() => statusRequests, { timeout: 5_000 }).toBe(2)
+
+  const pollError = updatePanel.locator('.system-update-error')
+  await expect(pollError).toContainText('更新代理暂时不可用')
+  await expect(pollError).toContainText('将在 4 秒后重试')
+  await page.waitForTimeout(2_500)
+  expect(statusRequests).toBe(2)
+
+  allowRecovery = true
+  await expect(updatePanel.getByText('当前已经是最新版本。')).toBeVisible({ timeout: 5_000 })
+  await expect(pollError).toBeHidden()
+  expect(statusRequests).toBe(3)
+})
+
 test('实例所有者可在窄屏安全启动系统更新', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 })
   await mockEmptyDashboard(page)

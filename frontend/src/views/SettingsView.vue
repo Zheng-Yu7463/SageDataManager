@@ -95,7 +95,10 @@ const updateDialog = ref<HTMLElement | null>(null)
 const updatePassword = ref('')
 const updateSubmitting = ref(false)
 const updateSubmitError = ref('')
+const UPDATE_POLL_INTERVAL_MS = 2_000
+const UPDATE_POLL_MAX_INTERVAL_MS = 30_000
 let updatePollTimer: ReturnType<typeof setTimeout> | null = null
+let updatePollFailureCount = 0
 let settingsDisposed = false
 let systemUpdateController: AbortController | undefined
 let accountsController: AbortController | undefined
@@ -285,7 +288,7 @@ async function loadTokens() {
   }
 }
 
-async function loadSystemUpdate(silent = false) {
+async function loadSystemUpdate(silent = false): Promise<boolean> {
   systemUpdateController?.abort()
   const controller = new AbortController()
   systemUpdateController = controller
@@ -293,16 +296,25 @@ async function loadSystemUpdate(silent = false) {
   if (!silent) systemUpdateError.value = ''
   try {
     const result = await getSystemUpdateStatus(controller.signal)
-    if (systemUpdateController !== controller) return
+    if (systemUpdateController !== controller) return false
     systemUpdate.value = result
+    updatePollFailureCount = 0
+    systemUpdateError.value = ''
     if (systemUpdateBusy.value) startUpdatePolling()
     else stopUpdatePolling()
+    return true
   } catch (reason) {
-    if (systemUpdateController !== controller) return
-    if (reason instanceof DOMException && reason.name === 'AbortError') return
-    if (!silent) {
-      systemUpdateError.value = reason instanceof Error ? reason.message : '无法读取系统版本'
+    if (systemUpdateController !== controller) return false
+    if (reason instanceof DOMException && reason.name === 'AbortError') return false
+    const message = reason instanceof Error ? reason.message : '无法读取系统版本'
+    if (silent) {
+      updatePollFailureCount += 1
+      const retrySeconds = Math.round(updatePollDelay() / 1000)
+      systemUpdateError.value = `更新状态暂时不可用：${message}；将在 ${retrySeconds} 秒后重试。`
+    } else {
+      systemUpdateError.value = message
     }
+    return false
   } finally {
     if (systemUpdateController === controller) {
       systemUpdateController = undefined
@@ -690,11 +702,19 @@ function systemUpdateStateLabel(status: SystemUpdateStatus | null) {
   return labels[status.state] || status.state
 }
 
+function updatePollDelay() {
+  return Math.min(
+    UPDATE_POLL_INTERVAL_MS * 2 ** updatePollFailureCount,
+    UPDATE_POLL_MAX_INTERVAL_MS,
+  )
+}
+
 function stopUpdatePolling() {
   if (updatePollTimer) {
     clearTimeout(updatePollTimer)
     updatePollTimer = null
   }
+  updatePollFailureCount = 0
 }
 
 function startUpdatePolling() {
@@ -703,7 +723,7 @@ function startUpdatePolling() {
     updatePollTimer = null
     await loadSystemUpdate(true)
     if (!settingsDisposed && systemUpdateBusy.value) startUpdatePolling()
-  }, 2000)
+  }, updatePollDelay())
 }
 
 async function checkForSystemUpdate() {
