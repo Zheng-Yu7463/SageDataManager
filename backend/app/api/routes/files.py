@@ -58,7 +58,23 @@ class OpenFileResponse(FileResponse):
         try:
             await super().__call__(scope, receive, send)
         finally:
-            os.close(self.descriptor)
+            self.close()
+
+    def close(self) -> None:
+        if self.descriptor < 0:
+            return
+        descriptor = self.descriptor
+        self.descriptor = -1
+        os.close(descriptor)
+
+    def validate_range_request(self, request: Request) -> None:
+        http_range = request.headers.get("range")
+        http_if_range = request.headers.get("if-range")
+        if http_range is None or (
+            http_if_range is not None and not self._should_use_range(http_if_range)
+        ):
+            return
+        self._parse_range_header(http_range, self.stat_result.st_size)
 
     async def _read(self, size: int, offset: int) -> bytes:
         return await anyio.to_thread.run_sync(os.pread, self.descriptor, size, offset)

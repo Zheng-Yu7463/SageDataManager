@@ -40,22 +40,26 @@ async def prevent_api_caching(request: Request, call_next):
     ) and "cache-control" not in response.headers:
         response.headers["Cache-Control"] = "no-store"
     agent_api_path = f"{settings.api_prefix}/agent"
+    fallback_error_code = {
+        416: "range_not_satisfiable",
+        422: "request_invalid",
+    }.get(response.status_code)
     if (
-        response.status_code == 422
+        fallback_error_code
         and (
             request.url.path == agent_api_path
             or request.url.path.startswith(f"{agent_api_path}/")
         )
         and AGENT_ERROR_CODE_HEADER not in response.headers
     ):
-        response.headers[AGENT_ERROR_CODE_HEADER] = "request_invalid"
+        response.headers[AGENT_ERROR_CODE_HEADER] = fallback_error_code
     return response
 
 
 app.include_router(router, prefix=settings.api_prefix)
 
 AGENT_PROTOCOL_VERSION = "1.0"
-AGENT_DOCUMENT_VERSION = "2026-08-17.10"
+AGENT_DOCUMENT_VERSION = "2026-08-17.12"
 AGENT_INSTRUCTIONS = (
     Path(__file__)
     .with_name("agent.md")
@@ -127,6 +131,8 @@ def agent_discovery() -> JSONResponse:
                     "file_unavailable",
                     "citation_incomplete",
                     "request_invalid",
+                    "range_invalid",
+                    "range_not_satisfiable",
                 ],
             },
             "limits": {

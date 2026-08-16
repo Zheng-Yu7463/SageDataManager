@@ -10,6 +10,7 @@ from uuid import UUID
 import anyio
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 from sqlalchemy.orm import Session
+from starlette.responses import MalformedRangeHeader, RangeNotSatisfiable
 
 from app.api.dependencies import (
     AGENT_ERROR_CODE_HEADER,
@@ -236,8 +237,10 @@ def agent_asset(
     summary="Read or download an indexed file",
     description="Streams the indexed file directly and supports HTTP Range requests.",
     responses={
+        400: {"description": "Malformed byte range"},
         404: {"description": "File or active asset not found"},
         409: {"description": "File is unavailable or cannot be previewed"},
+        416: {"description": "Requested byte range is outside the indexed file"},
     },
 )
 def agent_file_content(
@@ -248,6 +251,7 @@ def agent_file_content(
     mode: Annotated[Literal["download", "preview"], Query()] = "download",
 ) -> Response:
     delivery = None
+    response: OpenFileResponse | None = None
     try:
         delivery = open_file_delivery(
             session,
@@ -258,10 +262,38 @@ def agent_file_content(
             credential_name=principal.token.name,
             audit_access=request.method != "HEAD",
         )
+        response = OpenFileResponse(
+            delivery.take_descriptor(),
+            file_name=delivery.file_name,
+            stat_result=delivery.stat,
+            media_type=delivery.media_type,
+            content_disposition_type=delivery.content_disposition,
+            headers={
+                "Cache-Control": "private, no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+        response.validate_range_request(request)
         session.commit()
+    except MalformedRangeHeader as error:
+        if response:
+            response.close()
+        session.rollback()
+        raise _agent_error(400, "range_invalid", str(error)) from None
+    except RangeNotSatisfiable:
+        if response:
+            response.close()
+        session.rollback()
+        raise _agent_error(
+            416,
+            "range_not_satisfiable",
+            "请求的字节范围超出文件长度。",
+        ) from None
     except FileNotFoundError:
         if delivery:
             delivery.close()
+        if response:
+            response.close()
         session.rollback()
         raise _agent_error(
             404, "file_not_found", "文件不存在或所属资产已归档。"
@@ -269,6 +301,8 @@ def agent_file_content(
     except FilePreviewUnavailableError:
         if delivery:
             delivery.close()
+        if response:
+            response.close()
         session.rollback()
         raise _agent_error(
             409,
@@ -278,6 +312,8 @@ def agent_file_content(
     except FileUnavailableError:
         if delivery:
             delivery.close()
+        if response:
+            response.close()
         session.rollback()
         raise _agent_error(
             409, "file_unavailable", "文件当前不可用，请先重新扫描归档。"
@@ -285,20 +321,12 @@ def agent_file_content(
     except Exception:
         if delivery:
             delivery.close()
+        if response:
+            response.close()
         session.rollback()
         raise
 
-    return OpenFileResponse(
-        delivery.take_descriptor(),
-        file_name=delivery.file_name,
-        stat_result=delivery.stat,
-        media_type=delivery.media_type,
-        content_disposition_type=delivery.content_disposition,
-        headers={
-            "Cache-Control": "private, no-store",
-            "X-Content-Type-Options": "nosniff",
-        },
-    )
+    return response
 
 
 @router.patch(

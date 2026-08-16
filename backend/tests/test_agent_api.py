@@ -127,6 +127,8 @@ def test_agent_discovery_is_public_and_contains_no_secret() -> None:
             "file_unavailable",
             "citation_incomplete",
             "request_invalid",
+            "range_invalid",
+            "range_not_satisfiable",
         ],
     }
     assert "file_read" in discovery_data["capabilities"]
@@ -1211,6 +1213,18 @@ def test_agent_can_range_read_an_indexed_file_with_pat_audit(tmp_path: Path, mon
         assert response.content == b"2345"
         assert response.headers["content-range"] == "bytes 2-5/10"
         assert response.headers["cache-control"] == "private, no-store"
+        invalid_range = client.get(
+            f"/api/agent/files/{record.id}/content",
+            headers={**bearer(plaintext), "Range": "bytes=20-"},
+        )
+        assert invalid_range.status_code == 416
+        assert invalid_range.headers["x-sage-error-code"] == "range_not_satisfiable"
+        malformed_range = client.get(
+            f"/api/agent/files/{record.id}/content",
+            headers={**bearer(plaintext), "Range": "items=0-1"},
+        )
+        assert malformed_range.status_code == 400
+        assert malformed_range.headers["x-sage-error-code"] == "range_invalid"
         activity = session.scalars(
             select(Activity).where(Activity.action == "downloaded_file")
         ).one()

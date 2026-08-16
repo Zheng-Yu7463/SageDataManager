@@ -266,6 +266,8 @@ before route logic.
 | `file_unavailable` | Stop and report that the indexed file needs server-side storage reconciliation. |
 | `citation_incomplete` | Stop; do not synthesize the missing citation fields. |
 | `request_invalid` | Correct missing headers, fields, types, or parameter bounds using OpenAPI before retrying. |
+| `range_invalid` | Rebuild the Range header from the byte length returned by HEAD before retrying. |
+| `range_not_satisfiable` | Re-run HEAD and reconcile the remote length with the local partial file before resuming. |
 
 Upload operations add the upload-specific codes below. `upload_busy` also includes
 `Retry-After`; wait at least that many seconds, inspect task status, and retry only when the
@@ -291,6 +293,7 @@ operation table below permits it.
 | `404` | Re-read/search; the resource may be absent or archived. |
 | `409` | Inspect `X-Sage-Error-Code` when present, then use the detail and current state to resolve the conflict before retrying. |
 | `413` | Do not retry the same payload; the file exceeds the limit. |
+| `416` | Re-run HEAD and verify whether the local file is complete, stale, or must be restarted. |
 | `422` | Correct fields and types using OpenAPI before retrying. |
 | `429` | Honor `Retry-After`, otherwise use the bounded schedule below. |
 | `5xx` | Retry only when the operation is safe according to the table below. |
