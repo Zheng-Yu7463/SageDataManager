@@ -133,6 +133,9 @@ const activeTokens = computed(() => accessTokens.value.filter((token) => tokenSt
 const historicalTokens = computed(() => accessTokens.value.filter((token) => tokenStatus(token) !== 'active'))
 
 const isInstanceOwner = computed(() => account.value?.is_instance_owner === true)
+const canManageAccount = (target: AccountSummary) => (
+  !target.is_instance_owner || isInstanceOwner.value
+)
 const systemUpdateBusy = computed(() => {
   if (systemUpdate.value?.backup_in_progress) return true
   const state = systemUpdate.value?.state
@@ -490,7 +493,11 @@ async function createAccount() {
 }
 
 async function issueAccountInvitation(account: AccountSummary) {
-  if (accountsLoading.value || updatingUsernames.value.has(account.username)) return
+  if (
+    accountsLoading.value
+    || updatingUsernames.value.has(account.username)
+    || !canManageAccount(account)
+  ) return
   accountsController?.abort()
   accountsController = undefined
   accountsLoading.value = false
@@ -523,7 +530,12 @@ async function copyAccountInvitation() {
 }
 
 async function toggleAccount(account: AccountSummary) {
-  if (accountsLoading.value || account.username === currentUsername.value || updatingUsernames.value.has(account.username)) return
+  if (
+    accountsLoading.value
+    || account.username === currentUsername.value
+    || updatingUsernames.value.has(account.username)
+    || !canManageAccount(account)
+  ) return
   accountsController?.abort()
   accountsController = undefined
   accountsLoading.value = false
@@ -908,8 +920,8 @@ onBeforeUnmount(() => {
             <div class="account-copy"><strong>{{ account.name || '等待本人注册' }}</strong><small>{{ account.username }}<template v-if="account.email"> · {{ account.email }}</template></small></div>
             <span class="account-role">{{ account.is_instance_owner ? '实例所有者' : account.role }}</span>
             <span class="account-status" :class="{ 'account-status--pending': !account.is_registered, 'account-status--inactive': !account.is_active }">{{ !account.is_registered ? '待注册' : account.is_active ? '已启用' : '已停用' }}</span>
-            <button class="button button--outline account-toggle" :disabled="updatingUsernames.has(account.username) || account.username === currentUsername || !account.is_registered" :aria-label="`${updatingUsernames.has(account.username) ? '正在处理' : account.is_active ? '停用管理员' : '启用管理员'}：${account.name || account.username}`" :title="!account.is_registered ? '待注册账号不能切换状态' : account.username === currentUsername ? '当前登录账号不可自行停用' : ''" @click="toggleAccount(account)"><UserRoundX v-if="account.is_active" :size="15" /><Check v-else :size="15" />{{ updatingUsernames.has(account.username) ? '处理中' : account.is_active ? '停用' : '启用' }}</button>
-            <button class="account-invitation-button" type="button" :disabled="updatingUsernames.has(account.username) || !account.is_active" :aria-label="`${account.is_registered ? '生成密码恢复链接' : '重新生成注册链接'}：${account.name || account.username}`" :title="account.is_registered ? '生成密码恢复链接' : '重新生成注册链接'" @click="issueAccountInvitation(account)"><Link2 :size="16" /></button>
+            <button class="button button--outline account-toggle" :disabled="updatingUsernames.has(account.username) || account.username === currentUsername || !account.is_registered || !canManageAccount(account)" :aria-label="`${updatingUsernames.has(account.username) ? '正在处理' : account.is_active ? '停用管理员' : '启用管理员'}：${account.name || account.username}`" :title="!canManageAccount(account) ? '只有实例所有者可以管理实例所有者账号' : !account.is_registered ? '待注册账号不能切换状态' : account.username === currentUsername ? '当前登录账号不可自行停用' : ''" @click="toggleAccount(account)"><UserRoundX v-if="account.is_active" :size="15" /><Check v-else :size="15" />{{ updatingUsernames.has(account.username) ? '处理中' : account.is_active ? '停用' : '启用' }}</button>
+            <button class="account-invitation-button" type="button" :disabled="updatingUsernames.has(account.username) || !account.is_active || !canManageAccount(account)" :aria-label="`${account.is_registered ? '生成密码恢复链接' : '重新生成注册链接'}：${account.name || account.username}`" :title="!canManageAccount(account) ? '只有实例所有者可以管理实例所有者账号' : account.is_registered ? '生成密码恢复链接' : '重新生成注册链接'" @click="issueAccountInvitation(account)"><Link2 :size="16" /></button>
             <p v-if="accountActionErrors[account.username]" class="account-row-error" role="alert">{{ accountActionErrors[account.username] }}</p>
           </div>
         </div>

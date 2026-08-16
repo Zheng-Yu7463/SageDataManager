@@ -37,6 +37,7 @@ from app.services.accounts import (
     AccountInvitationValidationError,
     AccountLoginError,
     AccountNotFoundError,
+    AccountPermissionError,
     AccountSetupConflictError,
     InvitationPurpose,
     accept_account_invitation,
@@ -171,6 +172,9 @@ def _renew_invitation(
     except AccountNotFoundError:
         session.rollback()
         raise HTTPException(status_code=404, detail="账号不存在。") from None
+    except AccountPermissionError as error:
+        session.rollback()
+        raise HTTPException(status_code=403, detail=str(error)) from None
     except AccountConflictError as error:
         session.rollback()
         raise HTTPException(status_code=409, detail=str(error)) from None
@@ -261,6 +265,9 @@ def update_admin(
     except AccountNotFoundError:
         session.rollback()
         raise HTTPException(status_code=404, detail="账号不存在。") from None
+    except AccountPermissionError as error:
+        session.rollback()
+        raise HTTPException(status_code=403, detail=str(error)) from None
     except AccountConflictError as error:
         session.rollback()
         raise HTTPException(status_code=409, detail=str(error)) from None

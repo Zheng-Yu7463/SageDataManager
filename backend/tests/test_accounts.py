@@ -488,6 +488,53 @@ def test_registered_account_can_be_disabled_but_pending_profile_cannot_be_edited
         require_admin(session, None)
 
 
+def test_regular_admin_cannot_manage_the_instance_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = make_session()
+    monkeypatch.setattr(settings, "auth_session_secret", "test-session-secret")
+    owner = initialize_owner(session)
+    regular_admin = User(
+        username="regular-admin",
+        name="Regular Admin",
+        email="regular-admin@example.org",
+        role="admin",
+        password_hash="not-used",
+        is_active=True,
+        is_registered=True,
+        is_instance_owner=False,
+    )
+    session.add(regular_admin)
+    session.commit()
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[require_admin] = lambda: regular_admin
+    try:
+        client = TestClient(app)
+
+        recovery = client.post(
+            f"/api/auth/admin-accounts/{owner.username}/recovery-invitation"
+        )
+        disabled = client.patch(
+            f"/api/auth/admin-accounts/{owner.username}",
+            json={"is_active": False},
+        )
+
+        assert recovery.status_code == 403
+        assert disabled.status_code == 403
+        assert "实例所有者" in recovery.json()["detail"]
+        assert "实例所有者" in disabled.json()["detail"]
+        session.refresh(owner)
+        assert owner.is_active is True
+        assert session.scalar(
+            select(func.count())
+            .select_from(AccountInvitation)
+            .where(AccountInvitation.user_id == owner.id)
+        ) == 0
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
+
+
 def test_reenabling_an_account_does_not_restore_its_old_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -35,6 +35,10 @@ class AccountConflictError(Exception):
     pass
 
 
+class AccountPermissionError(Exception):
+    pass
+
+
 class AccountNotFoundError(Exception):
     pass
 
@@ -141,6 +145,11 @@ def _revoke_user_credentials(session: Session, user: User, now: datetime) -> Non
     session.execute(delete(FileAccessGrant).where(FileAccessGrant.user_id == user.id))
 
 
+def _require_account_management_permission(actor: User, target: User) -> None:
+    if target.is_instance_owner and not actor.is_instance_owner:
+        raise AccountPermissionError("只有实例所有者可以管理实例所有者账号。")
+
+
 def _issue_invitation(
     session: Session,
     user: User,
@@ -232,6 +241,7 @@ def renew_admin_invitation(
     )
     if not user:
         raise AccountNotFoundError
+    _require_account_management_permission(actor, user)
     if purpose == "registration" and user.is_registered:
         raise AccountConflictError("账号已经完成注册。")
     if purpose == "recovery" and not user.is_registered:
@@ -358,6 +368,7 @@ def update_admin_account(
     user = session.scalar(select(User).where(User.username == username).with_for_update())
     if not user:
         raise AccountNotFoundError
+    _require_account_management_permission(actor, user)
     changed = False
     if payload.name is not None:
         if not user.is_registered:
