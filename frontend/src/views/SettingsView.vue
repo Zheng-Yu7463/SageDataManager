@@ -1040,7 +1040,7 @@ onBeforeUnmount(() => {
           <button v-if="systemUpdate.state === 'succeeded'" class="button button--outline" type="button" @click="reloadApplication"><RefreshCw :size="14" />刷新到新版本</button>
         </div>
       </div>
-      <p v-else-if="systemUpdateError" class="settings-error system-update-load-error" role="alert">{{ systemUpdateError }}</p>
+      <p v-else-if="systemUpdateError" class="settings-error system-update-load-error" role="alert">{{ systemUpdateError }} <button type="button" :disabled="systemUpdateLoading" @click="loadSystemUpdate()">重试</button></p>
     </section>
 
     <div v-if="updateDialogOpen" class="settings-backdrop" @click.self="closeUpdateDialog">
@@ -1246,6 +1246,7 @@ onBeforeUnmount(() => {
 .system-update-message { margin: 15px 0 0; color: #65736a; font-size: 11px; line-height: 1.6; }
 .system-update-error { margin-top: 10px; }
 .system-update-load-error { padding: 18px 20px; }
+.system-update-load-error button { padding: 0; color: inherit; text-decoration: underline; background: transparent; border: 0; cursor: pointer; }
 .system-update-unavailable { display: flex; margin-top: 14px; padding: 12px; align-items: flex-start; color: #7d5a39; background: #fff8ef; border: 1px solid #eddbc6; border-radius: 6px; gap: 9px; }
 .system-update-unavailable p { display: grid; margin: 0; gap: 5px; }
 .system-update-unavailable strong { font-size: 11px; }

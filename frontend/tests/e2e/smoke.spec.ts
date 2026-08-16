@@ -887,6 +887,48 @@ test('Logo 选择后先预览，明确应用时才上传', async ({ page }) => {
   await expect(page.getByText('Logo 已应用')).toBeVisible()
 })
 
+test('系统版本读取失败可局部重试', async ({ page }) => {
+  await mockEmptyDashboard(page)
+  await mockEmptySettingsCollections(page)
+  await signInWithMockAccount(page)
+  await page.unroute('**/api/settings/system-update')
+
+  let statusRequests = 0
+  await page.route('**/api/settings/system-update', async (route) => {
+    statusRequests += 1
+    if (statusRequests === 1) {
+      await route.fulfill({
+        status: 503,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: '更新代理暂时不可用' }),
+      })
+      return
+    }
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify(systemUpdateStatus({
+        enabled: true,
+        state: 'idle',
+        message: '当前已经是最新版本。',
+        current_commit: 'a'.repeat(40),
+        latest_commit: 'a'.repeat(40),
+        worktree_clean: true,
+      })),
+    })
+  })
+
+  await page.goto('/settings')
+  const updatePanel = page.locator('.system-update-panel')
+  const loadError = updatePanel.getByRole('alert')
+  await expect(loadError).toContainText('更新代理暂时不可用')
+
+  await loadError.getByRole('button', { name: '重试' }).click()
+
+  await expect(updatePanel.getByText('当前已经是最新版本。')).toBeVisible()
+  await expect(loadError).toBeHidden()
+  expect(statusRequests).toBe(2)
+})
+
 test('检查更新在后台运行并由页面轮询结果', async ({ page }) => {
   await mockEmptyDashboard(page)
   await mockEmptySettingsCollections(page)
