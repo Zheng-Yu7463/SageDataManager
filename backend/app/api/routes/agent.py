@@ -64,6 +64,7 @@ from app.services.transfers import (
     complete_agent_file_upload,
     create_agent_upload,
     finalize_upload,
+    recover_agent_file_upload,
     staged_upload_destination,
     temporary_upload_path,
     upload_task_guard,
@@ -441,7 +442,8 @@ def agent_cancel_upload(
     summary="Upload one file into an active task",
     description=(
         "URL-encode relative_path, send X-Sage-Upload-Token, and optionally send "
-        "X-Sage-Content-SHA256. The instance's configured file-size limit applies."
+        "X-Sage-Content-SHA256. A retry with the same path, size, and SHA-256 returns "
+        "the previously accepted result. The instance's configured file-size limit applies."
     ),
     responses={
         400: {"description": "Invalid request header"},
@@ -491,6 +493,16 @@ async def agent_upload_file(
                 x_sage_upload_token,
                 principal,
             )
+            replayed = await anyio.to_thread.run_sync(
+                recover_agent_file_upload,
+                settings.storage_root,
+                upload_id,
+                relative_path,
+                expected_checksum,
+                declared_size,
+            )
+            if replayed:
+                return replayed
             destination, parts_directory = staged_upload_destination(
                 settings.storage_root, upload_id, relative_path
             )

@@ -371,11 +371,11 @@ def validate_agent_upload(
     return task
 
 
-def staged_upload_destination(
+def _agent_upload_destination(
     storage_root: Path,
     upload_id: UUID,
     relative_path: str,
-) -> tuple[Path, Path]:
+) -> tuple[PurePosixPath, Path, Path]:
     upload_path = _canonical_relative_upload_path(
         relative_path, maximum_length=MAX_ARCHIVE_RELATIVE_PATH_LENGTH
     )
@@ -399,11 +399,60 @@ def staged_upload_destination(
     }
     if any(part in reserved_names for part in upload_path.parts):
         raise UploadContentError("上传文件路径使用了系统保留名称。")
-    if destination.exists() or destination.is_symlink():
-        raise UploadConflictError([upload_path.as_posix()])
     if _unsafe_destination_parent(destination, root):
         raise UploadContentError("上传文件的父目录不可用。")
-    return destination, staging_root / UPLOAD_PARTS_DIRECTORY
+    return upload_path, destination, staging_root / UPLOAD_PARTS_DIRECTORY
+
+
+def staged_upload_destination(
+    storage_root: Path,
+    upload_id: UUID,
+    relative_path: str,
+) -> tuple[Path, Path]:
+    upload_path, destination, parts_directory = _agent_upload_destination(
+        storage_root, upload_id, relative_path
+    )
+    if destination.exists() or destination.is_symlink():
+        raise UploadConflictError([upload_path.as_posix()])
+    return destination, parts_directory
+
+
+def recover_agent_file_upload(
+    storage_root: Path,
+    upload_id: UUID,
+    relative_path: str,
+    expected_checksum: str,
+    declared_size: int | None,
+) -> AgentUploadedFileResponse | None:
+    upload_path, destination, parts_directory = _agent_upload_destination(
+        storage_root, upload_id, relative_path
+    )
+    if not destination.exists() and not destination.is_symlink():
+        return None
+    if not expected_checksum:
+        raise UploadConflictError([upload_path.as_posix()])
+
+    staging_directory = parts_directory.parent / str(upload_id)
+    opened = _open_staged_files(staging_directory, [destination])
+    source = opened[0]
+    try:
+        if declared_size is not None and source.metadata.st_size != declared_size:
+            raise UploadConflictError([upload_path.as_posix()])
+        digest = hashlib.sha256()
+        while chunk := os.read(source.descriptor, 1024 * 1024):
+            digest.update(chunk)
+        checksum_sha256 = digest.hexdigest()
+    finally:
+        _close_staged_files(opened)
+
+    if checksum_sha256 != expected_checksum:
+        raise UploadConflictError([upload_path.as_posix()])
+    return AgentUploadedFileResponse(
+        upload_id=upload_id,
+        relative_path=upload_path.as_posix(),
+        file_size=source.metadata.st_size,
+        checksum_sha256=checksum_sha256,
+    )
 
 
 @contextmanager
@@ -429,19 +478,13 @@ def complete_agent_file_upload(
     checksum_sha256: str,
 ) -> AgentUploadedFileResponse:
     staging_root = next(
-        (
-            ancestor
-            for ancestor in destination.parents
-            if ancestor.name == UPLOAD_STAGING_DIRECTORY
-        ),
+        (ancestor for ancestor in destination.parents if ancestor.name == UPLOAD_STAGING_DIRECTORY),
         None,
     )
     if staging_root is None:
         raise UploadContentError("上传文件目标不在临时区内。")
     try:
-        canonical_relative_path = destination.relative_to(
-            staging_root / str(upload_id)
-        ).as_posix()
+        canonical_relative_path = destination.relative_to(staging_root / str(upload_id)).as_posix()
     except ValueError as error:
         raise UploadContentError("上传文件目标不属于当前任务。") from error
     storage_root = staging_root.parent
@@ -976,9 +1019,7 @@ def finalize_upload(
                     access_token=access_token,
                 )
         except StorageIndexBusyError:
-            raise UploadBusyError(
-                "归档扫描正在运行，请等待扫描完成后重试入库。"
-            ) from None
+            raise UploadBusyError("归档扫描正在运行，请等待扫描完成后重试入库。") from None
 
 
 def _finalize_upload(
@@ -1038,9 +1079,7 @@ def _finalize_upload(
 
     try:
         if any(len(path) > MAX_ARCHIVE_RELATIVE_PATH_LENGTH for path in relative_paths):
-            raise UploadContentError(
-                "归档路径超过数据库允许的 1000 个字符，请缩短目录或文件名。"
-            )
+            raise UploadContentError("归档路径超过数据库允许的 1000 个字符，请缩短目录或文件名。")
         database_conflicts = set(
             session.scalars(
                 select(FileRecord.relative_path).where(FileRecord.relative_path.in_(relative_paths))

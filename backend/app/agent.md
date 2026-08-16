@@ -201,17 +201,18 @@ changes after hashing, stop and rebuild the manifest.
    characters are rejected.
 5. Send `X-Sage-Upload-Token` and, when available, the lowercase 64-character SHA-256 in
    `X-Sage-Content-SHA256`. Compare the response's `file_size` and `checksum_sha256` with the local
-   manifest before continuing.
+   manifest before continuing. A repeated PUT is idempotent only when the same path already contains
+   a regular file with the same SHA-256 and the same declared length, when `Content-Length` is present.
 6. The current `maximum_file_size_bytes` is {{MAXIMUM_FILE_SIZE_BYTES}}. Read the discovery
    document for this value instead of assuming the default. A `413` rejects the whole file and
    leaves no partial staged file.
 7. Recover after an interruption with `GET` on `status_url`, sending the PAT and
    `X-Sage-Upload-Token`. States are `waiting`, `ready`, `completed`, and `cancelled`. For an
    active task, `files` lists every atomically accepted `relative_path` and `file_size`.
-8. If a PUT response was lost after sending `X-Sage-Content-SHA256`, a matching path and size in
-   status means the server accepted the complete file and verified the supplied checksum. Do not
-   upload that path again. If no checksum was supplied or the path/size differs, stop and report
-   the ambiguity.
+8. If a PUT response is lost after sending `X-Sage-Content-SHA256`, retry that exact PUT once. The
+   server returns the original success response without overwriting only when the staged file matches
+   the same path, declared length, and SHA-256. A `409` means the retry was not identical: inspect
+   status, stop, and report the conflict. Without the original checksum, do not retry the path.
 9. Before finalization, verify that every upload response succeeded or was recovered through status,
    and that the status file list, count, and total size match the local manifest. Do not finalize an
    incomplete or ambiguous task.
@@ -262,7 +263,7 @@ with jitter. Honor a longer `Retry-After`. Do not run unbounded polling or retry
 | POST asset create | Do not blindly repeat. Search again by all identities and slug first. |
 | PATCH asset | Read latest detail and retry only if the intended merge is still valid. |
 | POST upload task | Do not blindly repeat because the first task may exist but its secret response was lost. Search cannot recover that token; report the ambiguity and allow it to expire. |
-| PUT file | Check task status first. Treat a matching path and size as recovered only when the original PUT supplied the local SHA-256; otherwise report the ambiguity. |
+| PUT file | With the original SHA-256, retry the exact PUT once; identical accepted content returns `200`. On `409`, inspect status and stop. Without the checksum, do not retry the path. |
 | POST finalize | Safe to retry with the same upload ID, PAT, and upload token. |
 | DELETE cancel | Safe to retry with the same upload ID, PAT, and upload token unless status is `completed`. |
 

@@ -149,6 +149,7 @@ def test_agent_discovery_is_public_and_contains_no_secret() -> None:
     assert "409" in patch_asset["responses"]
     upload_file = openapi["paths"]["/api/agent/uploads/{upload_id}/files/{relative_path}"]["put"]
     assert {"400", "401", "403", "409", "413", "422"} <= set(upload_file["responses"])
+    assert "same path, size, and SHA-256" in upload_file["description"]
 
 
 def test_personal_tokens_are_shown_once_hashed_and_revocable(monkeypatch) -> None:
@@ -524,6 +525,40 @@ def test_agent_can_upload_and_finalize_a_file(tmp_path: Path, monkeypatch) -> No
         assert upload.json()["relative_path"] == "paper.pdf"
         assert upload.json()["checksum_sha256"] == expected_checksum
         assert not (tmp_path / ".uploads" / ".parts").exists()
+
+        replayed_upload = client.put(
+            f"/api/agent/uploads/{task_data['upload_id']}/files/paper.pdf",
+            headers={
+                **bearer(plaintext),
+                "X-Sage-Upload-Token": task_data["upload_token"],
+                "X-Sage-Content-SHA256": expected_checksum,
+                "Content-Type": "application/pdf",
+            },
+            content=content,
+        )
+        assert replayed_upload.status_code == 200
+        assert replayed_upload.json() == upload.json()
+
+        changed_content = b"x" * len(content)
+        conflicting_replay = client.put(
+            f"/api/agent/uploads/{task_data['upload_id']}/files/paper.pdf",
+            headers={
+                **bearer(plaintext),
+                "X-Sage-Upload-Token": task_data["upload_token"],
+                "X-Sage-Content-SHA256": hashlib.sha256(changed_content).hexdigest(),
+            },
+            content=changed_content,
+        )
+        unverifiable_replay = client.put(
+            f"/api/agent/uploads/{task_data['upload_id']}/files/paper.pdf",
+            headers={
+                **bearer(plaintext),
+                "X-Sage-Upload-Token": task_data["upload_token"],
+            },
+            content=content,
+        )
+        assert conflicting_replay.status_code == 409
+        assert unverifiable_replay.status_code == 409
 
         finalized = client.post(
             task_data["finalize_url"],
