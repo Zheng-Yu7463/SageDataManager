@@ -853,6 +853,7 @@ function reloadApplication() {
 }
 
 onBeforeRouteLeave(() => {
+  if (tokenCreating.value) return false
   if (!settingsHasUnsavedChanges.value) return true
   if (createdToken.value) {
     return window.confirm('新访问令牌只显示一次，离开后将无法再次查看。确定离开吗？')

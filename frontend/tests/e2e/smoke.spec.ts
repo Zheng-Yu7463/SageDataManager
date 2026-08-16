@@ -1726,9 +1726,14 @@ test('AI 访问令牌保护一次性明文并归档失效记录', async ({ page 
     revoked_at: null,
   }
   let submittedTokenScopes: string[] = []
+  let releaseTokenCreation!: () => void
+  const tokenCreationGate = new Promise<void>((resolve) => {
+    releaseTokenCreation = resolve
+  })
   await page.route('**/api/auth/access-tokens', async (route) => {
     if (route.request().method() === 'POST') {
       submittedTokenScopes = (route.request().postDataJSON() as { scopes: string[] }).scopes
+      await tokenCreationGate
       await route.fulfill({ contentType: 'application/json', body: JSON.stringify(createdToken) })
       return
     }
@@ -1763,6 +1768,11 @@ test('AI 访问令牌保护一次性明文并归档失效记录', async ({ page 
   await expect(finalizeScope).toHaveAttribute('aria-pressed', 'true')
   await submitToken.click()
   expect(submittedTokenScopes).toEqual(expect.arrayContaining(['files:upload', 'archive:finalize']))
+  await expect(createDialog.getByRole('button', { name: '正在创建' })).toBeDisabled()
+  await page.locator('a.brand').evaluate((link: HTMLAnchorElement) => link.click())
+  await expect(page).toHaveURL(/\/settings$/)
+  await expect(createDialog).toBeVisible()
+  releaseTokenCreation()
 
   const createdDialog = page.getByRole('dialog', { name: '令牌已创建' })
   await expect(createdDialog).toContainText(createdToken.token)
