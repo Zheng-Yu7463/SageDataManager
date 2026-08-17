@@ -66,6 +66,7 @@ class AssetSummary(BaseModel):
 
 
 class PublicationCatalogueFacets(BaseModel):
+    statuses: list[str] = Field(default_factory=list)
     venues: list[str] = Field(default_factory=list)
     years: list[int] = Field(default_factory=list)
 

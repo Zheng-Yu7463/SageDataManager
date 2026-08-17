@@ -6,6 +6,7 @@ import { getActivities } from '@/api/client'
 import { assetMeta } from '@/catalogue'
 import { useBranding } from '@/composables/useBranding'
 import type { ActivityListResponse } from '@/types'
+import { parseApiDate } from '@/utils/dates'
 
 const data = ref<ActivityListResponse | null>(null)
 const loading = ref(true)
@@ -19,7 +20,7 @@ function formatDate(value: string) {
   return new Intl.DateTimeFormat('zh-CN', {
     dateStyle: 'medium',
     timeStyle: 'short',
-  }).format(new Date(value))
+  }).format(parseApiDate(value))
 }
 
 async function load(nextPage = page.value) {

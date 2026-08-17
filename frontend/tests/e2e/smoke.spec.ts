@@ -333,6 +333,91 @@ test('管理员可登录并进入安全上传闭环', async ({ page }) => {
   await expect(page.getByRole('button', { name: '检测并入库' })).toBeVisible()
 })
 
+test('论文状态筛选覆盖实际状态且上传路径在提交前校验', async ({ page }) => {
+  await mockEmptyDashboard(page)
+  await signInWithMockAccount(page)
+  const asset = {
+    id: '85858585-8585-8585-8585-858585858585',
+    type: 'paper',
+    slug: 'accepted-paper',
+    title: 'Accepted Paper',
+    summary: '用于验证论文状态和上传路径。',
+    status: 'accepted',
+    visibility: 'lab',
+    owner: { id: '86868686-8686-8686-8686-868686868686', name: '测试用户', avatar_url: null },
+    details: {
+      venue: 'ICLR', year: 2026, track: 'Poster', authors: ['Ada Lovelace'],
+      source_id: 'accepted-paper', source_url: 'https://example.com/paper', pdf_url: 'https://example.com/paper.pdf',
+    },
+    tags: ['ICLR'],
+    current_version: null,
+    total_size: 0,
+    file_count: 0,
+    upload_directories: [{ name: 'manuscript', label: '论文稿件' }],
+    default_upload_directory: 'manuscript',
+    updated_at: '2026-08-17T02:15:00',
+  }
+  await page.route('**/api/assets?*', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: [asset], total: 1, page: 1, page_size: 20,
+        publication_facets: { statuses: ['accepted'], venues: ['ICLR'], years: [2026] },
+      }),
+    })
+  })
+  let uploadCommandRequests = 0
+  await page.route('**/api/archive/upload-command', async (route) => {
+    uploadCommandRequests += 1
+    await route.fulfill({ status: 500 })
+  })
+
+  await page.goto('/papers?view=grid')
+  await page.getByRole('button', { name: /筛选条件/ }).click()
+  await expect(page.getByLabel('状态').locator('option[value="accepted"]')).toHaveCount(1)
+  await page.getByRole('button', { name: '上传文件' }).click()
+  await page.getByLabel('本机待上传路径').fill('/tmp/paper.pdf')
+  await page.getByLabel('目录内细分路径（可选）').fill('../bad')
+
+  await expect(page.getByRole('alert')).toContainText('细分路径必须使用规范的相对路径')
+  await expect(page.getByRole('button', { name: '生成上传命令' })).toBeDisabled()
+  expect(uploadCommandRequests).toBe(0)
+})
+
+test('无时区 API 时间按 UTC 转为本地时间', async ({ page }) => {
+  await mockEmptyDashboard(page)
+  await signInWithMockAccount(page)
+  const utcTimestamp = '2026-08-17T02:15:00'
+  await page.route('**/api/dashboard/activities?*', async (route) => {
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: [{
+          id: '87878787-8787-8787-8787-878787878787',
+          asset_id: null,
+          asset_title: null,
+          asset_type: null,
+          actor_name: '测试管理员',
+          credential_name: null,
+          action: 'archive_scanned',
+          action_label: '扫描归档',
+          description: '完成归档扫描',
+          created_at: utcTimestamp,
+          occurrence_count: 1,
+        }],
+        facets: [], total: 1, page: 1, page_size: 20,
+      }),
+    })
+  })
+
+  await page.goto('/activity-log')
+  const expected = await page.evaluate((value) => new Intl.DateTimeFormat('zh-CN', {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(new Date(`${value}Z`)), utcTimestamp)
+  await expect(page.locator('.activity-table time')).toHaveText(expected)
+})
+
 test('上传入库成功后目录刷新失败仍保留成功结果', async ({ page }) => {
   await page.route('**/api/dashboard', async (route) => {
     await route.fulfill({
@@ -3204,8 +3289,11 @@ test('文件预览可以用键盘进入 iframe 内容', async ({ page }) => {
   await page.route(`**/api/files/${fileId}/tickets`, async (route) => {
     await route.fulfill({
       contentType: 'application/json',
-      body: JSON.stringify({ content_url: 'about:blank', expires_at: '2026-08-14T03:00:00Z' }),
+      body: JSON.stringify({ content_url: `/api/files/${fileId}/content?ticket=preview`, expires_at: '2026-08-14T03:00:00Z' }),
     })
+  })
+  await page.route(`**/api/files/${fileId}/content?ticket=preview`, async (route) => {
+    await route.fulfill({ status: 200, contentType: 'text/plain', body: '' })
   })
   await page.goto(`/assets/${assetId}`)
   await page.getByTitle('浏览器预览').click()

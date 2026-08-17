@@ -86,6 +86,7 @@ export interface AssetListResponse {
   page: number
   page_size: number
   publication_facets: {
+    statuses: string[]
     venues: string[]
     years: number[]
   } | null

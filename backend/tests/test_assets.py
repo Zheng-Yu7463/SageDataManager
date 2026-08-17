@@ -609,6 +609,7 @@ def test_publication_catalogue_facets_are_isolated_by_catalogue() -> None:
     acl = paper_payload()
     duplicate_acl = paper_payload(slug="acl-2026-second-paper").model_copy(deep=True)
     duplicate_acl.title = "A Second ACL Paper"
+    duplicate_acl.status = "accepted"
     duplicate_acl.details.update(
         source_id="acl-2026-second-paper",
         source_url="https://example.com/acl-2026-second-paper",
@@ -638,8 +639,10 @@ def test_publication_catalogue_facets_are_isolated_by_catalogue() -> None:
     literature_facets = list_publication_catalogue_facets(session, AssetType.LITERATURE)
     assert facets.venues == ["ACL"]
     assert facets.years == [2026]
+    assert facets.statuses == ["accepted", "published"]
     assert literature_facets.venues == ["ICLR"]
     assert literature_facets.years == [2025]
+    assert literature_facets.statuses == ["published"]
 
     asset = session.get(Asset, archived.id)
     assert asset is not None
@@ -649,6 +652,7 @@ def test_publication_catalogue_facets_are_isolated_by_catalogue() -> None:
     active_facets = list_publication_catalogue_facets(session, AssetType.LITERATURE)
     assert active_facets.venues == []
     assert active_facets.years == []
+    assert active_facets.statuses == []
 
 
 def test_asset_metadata_can_be_updated_archived_and_restored() -> None:

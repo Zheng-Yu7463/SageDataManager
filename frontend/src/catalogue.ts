@@ -42,3 +42,13 @@ export const assetMeta: Record<
 }
 
 export const assetTypes = Object.keys(assetMeta) as AssetType[]
+
+const commonAssetStatuses = ['draft', 'active', 'available', 'collected'] as const
+
+export const assetStatusOptions: Record<AssetType, readonly string[]> = {
+  paper: [...commonAssetStatuses, 'accepted', 'published'],
+  dataset: commonAssetStatuses,
+  literature: [...commonAssetStatuses, 'published'],
+  project: commonAssetStatuses,
+  model: commonAssetStatuses,
+}

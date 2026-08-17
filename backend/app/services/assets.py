@@ -705,6 +705,14 @@ def list_publication_catalogue_facets(
     )
     venue = Asset.details["venue"].as_string()
     year = Asset.details["year"].as_integer()
+    statuses = sorted(
+        {
+            value.strip()
+            for value in session.scalars(select(Asset.status).where(*filters).distinct())
+            if value and value.strip()
+        },
+        key=str.casefold,
+    )
     venues = sorted(
         {
             value.strip()
@@ -725,7 +733,7 @@ def list_publication_catalogue_facets(
         },
         reverse=True,
     )
-    return PublicationCatalogueFacets(venues=venues, years=years)
+    return PublicationCatalogueFacets(statuses=statuses, venues=venues, years=years)
 
 
 def list_archived_assets(

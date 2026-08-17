@@ -6,6 +6,7 @@ import { useRoute } from 'vue-router'
 import { acceptAccountInvitation, getAccountInvitation } from '@/api/client'
 import { useBranding } from '@/composables/useBranding'
 import type { AccountInvitationStatus, AccountLoginResponse } from '@/types'
+import { parseApiDate } from '@/utils/dates'
 
 const emit = defineEmits<{ authenticated: [account: AccountLoginResponse] }>()
 const route = useRoute()
@@ -47,7 +48,7 @@ function formatExpiry(value: string) {
   return new Intl.DateTimeFormat('zh-CN', {
     dateStyle: 'medium',
     timeStyle: 'short',
-  }).format(new Date(value))
+  }).format(parseApiDate(value))
 }
 
 async function loadInvitation(currentToken: string, signal: AbortSignal) {

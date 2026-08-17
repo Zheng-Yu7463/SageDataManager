@@ -8,6 +8,7 @@ import { useBranding } from '@/composables/useBranding'
 import { useOverlayFocus } from '@/composables/useOverlayFocus'
 import { useSession } from '@/session'
 import type { AccessTokenCreated, AccessTokenSummary, AccountInvitationCreated, AccountSummary, AgentScope, InstanceBranding, InstanceBrandingInput, SystemUpdateStatus } from '@/types'
+import { parseApiDate } from '@/utils/dates'
 import { copyText } from '@/utils/textFiles'
 
 const accounts = ref<AccountSummary[]>([])
@@ -480,12 +481,12 @@ function closeRevokeDialog() {
 
 function tokenStatus(token: AccessTokenSummary): 'active' | 'expired' | 'revoked' {
   if (token.revoked_at) return 'revoked'
-  return new Date(token.expires_at).getTime() <= Date.now() ? 'expired' : 'active'
+  return parseApiDate(token.expires_at).getTime() <= Date.now() ? 'expired' : 'active'
 }
 
 function formatTokenDate(value: string | null) {
   if (!value) return ''
-  return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
+  return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(parseApiDate(value))
 }
 
 function backupScheduleLabel(intervalSeconds: number) {

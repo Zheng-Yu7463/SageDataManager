@@ -5,6 +5,7 @@ import { onMounted, ref } from 'vue'
 import { getArchiveHealth, runArchiveScan } from '@/api/client'
 import { useBranding } from '@/composables/useBranding'
 import type { ArchiveHealthSummary } from '@/types'
+import { parseApiDate } from '@/utils/dates'
 
 const data = ref<ArchiveHealthSummary | null>(null)
 const loading = ref(true)
@@ -55,7 +56,7 @@ async function scan() {
 
 function formatDate(value: string | null) {
   if (!value) return '进行中'
-  return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
+  return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short' }).format(parseApiDate(value))
 }
 
 const scanStatusLabels = { running: '进行中', completed: '已完成', failed: '失败' } as const

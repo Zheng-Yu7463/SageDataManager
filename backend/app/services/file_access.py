@@ -153,21 +153,45 @@ def _open_indexed_file(storage_root: Path, relative_path: PurePosixPath) -> tupl
             os.close(parent_descriptor)
 
 
-def verify_file_access(session: Session, file_id: UUID, mode: str) -> None:
+def _indexed_relative_path(record: FileRecord) -> PurePosixPath:
+    relative_path = PurePosixPath(record.relative_path)
+    if (
+        relative_path.is_absolute()
+        or not relative_path.parts
+        or any(part in {".", ".."} for part in relative_path.parts)
+    ):
+        raise FileUnavailableError
+    return relative_path
+
+
+def _open_verified_file(storage_root: Path, record: FileRecord) -> tuple[int, stat_result]:
+    descriptor, current = _open_indexed_file(storage_root, _indexed_relative_path(record))
+    if _matches_indexed_snapshot(record, current):
+        return descriptor, current
+    os.close(descriptor)
+    raise FileUnavailableError
+
+
+def verify_file_access(
+    session: Session, storage_root: Path, file_id: UUID, mode: str
+) -> None:
     record = _file_record(session, file_id)
     if mode == "preview" and not can_preview(record.mime_type):
         raise FilePreviewUnavailableError
+    descriptor, _ = _open_verified_file(storage_root, record)
+    os.close(descriptor)
 
 
 def issue_file_access_grant(
     session: Session,
+    storage_root: Path,
     file_id: UUID,
     mode: str,
     *,
     actor: User,
     ttl_seconds: int,
 ) -> FileAccessGrant:
-    verify_file_access(session, file_id, mode)
+    verify_file_access(session, storage_root, file_id, mode)
     now = datetime.now(UTC)
     session.execute(delete(FileAccessGrant).where(FileAccessGrant.expires_at <= now))
     grant = FileAccessGrant(
@@ -234,17 +258,8 @@ def open_file_delivery(
     if mode == "preview" and not can_preview(record.mime_type):
         raise FilePreviewUnavailableError
 
-    relative_path = PurePosixPath(record.relative_path)
-    if (
-        relative_path.is_absolute()
-        or not relative_path.parts
-        or any(part in {".", ".."} for part in relative_path.parts)
-    ):
-        raise FileUnavailableError
-    descriptor, current = _open_indexed_file(storage_root, relative_path)
+    descriptor, current = _open_verified_file(storage_root, record)
     try:
-        if not _matches_indexed_snapshot(record, current):
-            raise FileUnavailableError
         if audit_access:
             action = (
                 ActivityAction.PREVIEWED_FILE

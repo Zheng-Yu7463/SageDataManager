@@ -266,6 +266,17 @@ export function getFileAccessTicket(fileId: string, mode: FileAccessMode, signal
   return request<FileAccessTicket>(`/api/files/${fileId}/tickets`, signal, 'POST', { mode })
 }
 
+export async function verifyFileAccessTicket(contentUrl: string, signal?: AbortSignal) {
+  let response: Response
+  try {
+    response = await fetch(contentUrl, { method: 'HEAD', signal })
+  } catch (reason) {
+    if (reason instanceof DOMException && reason.name === 'AbortError') throw reason
+    throw new ApiError('无法连接 DataManager 服务。', 0)
+  }
+  if (!response.ok) await raiseApiError(response, false)
+}
+
 export function loginAccount(username: string, password: string) {
   return request<AccountLoginResponse>(
     '/api/auth/login',

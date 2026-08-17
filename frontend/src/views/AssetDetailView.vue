@@ -4,7 +4,7 @@ import { Archive, ArrowDownToLine, ArrowLeft, ArrowUpRight, Check, CheckCircle2,
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute, useRouter } from 'vue-router'
 
-import { addAssetRelation, addAssetVersion, archiveAsset, getAsset, getAssetChoices, getFileAccessTicket, getPublicationCitation, removeAssetRelation, updateAsset } from '@/api/client'
+import { addAssetRelation, addAssetVersion, archiveAsset, getAsset, getAssetChoices, getFileAccessTicket, getPublicationCitation, removeAssetRelation, updateAsset, verifyFileAccessTicket } from '@/api/client'
 import AssetIcon from '@/components/AssetIcon.vue'
 import { assetMeta } from '@/catalogue'
 import { useOverlayFocus } from '@/composables/useOverlayFocus'
@@ -12,6 +12,7 @@ import { useBranding } from '@/composables/useBranding'
 import { isPublicationMetadata } from '@/types'
 import type { AssetChoiceSummary, AssetDetail, FileAccessMode, FileSummary, PublicationCitation, PublicationMetadata, RelatedAssetSummary, Visibility } from '@/types'
 import { copyText, downloadTextFile } from '@/utils/textFiles'
+import { parseApiDate } from '@/utils/dates'
 
 const route = useRoute()
 const router = useRouter()
@@ -227,7 +228,7 @@ function formatBytes(value: number) {
 }
 
 function formatDate(value: string) {
-  return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium' }).format(new Date(value))
+  return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium' }).format(parseApiDate(value))
 }
 
 function displayValue(value: unknown) {
@@ -253,6 +254,8 @@ async function accessFile(file: FileSummary, mode: FileAccessMode) {
   fileActionError.value = ''
   try {
     const ticket = await getFileAccessTicket(file.id, mode, requestController.signal)
+    if (fileAccessController !== requestController || data.value?.id !== assetId) return
+    await verifyFileAccessTicket(ticket.content_url, requestController.signal)
     if (fileAccessController !== requestController || data.value?.id !== assetId) return
     if (mode === 'preview') {
       previewingFile.value = file

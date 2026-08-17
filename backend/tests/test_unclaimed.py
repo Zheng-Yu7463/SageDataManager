@@ -1,5 +1,5 @@
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from uuid import uuid4
 
 import pytest
@@ -19,10 +19,12 @@ from app.db.session import get_session
 from app.domain.enums import AssetType, HealthStatus, Visibility
 from app.domain.models import Activity, Asset, FileRecord, UnclaimedFile, User
 from app.main import app
+from app.services import archive as archive_service
 from app.services import storage as storage_service
 from app.services.archive import ScanAlreadyRunningError, scan_storage
 from app.services.security import create_session_token
 from app.services.storage import (
+    StorageFileEntry,
     StorageIndexBusyError,
     storage_index_guard,
     storage_index_lock_statement,
@@ -292,24 +294,32 @@ def test_scan_does_not_follow_file_replaced_with_symlink(
 
 def test_scan_skips_relative_paths_longer_than_the_database_column(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     storage_root = tmp_path / "archive"
+    storage_root.mkdir()
     deep_parts = [character * 200 for character in "abcde"]
-    source = storage_root.joinpath(
+    relative_path = PurePosixPath(
         "project",
         "field-notes",
         "documents",
         *deep_parts,
         "notes.txt",
     )
-    source.parent.mkdir(parents=True)
+    source = storage_root / "notes.txt"
     source.write_text("too deep")
+    entry = StorageFileEntry(relative_path=relative_path, metadata=source.stat())
+    monkeypatch.setattr(
+        archive_service,
+        "iter_storage_file_entries",
+        lambda _root, on_skip: iter([entry]),
+    )
     session = make_session()
     create_asset(session)
 
     result = scan_storage(session, storage_root)
 
-    assert len(source.relative_to(storage_root).as_posix()) > 1000
+    assert len(relative_path.as_posix()) > 1000
     assert result.status == "completed"
     assert result.files_discovered == 1
     assert result.files_skipped == 1

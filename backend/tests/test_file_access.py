@@ -101,7 +101,33 @@ def test_preview_rejects_unsupported_file_type(tmp_path: Path) -> None:
     _, record = create_file_record(session, tmp_path, mime_type="application/octet-stream")
 
     with pytest.raises(FilePreviewUnavailableError):
-        verify_file_access(session, record.id, "preview")
+        verify_file_access(session, tmp_path, record.id, "preview")
+
+
+def test_ticket_rejects_a_missing_indexed_file_without_creating_a_grant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = make_session()
+    actor, record = create_file_record(session, tmp_path)
+    session.commit()
+    (tmp_path / record.relative_path).unlink()
+    monkeypatch.setattr(settings, "storage_root", tmp_path)
+    monkeypatch.setattr(settings, "auth_session_secret", "test-session-secret")
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        client = TestClient(app)
+        response = client.post(
+            f"/api/files/{record.id}/tickets",
+            json={"mode": "preview"},
+            headers={"X-Sage-Session": create_session_token(actor.username or "")},
+        )
+
+        assert response.status_code == 409
+        assert response.json()["detail"] == "文件当前不可用，请先重新扫描归档。"
+        assert session.scalars(select(FileAccessGrant)).all() == []
+    finally:
+        app.dependency_overrides.clear()
+        session.close()
 
 
 def test_delivery_rejects_symlink_that_escapes_storage_root(tmp_path: Path) -> None:

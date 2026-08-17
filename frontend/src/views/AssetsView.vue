@@ -34,7 +34,7 @@ import {
   getUploadCommand,
   getUploadStatus,
 } from '@/api/client'
-import { assetMeta } from '@/catalogue'
+import { assetMeta, assetStatusOptions } from '@/catalogue'
 import { useOverlayFocus } from '@/composables/useOverlayFocus'
 import { useDismissiblePopover } from '@/composables/useDismissiblePopover'
 import { useBranding } from '@/composables/useBranding'
@@ -50,6 +50,7 @@ import type {
   Visibility,
 } from '@/types'
 import { copyText, downloadTextFile } from '@/utils/textFiles'
+import { parseApiDate } from '@/utils/dates'
 
 const route = useRoute()
 const router = useRouter()
@@ -137,6 +138,11 @@ const catalogueHasConstraints = computed(() => Boolean(query.value.trim() || act
 const meta = computed(() => assetMeta[assetType.value])
 const totalPages = computed(() => Math.max(1, Math.ceil((data.value?.total ?? 0) / 20)))
 const currentUploadFolders = computed(() => uploadAsset.value?.upload_directories ?? [])
+const registrationStatusOptions = computed(() => assetStatusOptions[assetType.value])
+const catalogueStatusOptions = computed(() => Array.from(new Set([
+  ...registrationStatusOptions.value,
+  ...(data.value?.publication_facets?.statuses ?? []),
+])))
 const uploadOpen = computed(() => Boolean(uploadAsset.value))
 const uploadBusy = computed(() => uploadGenerating.value || uploadFinalizing.value)
 const registrationDirty = computed(() => registrationOpen.value && JSON.stringify(registration.value) !== registrationBaseline.value)
@@ -147,13 +153,32 @@ const uploadConfigurationDirty = computed(() => (
 ))
 const uploadTransferActive = computed(() => uploadOpen.value && uploadPhase.value === 'transfer')
 const hasProtectedWork = computed(() => registrationDirty.value || uploadConfigurationDirty.value || uploadTransferActive.value)
+const uploadTargetSubdirectory = computed(() => [
+  upload.value.directory,
+  upload.value.nestedPath.trim(),
+].filter(Boolean).join('/'))
+const uploadPathError = computed(() => {
+  const target = uploadTargetSubdirectory.value
+  if (!target || !upload.value.nestedPath.trim()) return ''
+  const parts = target.split('/')
+  const encoder = new TextEncoder()
+  if (
+    target.length > 400
+    || encoder.encode(target).length > 400
+    || target.includes('\0')
+    || parts.some((part) => !part || part === '.' || part === '..')
+    || parts.some((part) => part.length > 255 || encoder.encode(part).length > 255)
+  ) {
+    return '细分路径必须使用规范的相对路径，且不能包含空目录、. 或 ..。'
+  }
+  return ''
+})
 const uploadTargetPath = computed(() => {
-  if (!uploadAsset.value || !upload.value.directory) return ''
+  if (!uploadAsset.value || !upload.value.directory || uploadPathError.value) return ''
   return [
     uploadAsset.value.type,
     uploadAsset.value.slug,
-    upload.value.directory,
-    upload.value.nestedPath.trim(),
+    uploadTargetSubdirectory.value,
   ].filter(Boolean).join('/')
 })
 const registrationValid = computed(() => {
@@ -330,7 +355,7 @@ function formatBytes(value: number) {
 }
 
 function formatDate(value: string) {
-  return new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', year: 'numeric' }).format(new Date(value))
+  return new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', year: 'numeric' }).format(parseApiDate(value))
 }
 
 function detailText(details: Record<string, unknown>) {
@@ -503,7 +528,7 @@ function closeUpload() {
 }
 
 async function generateUploadCommand() {
-  if (uploadGenerating.value || !uploadAsset.value || !upload.value.sourcePath.trim()) return
+  if (uploadGenerating.value || !uploadAsset.value || !upload.value.sourcePath.trim() || uploadPathError.value) return
   const operationVersion = uploadOperationVersion
   uploadGenerating.value = true
   uploadError.value = ''
@@ -513,7 +538,7 @@ async function generateUploadCommand() {
     const uploadCommand = await getUploadCommand({
       asset_id: uploadAsset.value.id,
       source_path: upload.value.sourcePath.trim(),
-      target_subdirectory: [upload.value.directory, upload.value.nestedPath.trim()].filter(Boolean).join('/'),
+      target_subdirectory: uploadTargetSubdirectory.value,
       recursive: upload.value.recursive,
     })
     if (operationVersion !== uploadOperationVersion) return
@@ -747,11 +772,7 @@ onBeforeUnmount(() => {
             状态
             <select v-model="filters.status" @change="applyFilters">
               <option value="">全部状态</option>
-              <option value="draft">draft</option>
-              <option value="active">active</option>
-              <option value="available">available</option>
-              <option value="collected">collected</option>
-              <option v-if="publicationCatalogue" value="published">published</option>
+              <option v-for="status in catalogueStatusOptions" :key="status" :value="status">{{ status }}</option>
             </select>
           </label>
           <label v-if="publicationCatalogue">
@@ -870,7 +891,7 @@ onBeforeUnmount(() => {
           <label>资产标识（slug）<input v-model="registration.slug" required pattern="[a-z0-9]+(-[a-z0-9]+)*" minlength="3" maxlength="160" placeholder="例如：soil-samples-2026" /></label>
           <label>{{ assetType === 'literature' ? '摘要（必填）' : '摘要' }}<textarea v-model="registration.summary" :required="assetType === 'literature'" maxlength="5000" rows="3" placeholder="简要说明研究内容、范围或用途"></textarea></label>
           <div class="registration-grid">
-            <label>状态<select v-model="registration.status"><option value="draft">draft</option><option value="active">active</option><option value="available">available</option><option value="collected">collected</option><option v-if="publicationCatalogue" value="published">published</option></select></label>
+            <label>状态<select v-model="registration.status"><option v-for="status in registrationStatusOptions" :key="status" :value="status">{{ status }}</option></select></label>
             <label>可见范围<select v-model="registration.visibility"><option value="lab">全实验室</option><option value="project">项目成员</option><option value="restricted">受限</option></select></label>
           </div>
           <template v-if="publicationCatalogue">
@@ -924,11 +945,12 @@ onBeforeUnmount(() => {
           </fieldset>
           <div class="registration-grid">
             <label>归档一级目录<select v-model="upload.directory" required><option v-for="folder in currentUploadFolders" :key="folder.name" :value="folder.name">{{ folder.name }} · {{ folder.label }}</option></select></label>
-            <label>目录内细分路径（可选）<input v-model="upload.nestedPath" placeholder="例如：2026-08 或 experiment-a" /></label>
+            <label>目录内细分路径（可选）<input v-model="upload.nestedPath" :aria-invalid="Boolean(uploadPathError)" :aria-describedby="uploadPathError ? 'upload-path-error' : undefined" placeholder="例如：2026-08 或 experiment-a" /></label>
           </div>
-          <div class="upload-target-preview"><span>入库位置</span><code>{{ uploadTargetPath }}</code></div>
+          <p v-if="uploadPathError" id="upload-path-error" class="registration-error" role="alert">{{ uploadPathError }}</p>
+          <div class="upload-target-preview"><span>入库位置</span><code>{{ uploadTargetPath || '待确认' }}</code></div>
           <p v-if="uploadError" class="registration-error" role="alert">{{ uploadError }}</p>
-          <footer><button class="button button--outline" type="button" :disabled="uploadGenerating" @click="closeUpload">取消</button><button class="button button--primary" :disabled="uploadGenerating || !upload.sourcePath.trim() || !upload.directory" type="submit"><LoaderCircle v-if="uploadGenerating" class="spin" :size="16" /><FolderUp v-else :size="16" />{{ uploadGenerating ? '正在生成' : '生成上传命令' }}</button></footer>
+          <footer><button class="button button--outline" type="button" :disabled="uploadGenerating" @click="closeUpload">取消</button><button class="button button--primary" :disabled="uploadGenerating || !upload.sourcePath.trim() || !upload.directory || Boolean(uploadPathError)" type="submit"><LoaderCircle v-if="uploadGenerating" class="spin" :size="16" /><FolderUp v-else :size="16" />{{ uploadGenerating ? '正在生成' : '生成上传命令' }}</button></footer>
         </template>
 
         <template v-else-if="uploadPhase === 'transfer' && uploadResult">

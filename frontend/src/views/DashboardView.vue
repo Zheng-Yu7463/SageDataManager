@@ -7,6 +7,7 @@ import { getDashboard } from '@/api/client'
 import { assetMeta, assetTypes } from '@/catalogue'
 import { useBranding } from '@/composables/useBranding'
 import type { DashboardSummary } from '@/types'
+import { parseApiDate } from '@/utils/dates'
 
 const data = ref<DashboardSummary | null>(null)
 const loading = ref(true)
@@ -52,7 +53,7 @@ function formatBytes(value: number) {
 }
 
 function relativeTime(value: string) {
-  const difference = Date.now() - new Date(value).getTime()
+  const difference = Date.now() - parseApiDate(value).getTime()
   const hours = Math.floor(difference / 3_600_000)
   if (hours < 1) return '刚刚'
   if (hours < 24) return `${hours} 小时前`

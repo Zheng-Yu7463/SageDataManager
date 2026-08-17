@@ -181,6 +181,7 @@ def create_access_ticket(
     try:
         grant = issue_file_access_grant(
             session,
+            settings.storage_root,
             file_id,
             payload.mode,
             actor=current_user,
